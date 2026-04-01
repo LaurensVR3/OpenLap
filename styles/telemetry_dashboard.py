@@ -19,6 +19,7 @@ ELEMENT_TYPE = "telemetry"
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from matplotlib.patches import FancyBboxPatch
 import numpy as np
 
 
@@ -47,7 +48,7 @@ def render(data: dict, w: int, h: int):
     bg.set_facecolor((0, 0, 0, 0))
     bg.set_xlim(0, 1); bg.set_ylim(0, 1)
     bg.axis('off')
-    bg.add_patch(plt.FancyBboxPatch((0.005, 0.04), 0.990, 0.92,
+    bg.add_patch(FancyBboxPatch((0.005, 0.04), 0.990, 0.92,
         boxstyle="round,pad=0.01",
         facecolor=(0, 0, 0, 0.72), edgecolor=(1, 1, 1, 0.06), linewidth=1))
 
