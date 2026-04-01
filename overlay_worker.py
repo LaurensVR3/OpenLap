@@ -30,7 +30,8 @@ def render_frame_worker(args: tuple) -> bytes:
             vw, vh,
             show_map, show_telemetry,
             is_bike,
-            overlay_layout)    # dict — see default_layout()
+            overlay_layout,    # dict — see default_layout()
+            max_speed)         # float — session max speed rounded up +10%
     """
     import numpy as np
     from style_registry import render_style
@@ -41,7 +42,8 @@ def render_frame_worker(args: tuple) -> bytes:
      vw, vh,
      show_map, show_telemetry,
      is_bike,
-     overlay_layout) = args
+     overlay_layout,
+     max_speed) = args
 
     frame  = np.frombuffer(frame_bytes, dtype=np.uint8).reshape(shape).copy()
     layout = overlay_layout or default_layout()
@@ -53,7 +55,8 @@ def render_frame_worker(args: tuple) -> bytes:
         t_w   = max(64, int(tel.get('w', 0.40) * vw))
         t_h   = max(32, int(tel.get('h', 0.22) * vh))
         style = layout.get('telemetry_style', 'Strip')
-        data  = {'history': history, 'lap_duration': lap_duration, 'is_bike': is_bike}
+        data  = {'history': history, 'lap_duration': lap_duration, 'is_bike': is_bike,
+                 'max_speed': max_speed}
         strip = render_style('telemetry', style, data, t_w, t_h)
         blend_rgba(frame, strip, t_x, t_y)
 

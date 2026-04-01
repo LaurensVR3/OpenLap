@@ -192,6 +192,16 @@ def render_lap(
     writer  = cv2.VideoWriter(
         tmp_raw, cv2.VideoWriter_fourcc(*'MJPG'), fps, (vw, vh))
 
+    # ── Max speed for dynamic gauge scaling ───────────────────────────────────
+    speed_pts = job.lap.points if job.lap else session.all_points
+    if speed_pts:
+        raw_max = max(p.speed for p in speed_pts)
+        import math as _math
+        padded  = raw_max * 1.10
+        max_speed = max(50.0, _math.ceil(padded / 50) * 50)
+    else:
+        max_speed = 300.0
+
     # ── Map track points ────────────────────────────────────────────────────────
     if job.lap and show_map:
         lap_pts  = job.lap.points
@@ -262,7 +272,8 @@ def render_lap(
              vw, vh,
              show_map, show_telemetry,
              is_bike,
-             layout)
+             layout,
+             max_speed)
             for frm, (hist, cur_map_idx) in zip(chunk_frames, chunk_meta)
         ]
 

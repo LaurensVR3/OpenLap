@@ -57,7 +57,11 @@ def dummy_telemetry_data(is_bike: bool = False) -> dict:
         lean  = gy * 28.0
         hist.append({'t': t, 'speed': max(0.0, speed),
                      'gx': gx, 'gy': gy, 'lean': lean})
-    return {'history': hist, 'lap_duration': 83.5, 'is_bike': is_bike}
+    max_spd = max(p['speed'] for p in hist)
+    import math as _math
+    max_speed = max(50.0, _math.ceil(max_spd * 1.10 / 50) * 50)
+    return {'history': hist, 'lap_duration': 83.5, 'is_bike': is_bike,
+            'max_speed': max_speed}
 
 
 def dummy_map_data() -> dict:
