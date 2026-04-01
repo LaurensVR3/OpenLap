@@ -168,8 +168,7 @@ class SettingsPage(tk.Frame):
 
     def _init_rb_source(self) -> None:
         dest = self.app.config.telemetry_path or '.'
-        self._rb_source = RaceBoxSource(
-            auth_file='racebox_auth.json', data_dir=dest)
+        self._rb_source = RaceBoxSource(data_dir=dest)
         if self._rb_source.is_authenticated():
             self.lbl_rb_status.config(text="✓ Saved login found", fg=OK)
 
@@ -180,8 +179,7 @@ class SettingsPage(tk.Frame):
             messagebox.showwarning("RaceBox",
                 "Set the Telemetry Folder first so downloaded CSVs have a destination.")
             return
-        self._rb_source = RaceBoxSource(
-            auth_file='racebox_auth.json', data_dir=dest)
+        self._rb_source = RaceBoxSource(data_dir=dest)
         self.lbl_rb_status.config(text="Opening browser…", fg=WARN)
         threading.Thread(
             target=lambda: self.app.q.put((

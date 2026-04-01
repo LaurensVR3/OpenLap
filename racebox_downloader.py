@@ -125,8 +125,12 @@ class RaceBoxSource(DataSource):
     name        = "RaceBox"
     description = "racebox.pro — imports via browser login"
 
-    def __init__(self, auth_file: str = "racebox_auth.json",
+    def __init__(self, auth_file: Optional[str] = None,
                  data_dir: str = "racebox_data"):
+        if auth_file is None:
+            app_data = Path(os.environ.get("APPDATA", Path.home())) / "OpenLap"
+            app_data.mkdir(parents=True, exist_ok=True)
+            auth_file = str(app_data / "racebox_auth.json")
         self.auth_file = auth_file
         self.data_dir  = data_dir
         self._cookies: Optional[str] = None   # cached cookie header
