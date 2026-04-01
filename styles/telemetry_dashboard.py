@@ -140,25 +140,25 @@ def render(data: dict, w: int, h: int):
             ax_c.plot([sign * tx, sign * tx], [0.57, 0.83],
                       color='#2a3a4a', lw=0.7, zorder=3)
 
-    # Value readout
-    ax_c.text(0, 0.50, f"{steer_dir} {abs(steer_val):.1f}{steer_unit}",
-              ha='center', va='top', color=steer_col,
+    # Value readout — sits between G-bar and speed trace
+    ax_c.text(0, 0.52, f"{steer_dir} {abs(steer_val):.1f}{steer_unit}",
+              ha='center', va='center', color=steer_col,
               fontsize=fs_sml, fontweight='bold', fontfamily='monospace')
 
-    # Speed trace mini-bar (last 10 entries)
+    # Speed trace mini-bar
     if len(history) >= 2:
         win = history[-min(40, len(history)):]
         t0, t1 = win[0]['t'], win[-1]['t']
         dt = t1 - t0 if t1 > t0 else 1.0
         max_spd = max(p['speed'] for p in win)
         max_spd = max(max_spd * 1.1, 30.0)
-        BG_Y, BG_H = 0.16, 0.20
+        BG_Y, BG_H = 0.20, 0.24
         ax_c.add_patch(plt.Rectangle((-0.92, BG_Y), 1.84, BG_H,
                        facecolor='#111820', zorder=2))
         xs = [((p['t'] - t0) / dt) * 1.84 - 0.92 for p in win]
         ys = [BG_Y + (p['speed'] / max_spd) * BG_H for p in win]
         ax_c.plot(xs, ys, color='#00dcff', lw=max(1.0, 1.5 * sc), zorder=3)
-        ax_c.text(0, BG_Y - 0.04, '10s speed trace',
+        ax_c.text(0, BG_Y - 0.06, '10s speed',
                   ha='center', va='top', color='#2a3a4a',
                   fontsize=fs_tiny, fontfamily='monospace')
 
