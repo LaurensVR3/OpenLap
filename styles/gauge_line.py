@@ -32,6 +32,17 @@ def render(data: dict, w: int, h: int):
     symmetric = data.get('symmetric',   False)
     channel   = data.get('channel',     '')
 
+    T         = data.get('_tc', {})
+    bg_rgba   = T.get('bg_rgba',      (0, 0, 0, 0.72))
+    bg_edge   = T.get('bg_edge_rgba', (1, 1, 1, 0.07))
+    track_col = T.get('track',        '#1a2530')
+    fill_pos  = T.get('fill_pos',     '#ffaa00')
+    fill_neg  = T.get('fill_neg',     '#44aaff')
+    fill_lo   = T.get('fill_lo',      '#00ccff')
+    fill_hi   = T.get('fill_hi',      '#ff4422')
+    label_col = T.get('label',        '#445566')
+    unit_col  = T.get('unit',         '#5577aa')
+
     sc  = scale_factor(w, h, base_w=220, base_h=100)
     dpi = 100
     fig = plt.figure(figsize=(w / dpi, h / dpi), dpi=dpi)
@@ -43,14 +54,13 @@ def render(data: dict, w: int, h: int):
     ax_bg.axis('off')
     ax_bg.add_patch(FancyBboxPatch((0.01, 0.02), 0.98, 0.96,
         boxstyle='round,pad=0.02',
-        facecolor=(0, 0, 0, 0.72), edgecolor=(1, 1, 1, 0.07), linewidth=1))
+        facecolor=bg_rgba, edgecolor=bg_edge, linewidth=1))
 
     fs_label = max(5,  min(int(9  * sc), int(w * 0.07)))
     fs_val   = max(6,  min(int(14 * sc), int(w * 0.11)))
     fs_unit  = max(4,  min(int(7  * sc), int(w * 0.06)))
 
-    # ── Chart axes ────────────────────────────────────────────────────────────
-    # Reserve right strip for the value readout
+    # Chart axes
     ax = fig.add_axes([0.04, 0.18, 0.68, 0.62])
     ax.set_facecolor((0, 0, 0, 0))
     for spine in ax.spines.values():
@@ -63,19 +73,16 @@ def render(data: dict, w: int, h: int):
 
     rng = mx - mn if mx != mn else 1.0
     ax.set_xlim(0, max(1, len(vals) - 1))
-    # Expand y range slightly so trace doesn't touch the edges
     pad = rng * 0.08
     ax.set_ylim(mn - pad, mx + pad)
 
-    # Colour: symmetric channels are amber/blue; others use cyan→red ramp
     if symmetric:
-        line_col = '#ffaa00' if value >= 0 else '#44aaff'
+        line_col = fill_pos if value >= 0 else fill_neg
         fill_col = line_col
-        zero_y   = 0.0
-        ax.axhline(zero_y, color='#2a3a4a', lw=0.8, zorder=1)
+        ax.axhline(0.0, color=track_col, lw=0.8, zorder=1)
     else:
         frac     = max(0.0, min(1.0, (value - mn) / rng))
-        line_col = '#ff4422' if frac > 0.80 else '#00ccff'
+        line_col = fill_hi if frac > 0.80 else fill_lo
         fill_col = line_col
 
     if len(vals) >= 2:
@@ -86,13 +93,11 @@ def render(data: dict, w: int, h: int):
         ax.fill_between(xs, baseline, ys,
                         color=fill_col, alpha=0.18, zorder=2)
 
-    # ── Label (top-left inside chart area) ───────────────────────────────────
     ax_bg.text(0.04, 0.90, label.upper(),
-               ha='left', va='top', color='#445566',
+               ha='left', va='top', color=label_col,
                fontsize=fs_label, fontfamily='monospace',
                transform=ax_bg.transAxes)
 
-    # ── Value readout (right panel) ───────────────────────────────────────────
     if channel == 'lap_time':
         m = int(value // 60); s = value % 60
         val_str  = f"{m}:{s:05.2f}" if value >= 60 else f"{value:.2f}"
@@ -112,7 +117,7 @@ def render(data: dict, w: int, h: int):
                transform=ax_bg.transAxes)
     if unit:
         ax_bg.text(0.95, 0.28, unit,
-                   ha='right', va='center', color='#5577aa',
+                   ha='right', va='center', color=unit_col,
                    fontsize=fs_unit, fontfamily='monospace',
                    transform=ax_bg.transAxes)
 

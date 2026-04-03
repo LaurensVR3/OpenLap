@@ -53,6 +53,7 @@ def render_frame_worker(args: tuple) -> bytes:
 
     frame  = np.frombuffer(frame_bytes, dtype=np.uint8).reshape(shape).copy()
     layout = overlay_layout or default_layout()
+    theme  = layout.get('theme', 'Dark')
 
     # ── Gauges ────────────────────────────────────────────────────────────────
     if show_telemetry and history:
@@ -69,6 +70,7 @@ def render_frame_worker(args: tuple) -> bytes:
             gd = gauge_data(channel, history)
             gd['lap_duration'] = lap_duration
             gd['is_bike']      = is_bike
+            gd['_theme']       = theme
             if channel == 'speed':
                 gd['max_val'] = max_speed
 
@@ -86,7 +88,8 @@ def render_frame_worker(args: tuple) -> bytes:
         m_w   = max(60, int(mp.get('w', 0.24) * vw))
         m_h   = max(60, int(mp.get('h', 0.30) * vh))
         style = layout.get('map_style', 'Circuit')
-        data  = {'lats': lap_lats, 'lons': lap_lons, 'cur_idx': cur_pt_idx}
+        data  = {'lats': lap_lats, 'lons': lap_lons, 'cur_idx': cur_pt_idx,
+                 '_theme': theme}
         try:
             mi = render_style('map', style, data, m_w, m_h)
             blend_rgba(frame, mi, m_x, m_y)

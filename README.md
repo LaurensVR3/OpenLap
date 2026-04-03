@@ -1,29 +1,66 @@
 # OpenLap
 
-**OpenLap** is an open-source desktop application that overlays telemetry data on top of racing video footage. It is data-source agnostic — RaceBox and AIM Mychron are supported today, with MoTeC and others planned.
+**OpenLap** is an open-source desktop application that overlays telemetry data on racing video footage. Point it at a folder of telemetry files and a folder of videos, and it matches sessions, syncs timing, and renders professional-looking gauge overlays — all from a single window.
 
-> Licensed under the GNU General Public License v3. Free forever, forks must stay free.
+> Licensed under the **GNU General Public License v3**. Free forever. Forks must stay open source.
 
 ---
 
 ## Features
 
-- Match telemetry sessions to video files automatically
-- Align telemetry and video with a frame-accurate sync tool
-- Individual, draggable gauge overlays per channel (Speed, RPM, G-Force, Lean Angle, etc.)
-- Multiple gauge styles per channel — Numeric, Bar, Dial, Line, Lean
-- Save, load, and delete named overlay preset layouts
-- Plugin-based style system — drop a `.py` file into `styles/` and it appears in the UI
-- Export single laps, full sessions, or all laps in one click
-- GPU-accelerated encoding (NVENC/VAAPI/VideoToolbox) with auto-detection
-- Persistent sync offsets — set once, remembered forever per session
-- Manual multi-clip video assignment per session
+### Data & Session Management
+- Scan a folder (recursively) to discover all telemetry sessions and automatically match them to video files
+- Manual video reassignment for sessions where auto-matching doesn't find the right clip
+- Multi-clip support — assign several video segments to a single session; they are joined before rendering
+- Frame-accurate sync tool with persistent offsets: set once, remembered forever per CSV file
+- RaceBox cloud download directly from the app (requires a RaceBox account)
+- AIM `.xrk` / `.xrz` / `.drk` files are silently converted to CSV on first scan using the AIM MatLabXRK DLL (downloaded automatically)
+
+### Overlay Editor
+- Individual, freely positionable gauge elements — each channel is its own resizable box
+- **Element-to-element snapping**: edges and centres of gauge boxes snap to each other with cyan alignment guides
+- **Size grid snapping**: width and height snap to 5% increments during resize for consistent sizing
+- Snap to screen edges on release
+- Live style previews update as you drag and resize
+- **4 overlay themes**: Dark · Light · Colorful · Monochrome — applied to all gauges and the map simultaneously
+- **5 gauge styles**: Numeric · Bar · Dial · Line · Lean
+- **1 map style**: Circuit (overhead trace with driven-portion highlight and position dot)
+- Bike mode — enables Lean gauge style and reads LeanAngle from compatible devices
+- Named preset layouts — save, load, and delete overlay configurations
+- Load a real video frame as a background for accurate overlay placement
+
+### Export
+- **Scope**: Fastest Lap, All Laps (one file per lap), or Full Session
+- GPU-accelerated encoding with auto-detection: NVENC (NVIDIA) · AMF (AMD) · QSV (Intel) · libx264 (CPU fallback)
+- Adjustable quality (CRF) and CPU worker count
+- Configurable pre/post lap padding (seconds)
+- Progress bar and log output during render
+
+### Extensibility
+- Plugin-based style system — drop a `.py` file into `styles/` and it appears in the UI with no registration
+- All styles receive theme colour tokens so custom styles automatically support all four themes
 
 ---
 
-## Screenshots
+## Supported Data Sources
 
-_Coming soon_
+| Source | File types | Notes |
+|---|---|---|
+| **RaceBox** | `.csv` (RaceBox format) | Car and bike mode; detects automatically from column layout |
+| **AIM Mychron** | `.xrk` · `.xrz` · `.drk` | Auto-converted to CSV on scan; AIM DLL downloaded automatically on first use |
+| MoTeC | — | Planned |
+
+### Telemetry channels
+
+| Channel | Label | Unit | Symmetric |
+|---|---|---|---|
+| `speed` | Speed | km/h | No |
+| `rpm` | RPM | rpm | No |
+| `exhaust_temp` | Exhaust Temp | °C | No |
+| `gforce_lon` | Long G | G | Yes |
+| `gforce_lat` | Lat G | G | Yes |
+| `lean` | Lean | ° | Yes (bike only) |
+| `lap_time` | Lap Time | s | No |
 
 ---
 
@@ -31,17 +68,23 @@ _Coming soon_
 
 ### Requirements
 
-- Python 3.10+
-- FFmpeg on your system `PATH`
-- The following Python packages:
+- **Python 3.10+**
+- **FFmpeg** available on your system `PATH`
+- Python packages:
 
-```
+```bash
 pip install opencv-python pillow numpy matplotlib
 ```
 
-For RaceBox download support (optional):
+For AIM `.xrk` conversion (required if you use AIM Mychron):
 
+```bash
+pip install pandas
 ```
+
+For RaceBox cloud download (optional):
+
+```bash
 pip install playwright
 playwright install chromium
 ```
@@ -54,141 +97,193 @@ Double-click `openlap.pyw`, or from a terminal:
 python openlap.pyw
 ```
 
+Configuration is stored at `~/.openlap/config.json` and migrated automatically from older locations on first run.
+
 ---
 
 ## Usage
 
 ### 1. Settings tab
-Set your **telemetry folder**, **video folder**, and **export folder** once. These are remembered between sessions.
+
+Set your **Telemetry Folder**, **Video Folder**, and **Export Folder**. These are remembered between sessions.
+
+- **RaceBox**: log in to download new sessions from the cloud directly into your telemetry folder
+- **AIM Mychron**: `.xrk` / `.xrz` / `.drk` files placed in the telemetry folder are converted to CSV automatically on the next scan
 
 ### 2. Data tab
-Click **Scan** (or it runs automatically on startup) to discover all sessions and match them with video files.
 
-- AIM Mychron `.XRK` files are automatically converted to CSV on scan
-- Click a session to select it and view its laps
-- Use **Reassign Video** to manually link a session to a specific video file
+Click **Scan** to discover sessions and match them to video files (also runs automatically on startup).
 
-Select a session and use the **Align Video** panel to sync telemetry with footage:
-- Scrub to the moment the lap starts
-- Press **M** (or the Mark button) to lock the offset
-- The offset is saved immediately and restored on next scan
+- Sessions appear in a tree grouped by date
+- Click a session row to expand its lap list
+- Use **Reassign Video** to manually link a session to a specific video file or set of clips
+- Use the **Align Video** panel to sync telemetry with the video:
+  - Scrub the preview to the moment the lap timer starts
+  - Press **M** (or click **Mark**) to lock the sync offset
+  - The offset is saved immediately to `config.json` and restored on next launch
 
 ### 3. Export tab
-- Add gauge elements from the **Add Gauge** panel — pick a channel and style for each
-- Drag and resize each gauge and the **Map** overlay on the video preview
-- Save the current layout as a named **preset**, or load/delete existing presets
-- Choose export scope: Fastest Lap, Full Session, or All Laps
-- Click **Export**
+
+#### Overlay layout
+
+1. **Add Gauge** — choose a channel and style; a new element appears on the canvas
+2. **Drag** elements to reposition; **drag a corner handle** to resize
+   - Elements snap to each other's edges and centres (cyan guide lines show active snaps)
+   - Size snaps to 0.05 increments — two G-force bars will always align perfectly
+3. Choose a **Map style** (Circuit) and toggle the map on/off
+4. Pick an **overlay theme** (Dark · Light · Colorful · Monochrome)
+5. Save the layout as a named **Preset**, or load/delete existing ones
+
+#### Export
+
+1. Select sessions in the **Data** tab, then come back to **Export**
+2. Choose scope: **Fastest Lap**, **All Laps**, or **Full Session**
+3. Tune encoder, quality (CRF), worker count, and padding as needed
+4. Click **▶▶ EXPORT**
+
+---
+
+## Overlay Themes
+
+| Theme | Background | Fill colours | Best for |
+|---|---|---|---|
+| **Dark** | Semi-transparent black | Cyan · Amber | Night footage, dark cockpits |
+| **Light** | Semi-transparent white | Deep blue · Orange | Bright daylight footage |
+| **Colorful** | Deep purple | Magenta · Green · Orange | Stylised / highlight edits |
+| **Monochrome** | Black | White · Grey | Clean, minimal look |
+
+---
+
+## Gauge Styles
+
+| Style | Description |
+|---|---|
+| **Dial** | Circular arc gauge with needle; 240° sweep |
+| **Bar** | Horizontal fill bar; symmetric channels fill from centre with left/right colours |
+| **Numeric** | Large centred value readout |
+| **Line** | Scrolling area chart of recent history |
+| **Lean** | Motorcycle silhouette tilted to current lean angle (bike mode) |
 
 ---
 
 ## Project Structure
 
 ```
-openlap.pyw             Entry point — launch this to start the app
+openlap.pyw             Entry point
 
-app_shell.py            Main window: 3-tab sidebar, queue dispatcher, shared state
-app_config.py           Persistent config (paths, sync offsets, overlay layout, presets)
+app_shell.py            Main window: 3-tab sidebar, message queue, shared state
+app_config.py           Persistent config: paths, sync offsets, overlay layout, presets
                         Saved to ~/.openlap/config.json
 
-design_tokens.py        Colours, fonts, spacing constants
-widgets.py              Shared UI primitives (Divider, etc.)
+design_tokens.py        Colours, fonts, spacing constants (editor UI)
+widgets.py              Shared UI primitives: Card, Btn, Divider, Label
 
-page_data.py            Data tab — session tree, video matching, sync panel
-page_export.py          Export tab — gauge editor, preset management, export controls
-page_settings.py        Settings tab — folder paths, RaceBox download, encoder info
+page_data.py            Data tab: session tree, video matching, sync panel
+page_export.py          Export tab: overlay editor, preset management, render controls
+page_settings.py        Settings tab: folder paths, RaceBox download, encoder detection
 
-overlay_editor.py       Drag-and-resize canvas widget (letterbox-aware)
-overlay_worker.py       Per-frame render worker (called by multiprocessing pool)
-overlay_utils.py        Shared helpers: blend_rgba, fig_to_rgba, dummy data generators
+overlay_editor.py       Drag/resize canvas (letterbox-aware, snapping, live previews)
+overlay_worker.py       Per-frame render worker called by multiprocessing pool
+overlay_utils.py        Helpers: blend_rgba, fig_to_rgba, dummy data generators
+overlay_themes.py       Colour palettes for Dark / Light / Colorful / Monochrome themes
 
-gauge_channels.py       Channel metadata and data-builder for the gauge system
+gauge_channels.py       Channel metadata, data builder, and dummy data for previews
 
 video_renderer.py       render_lap(), concat_videos(), detect_encoder()
 
-session_scanner.py      Scan folders, match sessions to video files, auto-convert XRK
-racebox_data.py         Parse RaceBox CSV files into Session/Lap objects
-racebox_downloader.py   Download new sessions from RaceBox cloud (Playwright)
-aim_data.py             Parse AIM Mychron CSV files into Session/Lap objects
-xrk_to_csv.py           Convert AIM .XRK binary files to CSV (RPM, exhaust temp, etc.)
+session_scanner.py      Scan folders, match sessions to video files, trigger XRK conversion
+racebox_data.py         Parse RaceBox CSV files into Session/Lap/DataPoint objects
+racebox_downloader.py   Download sessions from RaceBox cloud (Playwright)
+aim_data.py             Parse AIM CSV files (after XRK conversion) into Session/Lap objects
+xrk_to_csv.py           Convert AIM .xrk/.xrz/.drk to CSV via the AIM MatLabXRK DLL
 
-style_registry.py       Discover, load and call style plugins from styles/
+style_registry.py       Discover, cache, and call style plugins from styles/
 
 styles/
-  map_circuit.py        Map style: circuit trace with current position dot
+  map_circuit.py        Map style: circuit trace, driven path highlight, position dot
   gauge_numeric.py      Gauge style: plain numeric readout
-  gauge_bar.py          Gauge style: horizontal/vertical bar
-  gauge_dial.py         Gauge style: arc dial
-  gauge_line.py         Gauge style: scrolling line graph
-  gauge_lean.py         Gauge style: lean-angle indicator (bike mode only)
+  gauge_bar.py          Gauge style: horizontal fill bar with sparkline
+  gauge_dial.py         Gauge style: 240° arc dial with needle
+  gauge_line.py         Gauge style: scrolling area chart
+  gauge_lean.py         Gauge style: motorcycle lean angle silhouette
 ```
 
 ---
 
 ## Writing a Custom Gauge Style
 
-Create a file in the `styles/` folder named `gauge_<name>.py`. It needs:
+Create `styles/gauge_<name>.py`:
 
 ```python
 STYLE_NAME   = "My Style"   # shown in the UI dropdown
-ELEMENT_TYPE = "gauge"      # must be "gauge"
+ELEMENT_TYPE = "gauge"
 
-def render(data: dict, w: int, h: int) -> np.ndarray:
+def render(data: dict, w: int, h: int):
     """Return an RGBA numpy array of shape (h, w, 4)."""
     ...
 ```
 
-### `data` keys for `gauge` styles
+Drop it into `styles/` — no restart needed, it appears in the style picker immediately.
+
+### Data keys passed to gauge `render()`
 
 | Key | Type | Description |
 |---|---|---|
-| `channel` | `str` | Channel identifier (e.g. `"speed"`, `"rpm"`) |
+| `channel` | `str` | Channel identifier, e.g. `"speed"` |
 | `value` | `float` | Current value |
-| `history_vals` | `list[float]` | Recent history, most recent last |
-| `label` | `str` | Human-readable channel name |
-| `unit` | `str` | Unit string (e.g. `"km/h"`, `"°C"`) |
-| `min_val` | `float` | Expected minimum for scaling |
-| `max_val` | `float` | Expected maximum for scaling |
-| `symmetric` | `bool` | True if the range is centred on zero (e.g. G-force) |
+| `history_vals` | `list[float]` | Recent history, oldest first |
+| `label` | `str` | Human-readable name, e.g. `"Speed"` |
+| `unit` | `str` | Unit string, e.g. `"km/h"` |
+| `min_val` | `float` | Scale minimum |
+| `max_val` | `float` | Scale maximum |
+| `symmetric` | `bool` | `True` if the range is centred on zero |
+| `is_bike` | `bool` | `True` when the session is in bike mode |
+| `_tc` | `dict` | Active theme colour tokens (see below) |
 
-### Available channels
+### Theme colour tokens (`data['_tc']`)
 
-| Channel | Label | Unit |
-|---|---|---|
-| `speed` | Speed | km/h |
-| `rpm` | RPM | rpm |
-| `exhaust_temp` | Exhaust Temp | °C |
-| `gforce_lon` | Long G | G |
-| `gforce_lat` | Lat G | G |
-| `lean` | Lean | ° |
-| `lap_time` | Lap Time | s |
+Your style automatically supports all four themes if it reads colours from `_tc` instead of hardcoding them:
 
-Drop the file into `styles/` and restart the app — it appears in the style picker immediately. No registration needed.
+```python
+T = data.get('_tc', {})
+bg     = T.get('bg_rgba',      (0, 0, 0, 0.72))   # background fill (R,G,B,A 0-1)
+edge   = T.get('bg_edge_rgba', (1, 1, 1, 0.07))   # background edge
+track  = T.get('track',        '#1a2530')           # unfilled arc/bar track
+pos    = T.get('fill_pos',     '#ffaa00')           # symmetric positive fill
+neg    = T.get('fill_neg',     '#44aaff')           # symmetric negative fill
+lo     = T.get('fill_lo',      '#00ccff')           # asymmetric low-value fill
+hi     = T.get('fill_hi',      '#ff4422')           # asymmetric high-value fill
+text   = T.get('text',         'white')             # primary value text
+label  = T.get('label',        '#445566')           # channel label
+unit   = T.get('unit',         '#5577aa')           # unit string
+trace  = T.get('trace',        '#334455')           # sparkline / history line
+```
 
 ### Writing a Custom Map Style
 
-Map styles work the same way but use `ELEMENT_TYPE = "map"` and receive different data:
+Same pattern, with `ELEMENT_TYPE = "map"`:
+
+```python
+STYLE_NAME   = "My Map"
+ELEMENT_TYPE = "map"
+
+def render(data: dict, w: int, h: int):
+    ...
+```
+
+Map-specific data keys:
 
 | Key | Type | Description |
 |---|---|---|
-| `lats` | `list[float]` | Latitude points for the full track |
-| `lons` | `list[float]` | Longitude points for the full track |
-| `cur_idx` | `int` | Index of the current position in the track |
-
----
-
-## Data Sources
-
-| Source | Status |
-|---|---|
-| RaceBox | Supported |
-| AIM Mychron (XRK) | Supported |
-| MoTeC | Coming soon |
+| `lats` | `list[float]` | Latitude of every track point |
+| `lons` | `list[float]` | Longitude of every track point |
+| `cur_idx` | `int` | Index of the current position |
+| `_tc` | `dict` | Theme colour tokens (keys: `map_bg_rgba`, `map_track_outer`, `map_track_inner`, `map_driven`, `map_dot`, `map_start`) |
 
 ---
 
 ## Contributing
 
-Pull requests are welcome. Please open an issue first for larger changes so we can discuss the approach.
+Pull requests are welcome. Open an issue first for larger changes so we can discuss the approach.
 
-This project is licensed under the **GNU General Public License v3**. Any fork or derivative must also be open source and remain free to use.
+This project is licensed under the **GNU General Public License v3**. Any fork or derivative must also be open source and free to use.

@@ -84,4 +84,10 @@ def render_style(element_type: str, style_name: str,
     if mod is None:
         raise ValueError(f"Style not found: {element_type!r} / {style_name!r}. "
                          f"Available: {available_styles(element_type)}")
-    return mod.render(data, w, h)
+
+    # Inject theme colour tokens so style plugins don't need to import overlay_themes.
+    from overlay_themes import get_theme
+    themed_data = dict(data)
+    themed_data['_tc'] = get_theme(data.get('_theme', 'Dark'))
+
+    return mod.render(themed_data, w, h)

@@ -139,6 +139,8 @@ class ExportPage(tk.Frame):
             self.var_is_bike.set(self.app.config.overlay.is_bike)
         if hasattr(self, 'var_map_style'):
             self.var_map_style.set(self.app.config.overlay.map_style)
+        if hasattr(self, 'var_theme'):
+            self.var_theme.set(getattr(self.app.config.overlay, 'theme', 'Dark'))
         if hasattr(self, '_gauge_list_frame'):
             self._rebuild_gauge_list()
         if hasattr(self, 'editor'):
@@ -183,6 +185,7 @@ class ExportPage(tk.Frame):
 
     def _build_style_row(self, parent) -> None:
         from style_registry import available_styles, default_style
+        from overlay_themes import theme_names
         from tkinter import ttk
 
         map_styles = available_styles('map') or ['Circuit']
@@ -194,8 +197,17 @@ class ExportPage(tk.Frame):
         cb_map = ttk.Combobox(parent, textvariable=self.var_map_style,
                               values=map_styles, state='readonly',
                               font=font(9), width=12)
-        cb_map.pack(side='left', padx=(0, 16))
+        cb_map.pack(side='left', padx=(0, 8))
         self.var_map_style.trace_add('write', lambda *_: self._on_map_style_change())
+
+        tk.Label(parent, text="Theme:", bg=BG, fg=TEXT3,
+                 font=font(8)).pack(side='left', padx=(8, 4))
+        self.var_theme = tk.StringVar(value=getattr(self.app.config.overlay, 'theme', 'Dark'))
+        cb_theme = ttk.Combobox(parent, textvariable=self.var_theme,
+                                values=theme_names(), state='readonly',
+                                font=font(9), width=11)
+        cb_theme.pack(side='left', padx=(0, 16))
+        self.var_theme.trace_add('write', lambda *_: self._on_theme_change())
 
         Btn(parent, "+ Add gauge", small=True,
             command=self._add_gauge).pack(side='left', padx=(0, 4))
@@ -252,6 +264,11 @@ class ExportPage(tk.Frame):
 
     def _on_map_style_change(self) -> None:
         self.app.config.overlay.map_style = self.var_map_style.get()
+        self.app.config.save()
+        self.editor.refresh()
+
+    def _on_theme_change(self) -> None:
+        self.app.config.overlay.theme = self.var_theme.get()
         self.app.config.save()
         self.editor.refresh()
 

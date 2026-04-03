@@ -29,6 +29,17 @@ def render(data: dict, w: int, h: int):
     mx        = data.get('max_val',     100.0)
     symmetric = data.get('symmetric',   False)
 
+    T           = data.get('_tc', {})
+    bg_rgba     = T.get('bg_rgba',      (0, 0, 0, 0.72))
+    bg_edge     = T.get('bg_edge_rgba', (1, 1, 1, 0.07))
+    track_col   = T.get('track',        '#1a2530')
+    fill_pos    = T.get('fill_pos',     '#ffaa00')
+    fill_neg    = T.get('fill_neg',     '#44aaff')
+    fill_lo     = T.get('fill_lo',      '#00ccff')
+    fill_hi     = T.get('fill_hi',      '#ff6622')
+    label_col   = T.get('label',        '#445566')
+    trace_col   = T.get('trace',        '#334455')
+
     sc  = scale_factor(w, h, base_w=180, base_h=120)
     dpi = 100
     fig = plt.figure(figsize=(w / dpi, h / dpi), dpi=dpi)
@@ -41,7 +52,7 @@ def render(data: dict, w: int, h: int):
 
     ax.add_patch(FancyBboxPatch((0.03, 0.03), 0.94, 0.94,
         boxstyle='round,pad=0.02',
-        facecolor=(0, 0, 0, 0.72), edgecolor=(1, 1, 1, 0.07), linewidth=1))
+        facecolor=bg_rgba, edgecolor=bg_edge, linewidth=1))
 
     fs_label = max(5,  min(int(10 * sc), int(w * 0.08)))
     fs_val   = max(6,  min(int(13 * sc), int(w * 0.10)))
@@ -54,28 +65,26 @@ def render(data: dict, w: int, h: int):
     bar_w = BAR_R - BAR_L
 
     ax.text(0.50, 0.88, label.upper(),
-            ha='center', va='center', color='#445566',
+            ha='center', va='center', color=label_col,
             fontsize=fs_label, fontfamily='monospace')
 
     # Track
     ax.add_patch(plt.Rectangle((BAR_L, BAR_Y), bar_w, BAR_H,
-                 facecolor='#1a2530', zorder=2))
+                 facecolor=track_col, zorder=2))
 
     rng = mx - mn if mx != mn else 1.0
 
     if symmetric:
-        # Fill from centre, left=neg colour, right=pos colour
-        mid = BAR_L + bar_w * (-mn / rng)
-        frac = (value - mn) / rng
-        fill_x = BAR_L + bar_w * max(0.0, min(1.0, frac))
         mid_x  = BAR_L + bar_w * (-mn / rng)
+        frac   = (value - mn) / rng
+        fill_x = BAR_L + bar_w * max(0.0, min(1.0, frac))
 
         if value >= 0:
-            col = '#ffaa00'
+            col = fill_pos
             ax.add_patch(plt.Rectangle((mid_x, BAR_Y), fill_x - mid_x, BAR_H,
                          facecolor=col, alpha=0.90, zorder=3))
         else:
-            col = '#44aaff'
+            col = fill_neg
             ax.add_patch(plt.Rectangle((fill_x, BAR_Y), mid_x - fill_x, BAR_H,
                          facecolor=col, alpha=0.90, zorder=3))
 
@@ -85,7 +94,7 @@ def render(data: dict, w: int, h: int):
         val_col = col
     else:
         frac = max(0.0, min(1.0, (value - mn) / rng))
-        col  = '#00ccff' if frac < 0.75 else '#ff6622'
+        col  = fill_lo if frac < 0.75 else fill_hi
         ax.add_patch(plt.Rectangle((BAR_L, BAR_Y), bar_w * frac, BAR_H,
                      facecolor=col, alpha=0.90, zorder=3))
         val_col = col
@@ -104,6 +113,6 @@ def render(data: dict, w: int, h: int):
         lo, hi = mn, mx
         ys   = [BAR_Y - 0.04 - 0.10 * max(0.0, min(1.0, (v - lo) / (hi - lo or 1)))
                 for v in vals]
-        ax.plot(xs, ys, color='#334455', lw=max(0.6, 0.8 * sc), zorder=2)
+        ax.plot(xs, ys, color=trace_col, lw=max(0.6, 0.8 * sc), zorder=2)
 
     return fig_to_rgba(fig, (w, h))

@@ -52,6 +52,7 @@ def _default_gauges() -> List[GaugeConfig]:
 class OverlayLayout:
     is_bike:    bool          = False
     map_style:  str           = 'Circuit'
+    theme:      str           = 'Dark'
     map:        OverlayElement = field(default_factory=_default_map)
     gauges:     List[GaugeConfig] = field(default_factory=_default_gauges)
 
@@ -112,6 +113,7 @@ def overlay_from_dict(overlay_data: dict) -> OverlayLayout:
     return OverlayLayout(
         is_bike   = overlay_data.get('is_bike',  False),
         map_style = overlay_data.get('map_style', 'Circuit'),
+        theme     = overlay_data.get('theme',     'Dark'),
         map       = map_elem,
         gauges    = gauges,
     )

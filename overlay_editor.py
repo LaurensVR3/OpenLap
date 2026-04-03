@@ -13,10 +13,13 @@ from gauge_channels import GAUGE_COLOURS
 
 HANDLE_SIZE          = 7      # px half-size of resize corner handles
 MIN_NORM             = 0.04   # minimum normalized w/h
-SNAP_NORM            = 0.02   # snap-to-edge threshold (normalized)
+SNAP_NORM            = 0.02   # snap-to-screen-edge threshold (normalized)
+SNAP_ELEM_NORM       = 0.015  # snap-to-element-edge threshold (normalized)
+SNAP_SIZE_STEP       = 0.05   # size grid increment (normalized)
 PREVIEW_DEBOUNCE_MS  = 250    # delay before triggering a preview re-render
 
 MAP_COLOUR = '#4f8ef7'
+GUIDE_COLOUR = '#00ffcc'
 
 
 def _gauge_colour(idx: int) -> str:
@@ -42,6 +45,7 @@ class OverlayEditor(tk.Frame):
 
         self._frame_rect: Tuple[int, int, int, int] = (0, 0, 1, 1)
         self._drag: Optional[dict] = None
+        self._snap_guides: list = []   # list of ('v'|'h', norm_pos) for active snaps
 
         self._previews:       dict[str, np.ndarray] = {}
         self._preview_photos: dict[str, object]     = {}
@@ -133,6 +137,10 @@ class OverlayEditor(tk.Frame):
             if g.visible:
                 self._draw_element(f'gauge_{i}', g)
 
+        # Snap alignment guide lines drawn on top of everything
+        if self._snap_guides:
+            self._draw_snap_guides()
+
     def _draw_bg(self, cw: int, ch: int) -> None:
         from PIL import Image, ImageTk
         import cv2
@@ -199,6 +207,19 @@ class OverlayEditor(tk.Frame):
                 fill=colour, outline='white', width=1,
                 tags=(key, f'{key}_handle_{htag}'))
 
+    def _draw_snap_guides(self) -> None:
+        """Draw cyan dashed alignment guides within the frame area."""
+        ox, oy, dw, dh = self._frame_rect
+        for axis, pos in self._snap_guides:
+            if axis == 'v':
+                px = int(ox + pos * dw)
+                self._canvas.create_line(px, oy, px, oy + dh,
+                    fill=GUIDE_COLOUR, width=1, dash=(5, 3))
+            else:
+                py = int(oy + pos * dh)
+                self._canvas.create_line(ox, py, ox + dw, py,
+                    fill=GUIDE_COLOUR, width=1, dash=(5, 3))
+
     # ── Preview rendering ─────────────────────────────────────────────────────
 
     def _request_all_previews(self) -> None:
@@ -227,6 +248,7 @@ class OverlayEditor(tk.Frame):
         pw = max(32, int(elem.w * dw))
         ph = max(16, int(elem.h * dh))
         is_bike = self._layout.is_bike
+        theme   = getattr(self._layout, 'theme', 'Dark')
 
         if key == 'map':
             style = self._layout.map_style
@@ -239,12 +261,13 @@ class OverlayEditor(tk.Frame):
 
         threading.Thread(
             target=self._render_preview_worker,
-            args=(key, style, channel, pw, ph, is_bike),
+            args=(key, style, channel, pw, ph, is_bike, theme),
             daemon=True,
         ).start()
 
     def _render_preview_worker(self, key: str, style_name: str, channel: Optional[str],
-                                pw: int, ph: int, is_bike: bool) -> None:
+                                pw: int, ph: int, is_bike: bool,
+                                theme: str = 'Dark') -> None:
         try:
             from style_registry import render_style
             from overlay_utils  import dummy_map_data
@@ -252,10 +275,12 @@ class OverlayEditor(tk.Frame):
 
             if key == 'map':
                 data = dummy_map_data()
+                data['_theme'] = theme
                 rgba = render_style('map', style_name, data, pw, ph)
             else:
                 data = dummy_gauge_data(channel or 'speed')
                 data['is_bike'] = is_bike
+                data['_theme']  = theme
                 rgba = render_style('gauge', style_name, data, pw, ph)
 
             self._preview_q.put((key, rgba))
@@ -293,6 +318,67 @@ class OverlayEditor(tk.Frame):
                 return key, 'move', None
         return None
 
+    # ── Snapping helpers ──────────────────────────────────────────────────────
+
+    def _apply_move_snap(self, key: str, elem) -> None:
+        """
+        Snap elem to nearby elements' edges and centres during a move.
+        Updates self._snap_guides with guide line specs for drawing.
+        """
+        best_dx      = None
+        best_dy      = None
+        best_x_guide = None
+        best_y_guide = None
+        dist_x       = SNAP_ELEM_NORM
+        dist_y       = SNAP_ELEM_NORM
+
+        # Snap points on the dragged element: (current_coord, offset_from_elem_x)
+        e_xs = [(elem.x,              0.0),
+                (elem.x + elem.w,     elem.w),
+                (elem.x + elem.w / 2, elem.w / 2)]
+        e_ys = [(elem.y,              0.0),
+                (elem.y + elem.h,     elem.h),
+                (elem.y + elem.h / 2, elem.h / 2)]
+
+        for other_key in self._all_keys():
+            if other_key == key:
+                continue
+            o = self._get_elem(other_key)
+            if not o.visible:
+                continue
+            o_xs = [o.x, o.x + o.w, o.x + o.w / 2]
+            o_ys = [o.y, o.y + o.h, o.y + o.h / 2]
+
+            for ex, x_offset in e_xs:
+                for ox in o_xs:
+                    d = abs(ex - ox)
+                    if d < dist_x:
+                        dist_x       = d
+                        best_dx      = ox - x_offset   # new elem.x
+                        best_x_guide = ox
+
+            for ey, y_offset in e_ys:
+                for oy in o_ys:
+                    d = abs(ey - oy)
+                    if d < dist_y:
+                        dist_y       = d
+                        best_dy      = oy - y_offset   # new elem.y
+                        best_y_guide = oy
+
+        guides = []
+        if best_dx is not None:
+            elem.x = max(0.0, min(1.0 - elem.w, best_dx))
+            guides.append(('v', best_x_guide))
+        if best_dy is not None:
+            elem.y = max(0.0, min(1.0 - elem.h, best_dy))
+            guides.append(('h', best_y_guide))
+        self._snap_guides = guides
+
+    def _apply_size_snap(self, elem) -> None:
+        """Round element size to the nearest SNAP_SIZE_STEP grid increment."""
+        elem.w = max(SNAP_SIZE_STEP, round(elem.w / SNAP_SIZE_STEP) * SNAP_SIZE_STEP)
+        elem.h = max(SNAP_SIZE_STEP, round(elem.h / SNAP_SIZE_STEP) * SNAP_SIZE_STEP)
+
     # ── Mouse events ─────────────────────────────────────────────────────────
 
     def _on_hover(self, event) -> None:
@@ -329,9 +415,12 @@ class OverlayEditor(tk.Frame):
         dy = (event.y - d['my']) / d['dh']
         elem = self._get_elem(d['key'])
 
+        self._snap_guides = []   # reset guides each frame
+
         if d['mode'] == 'move':
             elem.x = max(0.0, min(1.0 - d['ew'], d['ex'] + dx))
             elem.y = max(0.0, min(1.0 - d['eh'], d['ey'] + dy))
+            self._apply_move_snap(d['key'], elem)
         else:
             h = d['handle']
             if 'E' in h:
@@ -350,10 +439,13 @@ class OverlayEditor(tk.Frame):
                 elem.h = d['eh'] - (new_y - d['ey'])
                 elem.h = max(MIN_NORM, elem.h)
                 elem.y = new_y
+            # Snap width and height to size grid
+            self._apply_size_snap(elem)
 
         self._redraw()
 
     def _snap(self, elem) -> None:
+        """Snap element to screen edges on release."""
         if elem.x < SNAP_NORM:
             elem.x = 0.0
         if elem.x + elem.w > 1.0 - SNAP_NORM:
@@ -365,8 +457,10 @@ class OverlayEditor(tk.Frame):
 
     def _on_release(self, _event) -> None:
         if self._drag:
-            key = self._drag['key']
-            self._snap(self._get_elem(key))
+            key  = self._drag['key']
+            elem = self._get_elem(key)
+            self._snap(elem)
+            self._snap_guides = []
             self._drag = None
             self._redraw()
             self._request_preview(key)

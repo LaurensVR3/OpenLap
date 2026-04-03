@@ -25,6 +25,13 @@ def render(data: dict, w: int, h: int):
     unit    = data.get('unit',    '')
     channel = data.get('channel', '')
 
+    T         = data.get('_tc', {})
+    bg_rgba   = T.get('bg_rgba',      (0, 0, 0, 0.72))
+    bg_edge   = T.get('bg_edge_rgba', (1, 1, 1, 0.07))
+    text_col  = T.get('text',         'white')
+    label_col = T.get('label',        '#445566')
+    unit_col  = T.get('unit',         '#5577aa')
+
     sc  = scale_factor(w, h, base_w=120, base_h=160)
     dpi = 100
     fig = plt.figure(figsize=(w / dpi, h / dpi), dpi=dpi)
@@ -37,7 +44,7 @@ def render(data: dict, w: int, h: int):
 
     ax.add_patch(FancyBboxPatch((0.04, 0.04), 0.92, 0.92,
         boxstyle='round,pad=0.02',
-        facecolor=(0, 0, 0, 0.72), edgecolor=(1, 1, 1, 0.07), linewidth=1))
+        facecolor=bg_rgba, edgecolor=bg_edge, linewidth=1))
 
     fs_label = max(5,  min(int(11 * sc), int(w * 0.13)))
     fs_value = max(10, min(int(34 * sc), int(w * 0.38)))
@@ -59,13 +66,13 @@ def render(data: dict, w: int, h: int):
         txt = f"{value:.2f}"
 
     ax.text(0.50, 0.78, label.upper(),
-            ha='center', va='center', color='#445566',
+            ha='center', va='center', color=label_col,
             fontsize=fs_label, fontfamily='monospace')
     ax.text(0.50, 0.50, txt,
-            ha='center', va='center', color='white',
+            ha='center', va='center', color=text_col,
             fontsize=fs_value, fontweight='bold', fontfamily='monospace')
     ax.text(0.50, 0.24, unit,
-            ha='center', va='center', color='#5577aa',
+            ha='center', va='center', color=unit_col,
             fontsize=fs_unit, fontfamily='monospace')
 
     return fig_to_rgba(fig, (w, h))
