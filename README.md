@@ -1,6 +1,6 @@
 # OpenLap
 
-**OpenLap** is an open-source desktop application that overlays telemetry data on top of racing video footage. It is data-source agnostic — RaceBox is supported today, with MoTeC and others planned.
+**OpenLap** is an open-source desktop application that overlays telemetry data on top of racing video footage. It is data-source agnostic — RaceBox and AIM Mychron are supported today, with MoTeC and others planned.
 
 > Licensed under the GNU General Public License v3. Free forever, forks must stay free.
 
@@ -10,11 +10,14 @@
 
 - Match telemetry sessions to video files automatically
 - Align telemetry and video with a frame-accurate sync tool
-- Drag-and-resize overlay elements directly on a video preview
+- Individual, draggable gauge overlays per channel (Speed, RPM, G-Force, Lean Angle, etc.)
+- Multiple gauge styles per channel — Numeric, Bar, Dial, Line, Lean
+- Save, load, and delete named overlay preset layouts
 - Plugin-based style system — drop a `.py` file into `styles/` and it appears in the UI
 - Export single laps, full sessions, or all laps in one click
 - GPU-accelerated encoding (NVENC/VAAPI/VideoToolbox) with auto-detection
 - Persistent sync offsets — set once, remembered forever per session
+- Manual multi-clip video assignment per session
 
 ---
 
@@ -61,14 +64,19 @@ Set your **telemetry folder**, **video folder**, and **export folder** once. The
 ### 2. Data tab
 Click **Scan** (or it runs automatically on startup) to discover all sessions and match them with video files.
 
+- AIM Mychron `.XRK` files are automatically converted to CSV on scan
+- Click a session to select it and view its laps
+- Use **Reassign Video** to manually link a session to a specific video file
+
 Select a session and use the **Align Video** panel to sync telemetry with footage:
 - Scrub to the moment the lap starts
 - Press **M** (or the Mark button) to lock the offset
 - The offset is saved immediately and restored on next scan
 
 ### 3. Export tab
-- Drag and resize the **Map** and **Telemetry** overlay boxes on the video preview
-- Pick a style for each element from the dropdowns
+- Add gauge elements from the **Add Gauge** panel — pick a channel and style for each
+- Drag and resize each gauge and the **Map** overlay on the video preview
+- Save the current layout as a named **preset**, or load/delete existing presets
 - Choose export scope: Fastest Lap, Full Session, or All Laps
 - Click **Export**
 
@@ -80,74 +88,92 @@ Select a session and use the **Align Video** panel to sync telemetry with footag
 openlap.pyw             Entry point — launch this to start the app
 
 app_shell.py            Main window: 3-tab sidebar, queue dispatcher, shared state
-app_config.py           Persistent config (paths, sync offsets, overlay layout)
+app_config.py           Persistent config (paths, sync offsets, overlay layout, presets)
                         Saved to ~/.openlap/config.json
 
 design_tokens.py        Colours, fonts, spacing constants
 widgets.py              Shared UI primitives (Divider, etc.)
 
 page_data.py            Data tab — session tree, video matching, sync panel
-page_export.py          Export tab — overlay editor, style pickers, export controls
+page_export.py          Export tab — gauge editor, preset management, export controls
 page_settings.py        Settings tab — folder paths, RaceBox download, encoder info
 
 overlay_editor.py       Drag-and-resize canvas widget (letterbox-aware)
 overlay_worker.py       Per-frame render worker (called by multiprocessing pool)
 overlay_utils.py        Shared helpers: blend_rgba, fig_to_rgba, dummy data generators
 
+gauge_channels.py       Channel metadata and data-builder for the gauge system
+
 video_renderer.py       render_lap(), concat_videos(), detect_encoder()
 
-session_scanner.py      Scan folders, match CSV sessions to video files
+session_scanner.py      Scan folders, match sessions to video files, auto-convert XRK
 racebox_data.py         Parse RaceBox CSV files into Session/Lap objects
 racebox_downloader.py   Download new sessions from RaceBox cloud (Playwright)
+aim_data.py             Parse AIM Mychron CSV files into Session/Lap objects
+xrk_to_csv.py           Convert AIM .XRK binary files to CSV (RPM, exhaust temp, etc.)
 
 style_registry.py       Discover, load and call style plugins from styles/
 
 styles/
   map_circuit.py        Map style: circuit trace with current position dot
-  telemetry_strip.py    Telemetry style: horizontal strip (speed, G-force, timer)
-  telemetry_gforce.py   Telemetry style: G-force crosshair with fading trail
-  speedo.py             Telemetry style: speedometer arc gauge
+  gauge_numeric.py      Gauge style: plain numeric readout
+  gauge_bar.py          Gauge style: horizontal/vertical bar
+  gauge_dial.py         Gauge style: arc dial
+  gauge_line.py         Gauge style: scrolling line graph
+  gauge_lean.py         Gauge style: lean-angle indicator (bike mode only)
 ```
 
 ---
 
-## Writing a Custom Style
+## Writing a Custom Gauge Style
 
-Create a file in the `styles/` folder. It needs three things:
+Create a file in the `styles/` folder named `gauge_<name>.py`. It needs:
 
 ```python
-STYLE_NAME   = "My Style"       # shown in the UI dropdown
-ELEMENT_TYPE = "telemetry"      # "telemetry" or "map"
+STYLE_NAME   = "My Style"   # shown in the UI dropdown
+ELEMENT_TYPE = "gauge"      # must be "gauge"
 
 def render(data: dict, w: int, h: int) -> np.ndarray:
     """Return an RGBA numpy array of shape (h, w, 4)."""
     ...
 ```
 
-### `data` keys for `telemetry` styles
+### `data` keys for `gauge` styles
 
 | Key | Type | Description |
 |---|---|---|
-| `speed_history` | `list[float]` | Speed values (km/h), most recent last |
-| `gx_history` | `list[float]` | Lateral G-force history |
-| `gy_history` | `list[float]` | Longitudinal G-force history |
-| `speed` | `float` | Current speed (km/h) |
-| `gx` | `float` | Current lateral G |
-| `gy` | `float` | Current longitudinal G |
-| `lean` | `float` | Lean angle in degrees (bikes only) |
-| `lap_time` | `float` | Elapsed lap time in seconds |
-| `lap_duration` | `float` | Total lap duration in seconds |
-| `is_bike` | `bool` | True if session is a motorbike |
+| `channel` | `str` | Channel identifier (e.g. `"speed"`, `"rpm"`) |
+| `value` | `float` | Current value |
+| `history_vals` | `list[float]` | Recent history, most recent last |
+| `label` | `str` | Human-readable channel name |
+| `unit` | `str` | Unit string (e.g. `"km/h"`, `"°C"`) |
+| `min_val` | `float` | Expected minimum for scaling |
+| `max_val` | `float` | Expected maximum for scaling |
+| `symmetric` | `bool` | True if the range is centred on zero (e.g. G-force) |
 
-### `data` keys for `map` styles
+### Available channels
+
+| Channel | Label | Unit |
+|---|---|---|
+| `speed` | Speed | km/h |
+| `rpm` | RPM | rpm |
+| `exhaust_temp` | Exhaust Temp | °C |
+| `gforce_lon` | Long G | G |
+| `gforce_lat` | Lat G | G |
+| `lean` | Lean | ° |
+| `lap_time` | Lap Time | s |
+
+Drop the file into `styles/` and restart the app — it appears in the style picker immediately. No registration needed.
+
+### Writing a Custom Map Style
+
+Map styles work the same way but use `ELEMENT_TYPE = "map"` and receive different data:
 
 | Key | Type | Description |
 |---|---|---|
 | `lats` | `list[float]` | Latitude points for the full track |
 | `lons` | `list[float]` | Longitude points for the full track |
 | `cur_idx` | `int` | Index of the current position in the track |
-
-Drop the file into `styles/` and restart the app — it appears in the style picker immediately. No registration needed.
 
 ---
 
@@ -156,6 +182,7 @@ Drop the file into `styles/` and restart the app — it appears in the style pic
 | Source | Status |
 |---|---|
 | RaceBox | Supported |
+| AIM Mychron (XRK) | Supported |
 | MoTeC | Coming soon |
 
 ---
