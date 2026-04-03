@@ -82,16 +82,30 @@ def mux_audio(raw_video: str, audio_source: str,
                output: str, encoder: str, crf: int = 18,
                audio_start: float = 0.0) -> None:
     """Re-encode raw opencv video with hardware encoder + trim audio."""
-    q_map = {'h264_nvenc': '24', 'h264_amf': '24',
-             'h264_qsv':   '24', 'libx264':  str(crf)}
-    q     = q_map.get(encoder, str(crf))
-    q_arg = ['-crf', q] if encoder == 'libx264' else ['-qp', q]
+    # Quality args — nvenc uses -cq (constant quality, like CRF) not -qp (fixed QP)
+    if encoder == 'libx264':
+        q_arg = ['-crf', str(crf)]
+    elif encoder == 'h264_nvenc':
+        q_arg = ['-rc', 'vbr', '-cq', str(crf), '-b:v', '0']
+    else:
+        q_arg = ['-qp', str(crf)]
 
+    # Force yuv420p: MJPG from OpenCV is yuvj420p (full-range) which hardware
+    # encoders (nvenc/amf/qsv) reject.  Also ensure even dimensions.
+    vf = 'scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p'
+
+    # -profile:v main + -g 60: broad player compatibility + regular keyframes
+    # -movflags +faststart: moov atom at file start, required for proper seeking
     cmd = ['ffmpeg', '-y',
            '-i', raw_video,
            '-ss', f'{audio_start:.6f}', '-i', audio_source,
            '-map', '0:v', '-map', '1:a?',
-           '-c:v', encoder] + q_arg + ['-c:a', 'aac', '-shortest', output]
+           '-vf', vf,
+           '-c:v', encoder] + q_arg + [
+           '-profile:v', 'main', '-g', '60',
+           '-c:a', 'aac', '-shortest',
+           '-movflags', '+faststart',
+           output]
     r = _run(cmd)
     if r.returncode != 0:
         raise RuntimeError(r.stderr.decode(errors='replace')[-600:])
@@ -163,6 +177,8 @@ def render_lap(
     vh    = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     # ── Frame range ────────────────────────────────────────────────────────────
+    sync_offset = sync_offset or 0.0   # treat None (not set) as 0.0
+
     if job.gpx_start is not None:
         vid_lap_start = sync_offset + job.gpx_start
         vid_lap_end   = sync_offset + job.gpx_end
@@ -180,11 +196,21 @@ def render_lap(
     n_frames    = f_end - f_start
     audio_start = vid_start
 
-    log(f"  Encoder: {encoder}  |  Video: {vw}×{vh} @ {fps:.2f}fps")
+    vid_dur_s = total / fps if fps else 0.0
+    log(f"  Encoder: {encoder}  |  Video: {vw}×{vh} @ {fps:.2f}fps  |  Duration: {vid_dur_s:.1f}s")
     if job.gpx_start is not None:
-        log(f"  Lap window:   {job.gpx_start:.2f}s → {job.gpx_end:.2f}s")
-        log(f"  With padding: {vid_start:.2f}s → {vid_end:.2f}s")
-    log(f"  Frames: {f_start}–{f_end} ({n_frames})")
+        log(f"  Lap duration: {job.duration:.2f}s  (session pos: {job.gpx_start:.1f}s → {job.gpx_end:.1f}s)")
+        log(f"  Sync offset:  {sync_offset:.3f}s  →  video window: {vid_start:.1f}s → {vid_end:.1f}s  ({n_frames} frames)")
+
+    if n_frames <= 0:
+        cap.release()
+        need_start = vid_lap_start - padding
+        raise ValueError(
+            f"Lap is {job.duration:.1f}s long (at session position {job.gpx_start:.1f}s–{job.gpx_end:.1f}s), "
+            f"but with sync offset {sync_offset:.1f}s this maps to video time {need_start:.1f}s–{vid_lap_end+padding:.1f}s, "
+            f"which is outside the video duration of {vid_dur_s:.1f}s. "
+            f"Set the sync offset in the Data tab (scrub to where lap 1 starts, then click Mark)."
+        )
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, f_start)
 
@@ -222,73 +248,78 @@ def render_lap(
     frame_idx = f_start
     processed = 0
 
-    while frame_idx < f_end:
-        chunk_frames, chunk_meta = [], []
+    pool = Pool(n_workers) if n_workers > 1 else None
+    try:
+        while frame_idx < f_end:
+            chunk_frames, chunk_meta = [], []
 
-        for _ in range(chunk):
-            if frame_idx >= f_end:
+            for _ in range(chunk):
+                if frame_idx >= f_end:
+                    break
+                ret, frm = cap.read()
+                if not ret:
+                    break
+
+                vid_t     = frame_idx / fps
+                sess_t    = vid_t - sync_offset
+                raw_lap_t = sess_t - lap_t0
+                lap_t_display = (min(raw_lap_t, lap_dur)
+                                 if job.gpx_start is not None else raw_lap_t)
+
+                pt = session.interpolate_at(sess_t)
+                if pt:
+                    history_buf.append({
+                        't':           lap_t_display,
+                        'speed':       pt.speed,
+                        'gx':          pt.gforce_x,
+                        'gy':          pt.gforce_y,
+                        'lean':        pt.lean_angle,
+                        'rpm':         pt.rpm,
+                        'exhaust_temp':pt.exhaust_temp,
+                    })
+                    if len(history_buf) > HISTORY_MAX:
+                        history_buf.pop(0)
+
+                cur_map_idx = 0
+                if pt and map_arr:
+                    best_d = float('inf')
+                    for mi, (mlat, mlon) in enumerate(map_arr):
+                        d = (mlat - pt.lat)**2 + (mlon - pt.lon)**2
+                        if d < best_d:
+                            best_d, cur_map_idx = d, mi
+
+                chunk_frames.append(frm)
+                chunk_meta.append((list(history_buf), cur_map_idx))
+                frame_idx += 1
+
+            if not chunk_frames:
                 break
-            ret, frm = cap.read()
-            if not ret:
-                break
 
-            vid_t     = frame_idx / fps
-            sess_t    = vid_t - sync_offset
-            raw_lap_t = sess_t - lap_t0
-            lap_t_display = (min(raw_lap_t, lap_dur)
-                             if job.gpx_start is not None else raw_lap_t)
+            args_list = [
+                (frm.tobytes(), frm.shape, cur_map_idx,
+                 map_lats, map_lons,
+                 hist, lap_dur,
+                 vw, vh,
+                 show_map, show_telemetry,
+                 is_bike,
+                 layout,
+                 max_speed)
+                for frm, (hist, cur_map_idx) in zip(chunk_frames, chunk_meta)
+            ]
 
-            pt = session.interpolate_at(sess_t)
-            if pt:
-                history_buf.append({
-                    't':     lap_t_display,
-                    'speed': pt.speed,
-                    'gx':    pt.gforce_x,
-                    'gy':    pt.gforce_y,
-                    'lean':  pt.lean_angle,
-                })
-                if len(history_buf) > HISTORY_MAX:
-                    history_buf.pop(0)
+            results = pool.map(render_frame_worker, args_list) if pool else \
+                      [render_frame_worker(a) for a in args_list]
 
-            cur_map_idx = 0
-            if pt and map_arr:
-                best_d = float('inf')
-                for mi, (mlat, mlon) in enumerate(map_arr):
-                    d = (mlat - pt.lat)**2 + (mlon - pt.lon)**2
-                    if d < best_d:
-                        best_d, cur_map_idx = d, mi
+            shape = chunk_frames[0].shape
+            for raw in results:
+                writer.write(np.frombuffer(raw, dtype=np.uint8).reshape(shape))
+                processed += 1
 
-            chunk_frames.append(frm)
-            chunk_meta.append((list(history_buf), cur_map_idx))
-            frame_idx += 1
-
-        if not chunk_frames:
-            break
-
-        args_list = [
-            (frm.tobytes(), frm.shape, cur_map_idx,
-             map_lats, map_lons,
-             hist, lap_dur,
-             vw, vh,
-             show_map, show_telemetry,
-             is_bike,
-             layout,
-             max_speed)
-            for frm, (hist, cur_map_idx) in zip(chunk_frames, chunk_meta)
-        ]
-
-        if n_workers > 1:
-            with Pool(n_workers) as pool:
-                results = pool.map(render_frame_worker, args_list)
-        else:
-            results = [render_frame_worker(a) for a in args_list]
-
-        shape = chunk_frames[0].shape
-        for raw in results:
-            writer.write(np.frombuffer(raw, dtype=np.uint8).reshape(shape))
-            processed += 1
-
-        prog(processed / n_frames * 85, f"Frame {processed}/{n_frames}")
+            prog(processed / n_frames * 85, f"Frame {processed}/{n_frames}")
+    finally:
+        if pool:
+            pool.terminate()
+            pool.join()
 
     cap.release()
     writer.release()

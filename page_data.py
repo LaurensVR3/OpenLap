@@ -10,16 +10,20 @@ from typing import List, Optional
 
 from design_tokens import BG, CARD, CARD2, BORDER, ACC, ACC2, OK, WARN, ERR, TEXT, TEXT2, TEXT3, font
 from widgets import Card, Btn, Divider
-from racebox_data import load_csv, Session
+from racebox_data import Session
+import racebox_data
+import aim_data
 from video_renderer import concat_videos, video_duration
 from session_scanner import (scan_csvs, scan_videos, group_videos, match_sessions,
-                      MatchedSession)
+                      convert_xrk_files, scan_pending_xrk, MatchedSession,
+                      VideoFile, VideoGroup)
 
 
 # Status icons
 ICON_SYNCED   = "✓"   # has video + offset
 ICON_UNSYNCED = "≈"   # has video, no offset yet
 ICON_NOVIDEO  = "✗"   # no matching video
+ICON_PENDING  = "⟳"   # XRK not yet converted
 
 
 class DataPage(tk.Frame):
@@ -112,21 +116,10 @@ class DataPage(tk.Frame):
         self.tree.tag_configure('synced',   foreground=OK)
         self.tree.tag_configure('unsynced', foreground=WARN)
         self.tree.tag_configure('novideo',  foreground=TEXT3)
+        self.tree.tag_configure('pending',  foreground=ACC)
         self.tree.bind('<<TreeviewSelect>>', self._on_select)
 
-        # Selection bar under tree
-        sel_bar = tk.Frame(left, bg=BG)
-        sel_bar.pack(fill='x', pady=(6, 0))
-        tk.Label(sel_bar, text="Select:", bg=BG, fg=TEXT2,
-                 font=font(9)).pack(side='left')
         self._sel_mode = tk.StringVar(value="session")
-        for lbl, val in [("All", "all"), ("This Day", "day"),
-                         ("This Session", "session"), ("Fastest Lap", "fastest")]:
-            tk.Radiobutton(sel_bar, text=lbl, variable=self._sel_mode,
-                           value=val, bg=BG, fg=TEXT2, selectcolor=CARD,
-                           activebackground=BG, font=font(9)).pack(side='left', padx=4)
-        Btn(sel_bar, "Apply", command=self._apply_selection,
-            small=True).pack(side='left', padx=8)
 
         # ── Detail panel ──────────────────────────────────────────────────────
         self._detail = tk.Frame(right, bg=BG)
@@ -145,6 +138,26 @@ class DataPage(tk.Frame):
         for w in self._detail.winfo_children():
             w.destroy()
 
+        # ── Pending XRK: show convert panel and return early ──────────────────
+        if match.needs_conversion:
+            conv_card = Card(self._detail, title="AIM MYCHRON — CONVERT")
+            conv_card.pack(fill='x', pady=(0, 8))
+            xrk_name = os.path.basename(match.xrk_path)
+            tk.Label(conv_card.body, text=xrk_name, bg=CARD, fg=TEXT,
+                     font=font(9)).pack(anchor='w', pady=(0, 6))
+            tk.Label(conv_card.body,
+                     text="This file has not been converted yet.\n"
+                          "Click Convert to generate the CSV.\n"
+                          "The AIM MatLabXRK DLL will be downloaded if needed.",
+                     bg=CARD, fg=TEXT3, font=font(8), justify='left').pack(anchor='w')
+            self.lbl_conv_status = tk.Label(conv_card.body, text="", bg=CARD,
+                                            fg=WARN, font=font(8))
+            self.lbl_conv_status.pack(anchor='w', pady=(6, 0))
+            self.btn_convert = Btn(conv_card.body, "⟳  Convert to CSV",
+                                   command=self._convert_session, accent=True)
+            self.btn_convert.pack(anchor='w', pady=(8, 0))
+            return
+
         # ── Info card ─────────────────────────────────────────────────────────
         info = Card(self._detail, title="SESSION INFO")
         info.pack(fill='x', pady=(0, 8))
@@ -160,6 +173,7 @@ class DataPage(tk.Frame):
         csv = match.csv_path
         sess = self._sel_session
         if sess:
+            info_row("Source",  sess.source or "—")
             info_row("Track",   sess.track or "—")
             info_row("Config",  sess.configuration or "—")
             info_row("Date",    sess.date_utc or "—")
@@ -188,12 +202,13 @@ class DataPage(tk.Frame):
         else:
             info_row("Offset", "not set", WARN)
 
+        # Always allow changing / assigning video
+        Btn(info.body, "📂  Assign video…",
+            command=lambda: self._manual_assign_video(match),
+            small=True).pack(anchor='w', pady=(6, 0))
+
         # ── Align section (only if video matched) ─────────────────────────────
         if not match.matched:
-            tk.Label(self._detail,
-                     text="No video matched for this session.\nCheck your video folder in Settings.",
-                     bg=BG, fg=TEXT3, font=font(8), justify='center').pack(
-                pady=12)
             return
 
         align_card = Card(self._detail, title="ALIGN VIDEO")
@@ -269,7 +284,9 @@ class DataPage(tk.Frame):
                 self._csv_to_match[csv] = m
 
                 offset = self.app.config.offsets.get(os.path.abspath(csv))
-                if m.matched and offset is not None:
+                if m.needs_conversion:
+                    icon = ICON_PENDING;  tag = 'pending'
+                elif m.matched and offset is not None:
                     icon = ICON_SYNCED;   tag = 'synced'
                 elif m.matched:
                     icon = ICON_UNSYNCED; tag = 'unsynced'
@@ -278,8 +295,11 @@ class DataPage(tk.Frame):
 
                 time_str = m.csv_start.strftime('%H:%M') if m.csv_start else '—'
 
-                # Try to get track/laps/best from already-loaded session or quick header read
-                track, laps_str, best_str = self._quick_meta(csv)
+                if m.needs_conversion:
+                    xrk_name = os.path.splitext(os.path.basename(m.xrk_path))[0]
+                    track, laps_str, best_str = f'[AIM] {xrk_name}', '—', '—'
+                else:
+                    track, laps_str, best_str = self._quick_meta(csv)
 
                 self.tree.insert(
                     day_id, 'end', iid=csv, tags=(tag,),
@@ -290,7 +310,14 @@ class DataPage(tk.Frame):
         track = laps_str = best_str = '—'
         try:
             with open(csv_path, encoding='utf-8-sig', errors='ignore') as f:
-                for line in f:
+                first_line = f.readline()
+                if first_line.startswith('Time (s),'):
+                    # AIM CSV — no metadata block; show source tag + filename
+                    track = '[AIM] ' + os.path.splitext(os.path.basename(csv_path))[0]
+                    return track, laps_str, best_str
+                # RaceBox CSV — read key-value metadata header
+                from itertools import chain
+                for line in chain([first_line], f):
                     if line.startswith('Track,'):
                         track = line.strip().split(',', 1)[1]
                     elif line.startswith('Laps,'):
@@ -340,10 +367,46 @@ class DataPage(tk.Frame):
 
     def _load_session_bg(self, csv_path: str):
         try:
-            sess = load_csv(csv_path)
-            self.app.q.put(('data_session_loaded', csv_path, sess))
+            if aim_data.is_aim_csv(csv_path):
+                sess = aim_data.load_csv(csv_path)
+            else:
+                sess = racebox_data.load_csv(csv_path)
+            self.app.q.put(('data_session_loaded', csv_path, sess, None))
         except Exception as e:
-            self.app.q.put(('data_session_loaded', csv_path, None))
+            self.app.q.put(('data_session_loaded', csv_path, None, str(e)))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  XRK on-demand conversion
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _convert_session(self):
+        if not self._sel_match or not self._sel_match.needs_conversion:
+            return
+        self.btn_convert.config(state='disabled', text='Converting…')
+        self.lbl_conv_status.config(text='Starting…', fg=WARN)
+        threading.Thread(
+            target=self._convert_bg,
+            args=(self._sel_match.xrk_path, self._sel_match.csv_path),
+            daemon=True,
+        ).start()
+
+    def _convert_bg(self, xrk_path: str, csv_path: str):
+        import contextlib, io as _io
+        def _status(msg: str):
+            self.app.q.put(('data_xrk_status', msg))
+        try:
+            import xrk_to_csv as _xrk
+            _status('Locating AIM MatLabXRK DLL…')
+            dll_path = _xrk._find_dll()
+            _status(f'Converting {os.path.basename(xrk_path)}…')
+            buf = _io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                _xrk.xrk_to_csv(xrk_path, csv_path, dll_path)
+            self.app.q.put(('data_xrk_converted', xrk_path, csv_path))
+        except SystemExit as e:
+            self.app.q.put(('data_xrk_convert_failed', str(e)))
+        except Exception as e:
+            self.app.q.put(('data_xrk_convert_failed', str(e)))
 
     def _apply_selection(self, silent=False):
         """Build app.selected_items from current tree selection + mode."""
@@ -368,12 +431,6 @@ class DataPage(tk.Frame):
                                   'videos': m.video_group.paths,
                                   'offset': self.app.config.offsets.get(
                                       os.path.abspath(m.csv_path))})
-        elif mode == 'fastest' and self._sel_match and self._sel_match.matched:
-            m = self._sel_match
-            items.append({'csv': m.csv_path, 'videos': m.video_group.paths,
-                          'offset': self.app.config.offsets.get(
-                              os.path.abspath(m.csv_path)),
-                          'lap_mode': 'fastest'})
         else:  # 'session'
             if self._sel_match and self._sel_match.matched:
                 m = self._sel_match
@@ -415,6 +472,13 @@ class DataPage(tk.Frame):
 
     def _scan_bg(self, tel_path: str, vid_path: str):
         try:
+            from datetime import datetime, timezone
+
+            def _xrk_progress(msg: str):
+                self.app.q.put(('data_scan_progress', msg))
+
+            convert_xrk_files(tel_path, progress_cb=_xrk_progress)
+
             csvs   = scan_csvs(tel_path)
             if vid_path and os.path.isdir(vid_path):
                 videos = scan_videos(vid_path)
@@ -422,10 +486,53 @@ class DataPage(tk.Frame):
             else:
                 groups = []
             matches = match_sessions(csvs, groups)
+
+            # Any XRK files still without a CSV (conversion failed or first run)
+            # appear as pending items so the user can see and retry them.
+            for xrk_path, csv_path in scan_pending_xrk(tel_path):
+                mtime = os.path.getmtime(xrk_path)
+                matches.append(MatchedSession(
+                    csv_path         = csv_path,
+                    video_group      = None,
+                    time_delta       = float('inf'),
+                    csv_start        = datetime.fromtimestamp(mtime, tz=timezone.utc),
+                    video_start      = None,
+                    matched          = False,
+                    source           = 'AIM Mychron',
+                    needs_conversion = True,
+                    xrk_path         = xrk_path,
+                ))
+
+            matches.sort(key=lambda m: m.csv_start.timestamp() if m.csv_start else 0)
             self.app.q.put(('data_scanned', matches))
         except Exception as e:
             import traceback
             self.app.q.put(('data_scan_error', str(e)))
+
+    def _manual_assign_video(self, match: MatchedSession):
+        from tkinter import filedialog
+        paths = filedialog.askopenfilenames(
+            title="Select video file(s) for this session — select multiple for multi-clip sessions",
+            filetypes=[("Video files", "*.mp4 *.mov *.avi *.mkv *.MP4 *.MOV *.AVI *.MKV"),
+                       ("All files", "*.*")])
+        if not paths:
+            return
+        files = []
+        total_dur = 0.0
+        for path in sorted(paths):   # sort by filename so DJI_001/002/003 are in order
+            dur = 0.0
+            try:
+                dur = video_duration(path)
+            except Exception:
+                pass
+            files.append(VideoFile(path=path, creation_time=None, duration=dur))
+            total_dur += dur
+        match.video_group = VideoGroup(files=files, start_time=None,
+                                       end_time=None, total_dur=total_dur)
+        match.matched    = True
+        match.time_delta = 0.0
+        # Rebuild detail panel with video now assigned
+        self._build_detail_session(match)
 
     # ─────────────────────────────────────────────────────────────────────────
     #  Sync panel — video scrubbing (same logic as old SyncPage)
@@ -556,8 +663,9 @@ class DataPage(tk.Frame):
             abs_csv = os.path.abspath(self._sel_csv)
             self.app.config.offsets[abs_csv] = offset
             self.app.config.save()
-            # Refresh tree icon
+            # Refresh tree icon and propagate to Export tab
             self._refresh_row_icon(self._sel_csv)
+            self._apply_selection(silent=True)
 
     def _refresh_row_icon(self, csv_iid: str):
         m      = self._csv_to_match.get(csv_iid)
@@ -589,20 +697,48 @@ class DataPage(tk.Frame):
             synced  = sum(1 for m in matches
                           if m.matched and
                           self.app.config.offsets.get(os.path.abspath(m.csv_path)) is not None)
-            self.lbl_status.config(
-                text=f"{total} sessions · {matched} with video · {synced} synced",
-                fg=TEXT2)
+            by_src: dict = {}
+            for m in matches:
+                by_src[m.source] = by_src.get(m.source, 0) + 1
+            src_str = '  ·  '.join(f"{v} {k}" for k, v in sorted(by_src.items()))
+            if total == 0:
+                status = "No sessions found — check your Telemetry Folder in Settings."
+                col    = WARN
+            else:
+                status = f"{src_str}  ·  {matched} with video  ·  {synced} synced"
+                col    = TEXT2
+            self.lbl_status.config(text=status, fg=col)
+
+        elif kind == 'data_scan_progress':
+            self.lbl_status.config(text=args[0], fg=WARN)
 
         elif kind == 'data_scan_error':
             self.lbl_status.config(text=f"Scan error: {args[0]}", fg=ERR)
 
         elif kind == 'data_session_loaded':
-            csv_path, sess = args
+            csv_path, sess, err = args
             if csv_path == self._sel_csv:
                 self._sel_session = sess
-                # Refresh detail panel with session info
                 if self._sel_match:
                     self._build_detail_session(self._sel_match)
+
+            # Update tree row with real metadata now that the session is loaded
+            if sess is not None:
+                try:
+                    laps_str = str(len(sess.timed_laps)) if sess.timed_laps else '0'
+                    best_str = f"{sess.best_lap_time:.3f}s" if sess.best_lap_time else '—'
+                    track_str = sess.track or os.path.splitext(os.path.basename(csv_path))[0]
+                    if sess.source == 'AIM Mychron':
+                        track_str = '[AIM] ' + track_str
+                    vals = list(self.tree.item(csv_path, 'values'))
+                    vals[2] = track_str
+                    vals[3] = laps_str
+                    vals[4] = best_str
+                    self.tree.item(csv_path, values=vals)
+                except Exception:
+                    pass
+            elif err:
+                self.lbl_status.config(text=f"Load error: {err}", fg=ERR)
 
         elif kind == 'data_sync_open':
             self._open_sync_cap(args[0])
@@ -614,6 +750,24 @@ class DataPage(tk.Frame):
         elif kind == 'data_enable_load_btn':
             if hasattr(self, 'btn_load_prev'):
                 self.btn_load_prev.config(state='normal')
+
+        elif kind == 'data_xrk_status':
+            if hasattr(self, 'lbl_conv_status'):
+                self.lbl_conv_status.config(text=args[0], fg=WARN)
+
+        elif kind == 'data_xrk_converted':
+            _xrk_path, csv_path = args
+            if hasattr(self, 'lbl_conv_status'):
+                self.lbl_conv_status.config(text='✓ Converted — rescanning…', fg=OK)
+            # Rescan so the new CSV appears as a proper session
+            self._scan()
+
+        elif kind == 'data_xrk_convert_failed':
+            msg = args[0]
+            if hasattr(self, 'lbl_conv_status'):
+                self.lbl_conv_status.config(text=f'✗ {msg}', fg=ERR)
+            if hasattr(self, 'btn_convert'):
+                self.btn_convert.config(state='normal', text='⟳  Retry Convert')
 
         elif kind == 'settings_changed':
             # Auto-rescan when paths change (only if we have a telemetry path)

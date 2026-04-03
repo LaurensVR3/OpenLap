@@ -1,5 +1,6 @@
 # page_settings.py — Settings: paths, RaceBox sync, encoder info
 
+import os
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog
@@ -45,12 +46,14 @@ class SettingsPage(tk.Frame):
                  font=font(15, bold=True)).pack(side='left')
 
         # ── Telemetry Sources ─────────────────────────────────────────────────
-        tk.Label(p, text="IMPORT PATHS", bg=BG, fg=TEXT2,
+        tk.Label(p, text="TELEMETRY SOURCES", bg=BG, fg=TEXT2,
                  font=font(8, bold=True)).pack(anchor='w', padx=24, pady=(16, 2))
 
         tel_card = Card(p, title="TELEMETRY FOLDER")
         tel_card.pack(fill='x', padx=24, pady=(0, 8))
-        self._path_row(tel_card.body, "CSVs are read from this folder (including subfolders).",
+        self._path_row(tel_card.body,
+                       "All telemetry files are read recursively from this folder. "
+                       "Supported: RaceBox CSV, AIM .xrk/.xrz/.drk (auto-converted).",
                        self.app.config.telemetry_path,
                        self._set_telemetry_path)
 
@@ -70,6 +73,19 @@ class SettingsPage(tk.Frame):
         self.lbl_rb_last = tk.Label(rb_card.body, text="",
                                     bg=CARD, fg=TEXT3, font=font(8))
         self.lbl_rb_last.pack(anchor='w', pady=(6, 0))
+
+        # AIM Mychron
+        aim_card = Card(p, title="AIM MYCHRON")
+        aim_card.pack(fill='x', padx=24, pady=(0, 8))
+        tk.Label(aim_card.body,
+                 text=".xrk / .xrz / .drk files are automatically converted to CSV on scan. "
+                      "Requires the AIM MatLabXRK DLL — downloaded automatically via browser "
+                      "(pip install playwright && playwright install chromium).",
+                 bg=CARD, fg=TEXT3, font=font(8), wraplength=520, justify='left'
+                 ).pack(anchor='w', pady=(0, 6))
+        self.lbl_aim_dll = tk.Label(aim_card.body, text="", bg=CARD, font=font(9))
+        self.lbl_aim_dll.pack(anchor='w')
+        self._refresh_aim_dll_status()
 
         # MoTeC placeholder
         motec_card = Card(p, title="MOTEC")
@@ -223,6 +239,18 @@ class SettingsPage(tk.Frame):
         except Exception as e:
             self.app.q.put(('rb_dl_log', f"Error: {e}"))
             self.app.q.put(('rb_dl_done', -1))
+
+    def _refresh_aim_dll_status(self) -> None:
+        import glob as _glob
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        dlls = _glob.glob(os.path.join(script_dir, "MatLabXRK*.dll"))
+        if dlls:
+            name = os.path.basename(sorted(dlls, reverse=True)[0])
+            self.lbl_aim_dll.config(text=f"✓ DLL found: {name}", fg=OK)
+        else:
+            self.lbl_aim_dll.config(
+                text="✗ DLL not found — will be downloaded automatically on first scan",
+                fg=WARN)
 
     def _update_encoder_label(self, enc: str) -> None:
         names = {

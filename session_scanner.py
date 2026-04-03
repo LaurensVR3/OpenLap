@@ -37,12 +37,16 @@ def _run(cmd, **kwargs):
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict, Tuple  # noqa: F401 – Tuple used in scan_pending_xrk
 
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.MP4', '.MOV', '.AVI', '.MKV'}
 CSV_EXTENSIONS   = {'.csv', '.CSV'}
 MAX_GAP          = 120.0    # seconds between consecutive segments of one recording
 MATCH_WINDOW     = 3600.0   # max seconds between CSV start and video group start
+
+# Sentinel stored on MatchedSession.csv_path entries to identify source type
+CSV_SOURCE_RACEBOX = 'racebox'
+CSV_SOURCE_AIM     = 'aim'
 
 
 # ── Video file info ────────────────────────────────────────────────────────────
@@ -146,21 +150,108 @@ def _make_group(files: List[VideoFile]) -> VideoGroup:
     return VideoGroup(files=files, start_time=start, end_time=end, total_dur=total)
 
 
+# ── XRK conversion ─────────────────────────────────────────────────────────────
+
+XRK_EXTENSIONS = {'.xrk', '.xrz', '.drk', '.XRK', '.XRZ', '.DRK'}
+
+
+def convert_xrk_files(folder: str, progress_cb=None) -> List[str]:
+    """
+    Walk *folder* for AIM XRK/XRZ/DRK files.  Any file that does not yet have
+    a matching .csv alongside it is converted using xrk_to_csv.py.
+
+    The AIM MatLabXRK DLL is downloaded automatically on first use (same logic
+    as running xrk_to_csv.py from the command line).
+
+    progress_cb(msg: str) is called with status strings if provided.
+    Returns the list of CSV paths that were newly created.
+    """
+    import contextlib
+    import io as _io
+
+    pending = []
+    for root, _, files in os.walk(folder):
+        for fname in sorted(files):
+            if Path(fname).suffix not in XRK_EXTENSIONS:
+                continue
+            xrk_path = os.path.join(root, fname)
+            csv_path = os.path.splitext(xrk_path)[0] + '.csv'
+            if not os.path.isfile(csv_path):
+                pending.append((xrk_path, csv_path))
+            else:
+                # Regenerate if the existing CSV is missing the Lap column
+                # (produced by an older version of xrk_to_csv.py)
+                try:
+                    with open(csv_path, 'r', encoding='utf-8-sig', errors='ignore') as _f:
+                        line1 = _f.readline()
+                        # Skip leading comment line (e.g. '# Session-Date: …')
+                        header = _f.readline() if line1.startswith('#') else line1
+                    if ',Lap,' not in header and not header.rstrip('\n').endswith(',Lap'):
+                        os.remove(csv_path)
+                        pending.append((xrk_path, csv_path))
+                except OSError:
+                    pass
+
+    if not pending:
+        return []
+
+    try:
+        import xrk_to_csv as _xrk
+    except ImportError:
+        if progress_cb:
+            progress_cb("xrk_to_csv.py not found — XRK conversion skipped")
+        return []
+
+    # Locate (or download) the DLL once for all files
+    if progress_cb:
+        progress_cb("Locating AIM MatLabXRK DLL…")
+    try:
+        dll_path = _xrk._find_dll()
+    except SystemExit as e:
+        if progress_cb:
+            progress_cb(f"XRK DLL unavailable: {e}")
+        return []
+    except Exception as e:
+        if progress_cb:
+            progress_cb(f"XRK DLL error: {e}")
+        return []
+
+    new_csvs: List[str] = []
+    for i, (xrk_path, csv_path) in enumerate(pending):
+        fname = os.path.basename(xrk_path)
+        if progress_cb:
+            progress_cb(f"Converting {fname}  ({i + 1}/{len(pending)})…")
+        try:
+            buf = _io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                _xrk.xrk_to_csv(xrk_path, csv_path, dll_path)
+            new_csvs.append(csv_path)
+        except SystemExit as e:
+            if progress_cb:
+                progress_cb(f"  ✗ {fname}: {e}")
+        except Exception as e:
+            if progress_cb:
+                progress_cb(f"  ✗ {fname}: {e}")
+
+    return new_csvs
+
+
 # ── CSV scanning ───────────────────────────────────────────────────────────────
 
 def scan_csvs(folder: str) -> List[str]:
-    """Recursively find all RaceBox CSV files."""
+    """Recursively find all RaceBox and AIM Mychron CSV files."""
     results = []
     for root, _, files in os.walk(folder):
         for fname in sorted(files):
             if Path(fname).suffix not in CSV_EXTENSIONS:
                 continue
             path = os.path.join(root, fname)
-            # Quick check: must contain 'Record,Time,' header
             try:
                 with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
                     content = f.read(2000)
                 if 'Record,Time,' in content and 'RaceBox' in content:
+                    results.append(path)
+                elif content.startswith('Time (s),') or '\nTime (s),' in content:
                     results.append(path)
             except Exception:
                 pass
@@ -171,12 +262,41 @@ def scan_csvs(folder: str) -> List[str]:
 
 @dataclass
 class MatchedSession:
-    csv_path:     str
-    video_group:  Optional[VideoGroup]
-    time_delta:   float           # seconds between CSV start and video group start
-    csv_start:    Optional[datetime]
-    video_start:  Optional[datetime]
-    matched:      bool            # True if within MATCH_WINDOW
+    csv_path:         str
+    video_group:      Optional[VideoGroup]
+    time_delta:       float            # seconds between CSV start and video group start
+    csv_start:        Optional[datetime]
+    video_start:      Optional[datetime]
+    matched:          bool             # True if within MATCH_WINDOW
+    source:           str  = 'RaceBox' # 'RaceBox' | 'AIM Mychron'
+    needs_conversion: bool = False     # True for XRK files not yet converted to CSV
+    xrk_path:         Optional[str] = None  # source XRK path when needs_conversion=True
+
+
+def scan_pending_xrk(folder: str) -> List[Tuple[str, str]]:
+    """Return (xrk_path, future_csv_path) for XRK files that have no matching CSV yet."""
+    results = []
+    for root, _, files in os.walk(folder):
+        for fname in sorted(files):
+            if Path(fname).suffix not in XRK_EXTENSIONS:
+                continue
+            xrk_path = os.path.join(root, fname)
+            csv_path = os.path.splitext(xrk_path)[0] + '.csv'
+            if not os.path.isfile(csv_path):
+                results.append((xrk_path, csv_path))
+    return results
+
+
+def _csv_source(path: str) -> str:
+    """Quick peek at a CSV file to determine its data source."""
+    try:
+        with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
+            head = f.read(200)
+        if head.startswith('Time (s),'):
+            return 'AIM Mychron'
+    except Exception:
+        pass
+    return 'RaceBox'
 
 
 def match_sessions(csv_paths: List[str],
@@ -185,8 +305,6 @@ def match_sessions(csv_paths: List[str],
     Match each CSV to the closest video group by timestamp.
     Uses the Date UTC field from the CSV header.
     """
-    from racebox_data import load_csv
-
     results = []
     for csv_path in csv_paths:
         try:
@@ -216,6 +334,7 @@ def match_sessions(csv_paths: List[str],
             csv_start   = csv_start,
             video_start = best_vstart,
             matched     = matched,
+            source      = _csv_source(csv_path),
         ))
 
     # Sort by CSV start time
@@ -224,9 +343,25 @@ def match_sessions(csv_paths: List[str],
 
 
 def _read_csv_start_time(path: str) -> Optional[datetime]:
-    """Read only the metadata block to get Date UTC."""
+    """Read session start time from CSV.
+
+    RaceBox: reads the 'Date UTC,' metadata line.
+    AIM:     falls back to file modification time (no wall-clock header).
+    """
     with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
         for line in f:
+            # AIM CSV: embedded session date comment
+            if line.startswith('# Session-Date:'):
+                val = line.split(':', 1)[1].strip()
+                val = val.replace('Z', '+00:00')
+                try:
+                    dt = datetime.fromisoformat(val)
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    return dt
+                except ValueError:
+                    break
+            # RaceBox CSV: Date UTC metadata line
             if line.startswith('Date UTC,'):
                 val = line.strip().split(',', 1)[1].strip()
                 val = val.replace('Z', '+00:00')
@@ -234,9 +369,12 @@ def _read_csv_start_time(path: str) -> Optional[datetime]:
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
                 return dt
-            if line.startswith('Record,Time,'):
+            if line.startswith('Record,Time,') or line.startswith('Time (s),'):
                 break  # past header, not found
-    return None
+
+    # Fallback: file mtime
+    mtime = os.path.getmtime(path)
+    return datetime.fromtimestamp(mtime, tz=timezone.utc)
 
 
 # ── Batch state ────────────────────────────────────────────────────────────────

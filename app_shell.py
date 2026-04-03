@@ -27,6 +27,10 @@ QUEUE_OWNER = {
     # Data page
     'data_scanned':          'data_page',
     'data_scan_error':       'data_page',
+    'data_scan_progress':        'data_page',
+    'data_xrk_status':           'data_page',
+    'data_xrk_converted':        'data_page',
+    'data_xrk_convert_failed':   'data_page',
     'data_session_loaded':   'data_page',
     'data_sync_open':        'data_page',
     'data_sync_status':      'data_page',
@@ -102,10 +106,6 @@ class App(tk.Tk):
             self._nav_btns[key] = btn
 
         tk.Frame(self.sidebar, bg=SIDEBAR).pack(fill='y', expand=True)
-        Divider(self.sidebar).pack(fill='x', padx=12)
-        self.lbl_enc = tk.Label(self.sidebar, text="…", bg=SIDEBAR,
-                                fg=TEXT3, font=font(8))
-        self.lbl_enc.pack(pady=8)
 
         # Content area
         self.content = tk.Frame(self, bg=BG)
@@ -167,9 +167,6 @@ class App(tk.Tk):
                     enc = args[0]
                     self.detected_enc = enc
                     self.gpu_encoder.set(enc)
-                    col = OK if enc != 'libx264' else WARN
-                    self.lbl_enc.config(text=f"⚙ {enc}", fg=col)
-                    # Also notify settings page for its encoder label
                     self.pages['settings_page'].on_queue('encoder', enc)
                     continue
 

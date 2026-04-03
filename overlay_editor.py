@@ -8,25 +8,25 @@ from typing import Callable, Optional, Tuple
 import numpy as np
 
 from design_tokens import CARD, CARD2, BORDER, TEXT2, TEXT3, ACC, font
-from app_config import OverlayLayout, OverlayElement
+from app_config import OverlayLayout, OverlayElement, GaugeConfig
+from gauge_channels import GAUGE_COLOURS
 
-# Element display config: {key: (hex_colour, label)}
-ELEM_STYLE = {
-    'map':       ('#4f8ef7', 'Map'),
-    'telemetry': ('#00d4ff', 'Telemetry'),
-}
-HANDLE_SIZE  = 7     # px half-size of resize corner handles
-MIN_NORM     = 0.05  # minimum normalized w/h
-SNAP_NORM    = 0.02  # snap-to-edge threshold (normalized)
-PREVIEW_DEBOUNCE_MS = 250   # delay before triggering a preview re-render
+HANDLE_SIZE          = 7      # px half-size of resize corner handles
+MIN_NORM             = 0.04   # minimum normalized w/h
+SNAP_NORM            = 0.02   # snap-to-edge threshold (normalized)
+PREVIEW_DEBOUNCE_MS  = 250    # delay before triggering a preview re-render
+
+MAP_COLOUR = '#4f8ef7'
+
+
+def _gauge_colour(idx: int) -> str:
+    return GAUGE_COLOURS[idx % len(GAUGE_COLOURS)]
 
 
 class OverlayEditor(tk.Frame):
     """
     Canvas showing a video frame (or placeholder) with draggable/resizable
-    overlay element boxes.  Each element renders a live preview of its
-    current style using dummy data so users see the actual visualisation,
-    not just a coloured rectangle.
+    overlay element boxes.  Each element renders a live preview.
 
     Normalised coordinates (0..1) are relative to the VIDEO FRAME, not the
     canvas, so letterboxed video never allows elements outside the frame.
@@ -37,20 +37,16 @@ class OverlayEditor(tk.Frame):
         super().__init__(parent, bg=CARD, **kw)
         self._layout    = layout
         self._on_change = on_change
-        self._bg_photo  = None   # PhotoImage — prevents GC
-        self._bg_arr    = None   # raw numpy BGR for resizing
+        self._bg_photo  = None
+        self._bg_arr    = None
 
-        # Video frame rect within canvas (ox, oy, dw, dh)
         self._frame_rect: Tuple[int, int, int, int] = (0, 0, 1, 1)
-
-        # Drag state
         self._drag: Optional[dict] = None
 
-        # Preview system
-        self._previews:       dict[str, np.ndarray]          = {}
-        self._preview_photos: dict[str, object]              = {}  # tk PhotoImage refs
-        self._preview_q:      queue.Queue                    = queue.Queue()
-        self._debounce_ids:   dict[str, Optional[str]]       = {}  # after() ids
+        self._previews:       dict[str, np.ndarray] = {}
+        self._preview_photos: dict[str, object]     = {}
+        self._preview_q:      queue.Queue           = queue.Queue()
+        self._debounce_ids:   dict[str, Optional[str]] = {}
 
         self._canvas = tk.Canvas(self, bg='#1a1d2e', highlightthickness=0,
                                  cursor='crosshair')
@@ -66,17 +62,41 @@ class OverlayEditor(tk.Frame):
     # ── Public API ────────────────────────────────────────────────────────────
 
     def set_frame(self, bgr_frame) -> None:
-        """Set background from a cv2 BGR numpy array (or None for placeholder)."""
         self._bg_arr = bgr_frame
         self._redraw()
         self._request_all_previews()
 
     def refresh(self) -> None:
-        """Call when layout style/visibility changes — redraws and re-renders previews."""
         self._previews.clear()
         self._preview_photos.clear()
         self._redraw()
         self._request_all_previews()
+
+    # ── Element access helpers ────────────────────────────────────────────────
+
+    def _all_keys(self) -> list[str]:
+        """Return all element keys: gauges first (on top), map last (underneath)."""
+        keys = [f'gauge_{i}' for i in range(len(self._layout.gauges))]
+        keys.append('map')
+        return keys
+
+    def _get_elem(self, key: str):
+        if key == 'map':
+            return self._layout.map
+        i = int(key.split('_')[1])
+        return self._layout.gauges[i]
+
+    def _elem_colour(self, key: str) -> str:
+        if key == 'map':
+            return MAP_COLOUR
+        return _gauge_colour(int(key.split('_')[1]))
+
+    def _elem_label(self, key: str) -> str:
+        if key == 'map':
+            return f"Map · {self._layout.map_style}"
+        i = int(key.split('_')[1])
+        g = self._layout.gauges[i]
+        return f"{g.channel} · {g.style}"
 
     # ── Coordinate helpers ────────────────────────────────────────────────────
 
@@ -106,10 +126,12 @@ class OverlayEditor(tk.Frame):
         else:
             self._draw_placeholder(cw, ch)
 
-        for key in ('map', 'telemetry'):
-            elem = getattr(self._layout, key)
-            if elem.visible:
-                self._draw_element(key, elem)
+        # Draw map first (bottom), then gauges on top
+        if self._layout.map.visible:
+            self._draw_element('map', self._layout.map)
+        for i, g in enumerate(self._layout.gauges):
+            if g.visible:
+                self._draw_element(f'gauge_{i}', g)
 
     def _draw_bg(self, cw: int, ch: int) -> None:
         from PIL import Image, ImageTk
@@ -135,71 +157,58 @@ class OverlayEditor(tk.Frame):
                  "to see your overlay on actual video",
             fill=TEXT3, font=font(9), justify='center')
 
-    def _draw_element(self, key: str, elem: OverlayElement) -> None:
-        colour, _label = ELEM_STYLE[key]
+    def _draw_element(self, key: str, elem) -> None:
+        colour = self._elem_colour(key)
+        label  = self._elem_label(key)
         x1, y1 = self._norm_to_px(elem.x, elem.y)
         x2, y2 = self._norm_to_px(elem.x + elem.w, elem.y + elem.h)
         pw, ph  = max(1, x2 - x1), max(1, y2 - y1)
 
-        # ── Preview image (or fallback stipple) ───────────────────────────────
         preview = self._previews.get(key)
         if preview is not None:
             try:
                 from PIL import Image, ImageTk
-                img = Image.fromarray(preview, 'RGBA').resize(
-                    (pw, ph), Image.LANCZOS)
-                # Composite onto dark background so transparency looks right
-                bg = Image.new('RGBA', (pw, ph), (13, 15, 24, 220))
+                img = Image.fromarray(preview, 'RGBA').resize((pw, ph), Image.LANCZOS)
+                bg  = Image.new('RGBA', (pw, ph), (13, 15, 24, 220))
                 bg.alpha_composite(img)
                 photo = ImageTk.PhotoImage(bg.convert('RGB'))
                 self._canvas.create_image(x1, y1, anchor='nw', image=photo,
                                           tags=(key, f'{key}_body'))
                 self._preview_photos[key] = photo
             except Exception:
-                preview = None   # fall through to stipple
+                preview = None
 
         if preview is None:
-            self._canvas.create_rectangle(
-                x1, y1, x2, y2,
+            self._canvas.create_rectangle(x1, y1, x2, y2,
                 fill=colour, stipple='gray25', outline='',
                 tags=(key, f'{key}_body'))
 
-        # ── Border + style name ───────────────────────────────────────────────
-        self._canvas.create_rectangle(
-            x1, y1, x2, y2,
+        self._canvas.create_rectangle(x1, y1, x2, y2,
             fill='', outline=colour, width=2,
             tags=(key, f'{key}_body'))
 
-        style_name = getattr(self._layout, f'{key}_style', '')
-        mid_x = (x1 + x2) // 2
-        # Show style name near the bottom of the box so it doesn't obscure content
+        mid_x  = (x1 + x2) // 2
         label_y = max(y1 + 10, y2 - 12)
-        self._canvas.create_text(
-            mid_x, label_y,
-            text=style_name, fill=colour, font=font(8),
+        self._canvas.create_text(mid_x, label_y,
+            text=label, fill=colour, font=font(8),
             tags=(key, f'{key}_label'))
 
-        # ── Resize handles ────────────────────────────────────────────────────
-        for hx, hy, htag in [
-            (x1, y1, 'NW'), (x2, y1, 'NE'),
-            (x1, y2, 'SW'), (x2, y2, 'SE'),
-        ]:
+        for hx, hy, htag in [(x1,y1,'NW'),(x2,y1,'NE'),(x1,y2,'SW'),(x2,y2,'SE')]:
             hs = HANDLE_SIZE
-            self._canvas.create_rectangle(
-                hx - hs, hy - hs, hx + hs, hy + hs,
+            self._canvas.create_rectangle(hx-hs, hy-hs, hx+hs, hy+hs,
                 fill=colour, outline='white', width=1,
                 tags=(key, f'{key}_handle_{htag}'))
 
     # ── Preview rendering ─────────────────────────────────────────────────────
 
     def _request_all_previews(self) -> None:
-        for key in ('map', 'telemetry'):
-            elem = getattr(self._layout, key)
-            if elem.visible:
-                self._request_preview(key)
+        if self._layout.map.visible:
+            self._request_preview('map')
+        for i, g in enumerate(self._layout.gauges):
+            if g.visible:
+                self._request_preview(f'gauge_{i}')
 
     def _request_preview(self, key: str) -> None:
-        """Debounced: schedule a preview render PREVIEW_DEBOUNCE_MS from now."""
         if key in self._debounce_ids and self._debounce_ids[key]:
             try:
                 self.after_cancel(self._debounce_ids[key])
@@ -213,39 +222,47 @@ class OverlayEditor(tk.Frame):
         ch = self._canvas.winfo_height()
         if cw < 2 or ch < 2:
             return
-        elem  = getattr(self._layout, key)
+        elem = self._get_elem(key)
         _, _, dw, dh = self._frame_rect
         pw = max(32, int(elem.w * dw))
         ph = max(16, int(elem.h * dh))
-        style_name = getattr(self._layout, f'{key}_style', '')
-        if not style_name:
-            return
         is_bike = self._layout.is_bike
+
+        if key == 'map':
+            style = self._layout.map_style
+            channel = None
+        else:
+            i = int(key.split('_')[1])
+            g = self._layout.gauges[i]
+            style   = g.style
+            channel = g.channel
+
         threading.Thread(
             target=self._render_preview_worker,
-            args=(key, style_name, pw, ph, is_bike),
+            args=(key, style, channel, pw, ph, is_bike),
             daemon=True,
         ).start()
 
-    def _render_preview_worker(self, key: str, style_name: str,
+    def _render_preview_worker(self, key: str, style_name: str, channel: Optional[str],
                                 pw: int, ph: int, is_bike: bool) -> None:
         try:
             from style_registry import render_style
-            from overlay_utils  import dummy_telemetry_data, dummy_map_data
-            if key == 'telemetry':
-                data = dummy_telemetry_data(is_bike=is_bike)
-                et   = 'telemetry'
-            else:
+            from overlay_utils  import dummy_map_data
+            from gauge_channels import dummy_gauge_data
+
+            if key == 'map':
                 data = dummy_map_data()
-                et   = 'map'
-            rgba = render_style(et, style_name, data, pw, ph)
+                rgba = render_style('map', style_name, data, pw, ph)
+            else:
+                data = dummy_gauge_data(channel or 'speed')
+                data['is_bike'] = is_bike
+                rgba = render_style('gauge', style_name, data, pw, ph)
+
             self._preview_q.put((key, rgba))
         except Exception as exc:
-            # Don't crash the editor if a style fails to render
             print(f'[OverlayEditor] Preview render failed ({key}/{style_name}): {exc}')
 
     def _poll_previews(self) -> None:
-        """Drain the preview queue and redraw when new previews arrive."""
         updated = False
         try:
             while True:
@@ -261,18 +278,15 @@ class OverlayEditor(tk.Frame):
     # ── Hit testing ───────────────────────────────────────────────────────────
 
     def _hit_test(self, px: int, py: int):
-        """Return (key, mode, handle) or None."""
-        for key in ('map', 'telemetry'):
-            elem = getattr(self._layout, key)
+        """Return (key, mode, handle) or None.  Gauges checked before map."""
+        for key in self._all_keys():
+            elem = self._get_elem(key)
             if not elem.visible:
                 continue
             x1, y1 = self._norm_to_px(elem.x, elem.y)
             x2, y2 = self._norm_to_px(elem.x + elem.w, elem.y + elem.h)
             hs = HANDLE_SIZE + 2
-            for hx, hy, hname in [
-                (x1, y1, 'NW'), (x2, y1, 'NE'),
-                (x1, y2, 'SW'), (x2, y2, 'SE'),
-            ]:
+            for hx, hy, hname in [(x1,y1,'NW'),(x2,y1,'NE'),(x1,y2,'SW'),(x2,y2,'SE')]:
                 if abs(px - hx) <= hs and abs(py - hy) <= hs:
                     return key, 'resize', hname
             if x1 <= px <= x2 and y1 <= py <= y2:
@@ -297,7 +311,7 @@ class OverlayEditor(tk.Frame):
         if hit is None:
             return
         key, mode, handle = hit
-        elem = getattr(self._layout, key)
+        elem = self._get_elem(key)
         _, _, dw, dh = self._frame_rect
         self._drag = {
             'key': key, 'mode': mode, 'handle': handle,
@@ -313,7 +327,7 @@ class OverlayEditor(tk.Frame):
         d  = self._drag
         dx = (event.x - d['mx']) / d['dw']
         dy = (event.y - d['my']) / d['dh']
-        elem = getattr(self._layout, d['key'])
+        elem = self._get_elem(d['key'])
 
         if d['mode'] == 'move':
             elem.x = max(0.0, min(1.0 - d['ew'], d['ex'] + dx))
@@ -339,7 +353,7 @@ class OverlayEditor(tk.Frame):
 
         self._redraw()
 
-    def _snap(self, elem: OverlayElement) -> None:
+    def _snap(self, elem) -> None:
         if elem.x < SNAP_NORM:
             elem.x = 0.0
         if elem.x + elem.w > 1.0 - SNAP_NORM:
@@ -352,8 +366,8 @@ class OverlayEditor(tk.Frame):
     def _on_release(self, _event) -> None:
         if self._drag:
             key = self._drag['key']
-            self._snap(getattr(self._layout, key))
+            self._snap(self._get_elem(key))
             self._drag = None
             self._redraw()
-            self._request_preview(key)   # re-render at new size
+            self._request_preview(key)
             self._on_change(self._layout)

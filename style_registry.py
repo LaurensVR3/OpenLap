@@ -3,7 +3,7 @@ style_registry.py — Discovers and routes rendering to style plugins.
 
 Each .py file in the styles/ folder is a style plugin if it exports:
     STYLE_NAME   : str   — display name
-    ELEMENT_TYPE : str   — "telemetry" or "map"
+    ELEMENT_TYPE : str   — "gauge" or "map"
     render(data, w, h)   — returns RGBA np.ndarray of shape (h, w, 4)
 
 Works in both the main process and multiprocessing worker subprocesses.
@@ -62,8 +62,8 @@ def available_styles(element_type: str) -> List[str]:
 
 def default_style(element_type: str) -> Optional[str]:
     styles = available_styles(element_type)
-    # Prefer 'Strip' or 'Circuit' as defaults, otherwise first alphabetically
-    preferred = {'telemetry': 'Strip', 'map': 'Circuit'}
+    # Prefer 'Dial' or 'Circuit' as defaults, otherwise first alphabetically
+    preferred = {'gauge': 'Dial', 'map': 'Circuit'}
     p = preferred.get(element_type)
     if p and p in styles:
         return p

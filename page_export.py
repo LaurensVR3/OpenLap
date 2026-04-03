@@ -11,7 +11,7 @@ from tkinter import ttk, messagebox
 
 from design_tokens import BG, CARD, CARD2, BORDER, ACC, ACC2, OK, WARN, ERR, TEXT, TEXT2, TEXT3, font
 from widgets import Card, Btn, Divider, Label
-from app_config import AppConfig, OverlayLayout
+from app_config import AppConfig, OverlayLayout, overlay_from_dict
 from overlay_editor import OverlayEditor
 
 
@@ -52,22 +52,18 @@ class ExportPage(tk.Frame):
     def _build_left(self, parent):
         left = tk.Frame(parent, bg=BG)
         left.grid(row=0, column=0, sticky='nsew', padx=(0, 8))
-        left.rowconfigure(2, weight=1)
+        left.rowconfigure(4, weight=1)
         left.columnconfigure(0, weight=1)
 
-        # Toggle + mode row
+        # row 0: Toggle + mode row
         ctrl = tk.Frame(left, bg=BG)
         ctrl.grid(row=0, column=0, sticky='ew', pady=(0, 6))
 
         self.var_show_map = tk.BooleanVar(value=self.app.config.overlay.map.visible)
-        self.var_show_tel = tk.BooleanVar(value=self.app.config.overlay.telemetry.visible)
 
         tk.Checkbutton(ctrl, text="Map", variable=self.var_show_map,
                        bg=BG, fg=TEXT, selectcolor=CARD2, activebackground=BG,
                        font=font(9), command=self._on_toggle_map).pack(side='left', padx=(0, 12))
-        tk.Checkbutton(ctrl, text="Telemetry", variable=self.var_show_tel,
-                       bg=BG, fg=TEXT, selectcolor=CARD2, activebackground=BG,
-                       font=font(9), command=self._on_toggle_tel).pack(side='left', padx=(0, 20))
 
         self.var_is_bike = tk.BooleanVar(value=self.app.config.overlay.is_bike)
         tk.Checkbutton(ctrl, text="Bike mode", variable=self.var_is_bike,
@@ -77,14 +73,19 @@ class ExportPage(tk.Frame):
         Btn(ctrl, "Load preview frame", small=True,
             command=self._load_preview).pack(side='right')
 
-        # Style picker row
+        # row 1: Preset row
+        preset_row = tk.Frame(left, bg=BG)
+        preset_row.grid(row=1, column=0, sticky='ew', pady=(0, 4))
+        self._build_preset_row(preset_row)
+
+        # row 2: Map style + gauge management
         style_row = tk.Frame(left, bg=BG)
-        style_row.grid(row=1, column=0, sticky='ew', pady=(0, 4))
+        style_row.grid(row=2, column=0, sticky='ew', pady=(0, 4))
         self._build_style_row(style_row)
 
-        # Editor canvas
+        # row 4: Editor canvas  (row 3 = gauge list, built inside _build_style_row)
         editor_frame = tk.Frame(left, bg=BORDER, bd=1)
-        editor_frame.grid(row=2, column=0, sticky='nsew')
+        editor_frame.grid(row=4, column=0, sticky='nsew')
         editor_frame.rowconfigure(0, weight=1)
         editor_frame.columnconfigure(0, weight=1)
 
@@ -95,41 +96,205 @@ class ExportPage(tk.Frame):
         )
         self.editor.grid(row=0, column=0, sticky='nsew', padx=1, pady=1)
 
+    def _build_preset_row(self, parent) -> None:
+        tk.Label(parent, text="Preset:", bg=BG, fg=TEXT3,
+                 font=font(8)).pack(side='left', padx=(0, 4))
+
+        names = list(self.app.config.presets.keys())
+        cur   = self.app.config.active_preset if self.app.config.active_preset in self.app.config.presets else ''
+        display_names = names if names else ['(no presets)']
+
+        self.var_preset = tk.StringVar(value=cur or ('(no presets)' if not names else ''))
+        self._preset_cb = ttk.Combobox(parent, textvariable=self.var_preset,
+                                       values=display_names, state='readonly',
+                                       font=font(9), width=18)
+        self._preset_cb.pack(side='left', padx=(0, 8))
+        self.var_preset.trace_add('write', lambda *_: self._on_preset_select())
+
+        Btn(parent, "Save", small=True,
+            command=self._save_preset).pack(side='left', padx=(0, 4))
+        Btn(parent, "Save As…", small=True,
+            command=self._save_preset_as).pack(side='left', padx=(0, 4))
+        Btn(parent, "Delete", small=True,
+            command=self._delete_preset).pack(side='left')
+
+    def _refresh_preset_dropdown(self) -> None:
+        names = list(self.app.config.presets.keys())
+        display = names if names else ['(no presets)']
+        self._preset_cb.config(values=display)
+        cur = self.app.config.active_preset
+        self.var_preset.set(cur if cur in names else (names[0] if names else ''))
+
+    def _on_preset_select(self) -> None:
+        name = self.var_preset.get()
+        if name not in self.app.config.presets:
+            return
+        self.app.config.active_preset = name
+        self.app.config.overlay = overlay_from_dict(self.app.config.presets[name])
+        self.app.config.save()
+        # Sync UI controls to loaded layout (guards: may not exist yet during init)
+        if hasattr(self, 'var_show_map'):
+            self.var_show_map.set(self.app.config.overlay.map.visible)
+        if hasattr(self, 'var_is_bike'):
+            self.var_is_bike.set(self.app.config.overlay.is_bike)
+        if hasattr(self, 'var_map_style'):
+            self.var_map_style.set(self.app.config.overlay.map_style)
+        if hasattr(self, '_gauge_list_frame'):
+            self._rebuild_gauge_list()
+        if hasattr(self, 'editor'):
+            self.editor._layout = self.app.config.overlay
+            self.editor.refresh()
+
+    def _save_preset(self) -> None:
+        name = self.app.config.active_preset
+        if not name:
+            self._save_preset_as()
+            return
+        from dataclasses import asdict
+        self.app.config.presets[name] = asdict(self.app.config.overlay)
+        self.app.config.save()
+        self._refresh_preset_dropdown()
+
+    def _save_preset_as(self) -> None:
+        from tkinter.simpledialog import askstring
+        name = askstring("Save Preset", "Preset name:", parent=self)
+        if not name or not name.strip():
+            return
+        name = name.strip()
+        from dataclasses import asdict
+        self.app.config.presets[name] = asdict(self.app.config.overlay)
+        self.app.config.active_preset = name
+        self.app.config.save()
+        self._refresh_preset_dropdown()
+        self.var_preset.set(name)
+
+    def _delete_preset(self) -> None:
+        name = self.var_preset.get()
+        if name not in self.app.config.presets:
+            return
+        if not messagebox.askyesno("Delete Preset",
+                                   f"Delete preset '{name}'?", parent=self):
+            return
+        del self.app.config.presets[name]
+        if self.app.config.active_preset == name:
+            self.app.config.active_preset = ''
+        self.app.config.save()
+        self._refresh_preset_dropdown()
+
     def _build_style_row(self, parent) -> None:
         from style_registry import available_styles, default_style
         from tkinter import ttk
 
-        tel_styles = available_styles('telemetry') or ['Strip']
-        map_styles = available_styles('map')        or ['Circuit']
-
-        cur_tel = self.app.config.overlay.telemetry_style or default_style('telemetry') or tel_styles[0]
-        cur_map = self.app.config.overlay.map_style        or default_style('map')        or map_styles[0]
-
-        tk.Label(parent, text="Telemetry style:", bg=BG, fg=TEXT3,
-                 font=font(8)).pack(side='left', padx=(0, 4))
-        self.var_tel_style = tk.StringVar(value=cur_tel)
-        cb_tel = ttk.Combobox(parent, textvariable=self.var_tel_style,
-                              values=tel_styles, state='readonly',
-                              font=font(9), width=18)
-        cb_tel.pack(side='left', padx=(0, 16))
-        self.var_tel_style.trace_add('write', lambda *_: self._on_style_change('telemetry'))
+        map_styles = available_styles('map') or ['Circuit']
+        cur_map    = self.app.config.overlay.map_style or default_style('map') or map_styles[0]
 
         tk.Label(parent, text="Map style:", bg=BG, fg=TEXT3,
                  font=font(8)).pack(side='left', padx=(0, 4))
         self.var_map_style = tk.StringVar(value=cur_map)
         cb_map = ttk.Combobox(parent, textvariable=self.var_map_style,
                               values=map_styles, state='readonly',
-                              font=font(9), width=14)
-        cb_map.pack(side='left')
-        self.var_map_style.trace_add('write', lambda *_: self._on_style_change('map'))
+                              font=font(9), width=12)
+        cb_map.pack(side='left', padx=(0, 16))
+        self.var_map_style.trace_add('write', lambda *_: self._on_map_style_change())
 
-    def _on_style_change(self, key: str) -> None:
-        if key == 'telemetry':
-            self.app.config.overlay.telemetry_style = self.var_tel_style.get()
-        else:
-            self.app.config.overlay.map_style = self.var_map_style.get()
+        Btn(parent, "+ Add gauge", small=True,
+            command=self._add_gauge).pack(side='left', padx=(0, 4))
+
+        # Gauge list panel — row 3 in left frame (below style_row at row 2)
+        self._gauge_list_frame = tk.Frame(parent.master, bg=BG)
+        self._gauge_list_frame.grid(row=3, column=0, sticky='ew', pady=(0, 2))
+        self._rebuild_gauge_list()
+
+    def _rebuild_gauge_list(self) -> None:
+        """Rebuild the scrollable gauge row list."""
+        from tkinter import ttk
+        from gauge_channels import GAUGE_CHANNELS, GAUGE_STYLES_BIKE, GAUGE_STYLES_CAR
+
+        for w in self._gauge_list_frame.winfo_children():
+            w.destroy()
+
+        is_bike    = self.app.config.overlay.is_bike
+        avail_styles = GAUGE_STYLES_BIKE if is_bike else GAUGE_STYLES_CAR
+
+        for i, g in enumerate(self.app.config.overlay.gauges):
+            row = tk.Frame(self._gauge_list_frame, bg=BG)
+            row.pack(fill='x', pady=1)
+
+            tk.Label(row, text=f"#{i+1}", bg=BG, fg=TEXT3,
+                     font=font(8), width=3).pack(side='left')
+
+            # Channel dropdown
+            chan_var = tk.StringVar(value=g.channel)
+            cb_chan  = ttk.Combobox(row, textvariable=chan_var,
+                                    values=list(GAUGE_CHANNELS.keys()),
+                                    state='readonly', font=font(8), width=13)
+            cb_chan.pack(side='left', padx=(0, 4))
+            chan_var.trace_add('write', lambda *_, iv=i, v=chan_var: self._on_gauge_channel(iv, v.get()))
+
+            # Style dropdown
+            style_var = tk.StringVar(value=g.style if g.style in avail_styles else avail_styles[0])
+            cb_style  = ttk.Combobox(row, textvariable=style_var,
+                                     values=avail_styles,
+                                     state='readonly', font=font(8), width=9)
+            cb_style.pack(side='left', padx=(0, 4))
+            style_var.trace_add('write', lambda *_, iv=i, v=style_var: self._on_gauge_style(iv, v.get()))
+
+            # Visible toggle
+            vis_var = tk.BooleanVar(value=g.visible)
+            tk.Checkbutton(row, text="", variable=vis_var, bg=BG,
+                           selectcolor=CARD2, activebackground=BG,
+                           command=lambda iv=i, v=vis_var: self._on_gauge_visible(iv, v.get())
+                           ).pack(side='left')
+
+            # Remove button
+            Btn(row, "✕", small=True,
+                command=lambda iv=i: self._remove_gauge(iv)).pack(side='left', padx=(2, 0))
+
+    def _on_map_style_change(self) -> None:
+        self.app.config.overlay.map_style = self.var_map_style.get()
         self.app.config.save()
         self.editor.refresh()
+
+    def _add_gauge(self) -> None:
+        from app_config import GaugeConfig
+        # Place new gauge in bottom-left, non-overlapping
+        n = len(self.app.config.overlay.gauges)
+        x = 0.01 + (n % 8) * 0.12
+        y = 0.74 + (n // 8) * 0.24
+        self.app.config.overlay.gauges.append(
+            GaugeConfig(channel='speed', style='Dial', x=min(x, 0.87), y=min(y, 0.76)))
+        self.app.config.save()
+        self._rebuild_gauge_list()
+        self.editor.refresh()
+
+    def _remove_gauge(self, idx: int) -> None:
+        gauges = self.app.config.overlay.gauges
+        if 0 <= idx < len(gauges):
+            gauges.pop(idx)
+            self.app.config.save()
+            self._rebuild_gauge_list()
+            self.editor.refresh()
+
+    def _on_gauge_channel(self, idx: int, channel: str) -> None:
+        gauges = self.app.config.overlay.gauges
+        if 0 <= idx < len(gauges):
+            gauges[idx].channel = channel
+            self.app.config.save()
+            self.editor.refresh()
+
+    def _on_gauge_style(self, idx: int, style: str) -> None:
+        gauges = self.app.config.overlay.gauges
+        if 0 <= idx < len(gauges):
+            gauges[idx].style = style
+            self.app.config.save()
+            self.editor.refresh()
+
+    def _on_gauge_visible(self, idx: int, visible: bool) -> None:
+        gauges = self.app.config.overlay.gauges
+        if 0 <= idx < len(gauges):
+            gauges[idx].visible = visible
+            self.app.config.save()
+            self.editor.refresh()
 
     # ── Right: Settings + Export ──────────────────────────────────────────────
 
@@ -265,14 +430,16 @@ class ExportPage(tk.Frame):
         self.app.config.save()
         self.editor.refresh()
 
-    def _on_toggle_tel(self):
-        self.app.config.overlay.telemetry.visible = self.var_show_tel.get()
-        self.app.config.save()
-        self.editor.refresh()
-
     def _on_toggle_bike(self):
-        self.app.config.overlay.is_bike = self.var_is_bike.get()
+        is_bike = self.var_is_bike.get()
+        self.app.config.overlay.is_bike = is_bike
+        if not is_bike:
+            for g in self.app.config.overlay.gauges:
+                if g.style == 'Lean':
+                    g.style = 'Bar'
         self.app.config.save()
+        self._rebuild_gauge_list()
+        self.editor.refresh()
 
     def _on_layout_change(self, layout: OverlayLayout) -> None:
         self.app.config.save()
@@ -345,7 +512,7 @@ class ExportPage(tk.Frame):
         padding  = self.app.padding_secs.get()
         is_bike  = self.app.config.overlay.is_bike
         show_map = self.app.config.overlay.map.visible
-        show_tel = self.app.config.overlay.telemetry.visible
+        show_tel = any(g.visible for g in self.app.config.overlay.gauges)
         layout   = asdict(self.app.config.overlay)
 
         threading.Thread(
@@ -367,8 +534,13 @@ class ExportPage(tk.Frame):
 
     def _export_bg_inner(self, items, scope, export_path, encoder, crf, workers,
                          padding, is_bike, show_map, show_tel, layout) -> None:
-        from racebox_data import load_csv
+        import racebox_data, aim_data
         from video_renderer import render_lap, RenderJob, concat_videos
+
+        def load_csv(path):
+            if aim_data.is_aim_csv(path):
+                return aim_data.load_csv(path)
+            return racebox_data.load_csv(path)
 
         total_jobs = len(items)
         done_jobs  = 0
@@ -392,7 +564,7 @@ class ExportPage(tk.Frame):
         for item in items:
             csv_path = item.get('csv')
             videos   = item.get('videos', [])
-            offset   = item.get('offset', 0.0)
+            offset   = item.get('offset') or 0.0   # None (not set) → 0.0
 
             if not csv_path or not os.path.exists(csv_path):
                 log(f"Skipping: CSV not found: {csv_path}")
