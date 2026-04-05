@@ -8,7 +8,7 @@
 
 ## Preview
 
-**Sample output video** — Spa-Francorchamps, Porsche 992 GT3:
+**Sample output video** — Karting Haute Picardie Arvillers:
 
 [![OpenLap sample output](https://img.youtube.com/vi/0XuByCyL_mA/maxresdefault.jpg)](https://www.youtube.com/watch?v=0XuByCyL_mA)
 
