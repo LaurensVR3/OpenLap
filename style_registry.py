@@ -10,11 +10,16 @@ Works in both the main process and multiprocessing worker subprocesses.
 """
 from __future__ import annotations
 import importlib
+import logging
 import os
 import sys
 from typing import Dict, List, Optional
 
 import numpy as np
+
+from exceptions import StyleNotFoundError
+
+logger = logging.getLogger(__name__)
 
 # Absolute path to the styles/ package directory
 _HERE       = os.path.dirname(os.path.abspath(__file__))
@@ -47,7 +52,7 @@ def _load_all() -> None:
             if et and sn and hasattr(mod, 'render'):
                 _cache[f'{et}::{sn}'] = mod
         except Exception as exc:
-            print(f'[style_registry] Failed to load {fname}: {exc}')
+            logger.warning('Failed to load style plugin %s: %s', fname, exc)
 
 
 def available_styles(element_type: str) -> List[str]:
@@ -82,8 +87,8 @@ def render_style(element_type: str, style_name: str,
     key = f'{element_type}::{style_name}'
     mod = _cache.get(key)
     if mod is None:
-        raise ValueError(f"Style not found: {element_type!r} / {style_name!r}. "
-                         f"Available: {available_styles(element_type)}")
+        raise StyleNotFoundError(f"Style not found: {element_type!r} / {style_name!r}. "
+                                 f"Available: {available_styles(element_type)}")
 
     # Inject theme colour tokens so style plugins don't need to import overlay_themes.
     from overlay_themes import get_theme

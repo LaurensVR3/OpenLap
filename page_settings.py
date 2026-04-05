@@ -49,22 +49,18 @@ class SettingsPage(tk.Frame):
         tk.Label(p, text="TELEMETRY SOURCES", bg=BG, fg=TEXT2,
                  font=font(8, bold=True)).pack(anchor='w', padx=24, pady=(16, 2))
 
-        tel_card = Card(p, title="TELEMETRY FOLDER")
-        tel_card.pack(fill='x', padx=24, pady=(0, 8))
-        self._path_row(tel_card.body,
-                       "All telemetry files are read recursively from this folder. "
-                       "Supported: RaceBox CSV, AIM .xrk/.xrz/.drk (auto-converted).",
-                       self.app.config.telemetry_path,
-                       self._set_telemetry_path)
-
         # RaceBox
         rb_card = Card(p, title="RACEBOX")
         rb_card.pack(fill='x', padx=24, pady=(0, 8))
+        self._path_row(rb_card.body,
+                       "Folder for RaceBox CSV files. Downloaded sessions are saved here.",
+                       self.app.config.racebox_path,
+                       self._set_racebox_path)
         self.lbl_rb_status = tk.Label(rb_card.body, text="Not authenticated",
                                       bg=CARD, fg=TEXT3, font=font(9))
-        self.lbl_rb_status.pack(anchor='w', pady=(0, 6))
+        self.lbl_rb_status.pack(anchor='w', pady=(6, 0))
         btn_row = tk.Frame(rb_card.body, bg=CARD)
-        btn_row.pack(fill='x')
+        btn_row.pack(fill='x', pady=(6, 0))
         Btn(btn_row, "🔐  Login to RaceBox",
             command=self._rb_login, accent=True).pack(side='left', padx=(0, 8))
         self.btn_rb_dl = Btn(btn_row, "⬇  Download new sessions",
@@ -72,26 +68,45 @@ class SettingsPage(tk.Frame):
         self.btn_rb_dl.pack(side='left')
         self.lbl_rb_last = tk.Label(rb_card.body, text="",
                                     bg=CARD, fg=TEXT3, font=font(8))
-        self.lbl_rb_last.pack(anchor='w', pady=(6, 0))
+        self.lbl_rb_last.pack(anchor='w', pady=(4, 0))
 
         # AIM Mychron
         aim_card = Card(p, title="AIM MYCHRON")
         aim_card.pack(fill='x', padx=24, pady=(0, 8))
+        self._path_row(aim_card.body,
+                       "Folder for AIM .xrk / .xrz / .drk files (auto-converted to CSV on scan).",
+                       self.app.config.aim_path,
+                       self._set_aim_path)
         tk.Label(aim_card.body,
-                 text=".xrk / .xrz / .drk files are automatically converted to CSV on scan. "
-                      "Requires the AIM MatLabXRK DLL — downloaded automatically via browser "
+                 text="Requires the AIM MatLabXRK DLL — downloaded automatically via browser "
                       "(pip install playwright && playwright install chromium).",
                  bg=CARD, fg=TEXT3, font=font(8), wraplength=520, justify='left'
-                 ).pack(anchor='w', pady=(0, 6))
+                 ).pack(anchor='w', pady=(6, 0))
         self.lbl_aim_dll = tk.Label(aim_card.body, text="", bg=CARD, font=font(9))
-        self.lbl_aim_dll.pack(anchor='w')
+        self.lbl_aim_dll.pack(anchor='w', pady=(2, 0))
         self._refresh_aim_dll_status()
 
-        # MoTeC placeholder
+        # MoTeC
         motec_card = Card(p, title="MOTEC")
         motec_card.pack(fill='x', padx=24, pady=(0, 8))
-        tk.Label(motec_card.body, text="Coming soon", bg=CARD, fg=TEXT3,
-                 font=font(9)).pack(anchor='w')
+        self._path_row(motec_card.body,
+                       "Folder for MoTeC .ld files.",
+                       self.app.config.motec_path,
+                       self._set_motec_path)
+
+        # GPX
+        gpx_card = Card(p, title="GPX")
+        gpx_card.pack(fill='x', padx=24, pady=(0, 8))
+        self._path_row(gpx_card.body,
+                       "Folder for GPS .gpx track files.",
+                       self.app.config.gpx_path,
+                       self._set_gpx_path)
+
+        # Legacy all-in-one folder (shown only when set, so users can clear it)
+        if self.app.config.telemetry_path:
+            legacy_card = Card(p, title="LEGACY FOLDER  (causes duplicates — clear once per-source paths are set)")
+            legacy_card.pack(fill='x', padx=24, pady=(0, 8))
+            self._legacy_path_row(legacy_card.body)
 
         # ── Video Sources ─────────────────────────────────────────────────────
         tk.Label(p, text="VIDEO SOURCES", bg=BG, fg=TEXT2,
@@ -131,8 +146,7 @@ class SettingsPage(tk.Frame):
             self._update_encoder_label(self.app.detected_enc)
 
         # Check RaceBox auth state
-        if self.app.config.telemetry_path:
-            self._init_rb_source()
+        self._init_rb_source()
 
     # ─────────────────────────────────────────────────────────────────────────
     #  Path row helper
@@ -164,8 +178,40 @@ class SettingsPage(tk.Frame):
     #  Path change handlers
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _set_telemetry_path(self, path: str) -> None:
-        self.app.config.telemetry_path = path
+    def _legacy_path_row(self, parent) -> None:
+        row = tk.Frame(parent, bg=CARD)
+        row.pack(fill='x')
+        tk.Label(row, text=self.app.config.telemetry_path, bg=CARD, fg=WARN,
+                 font=font(9)).pack(side='left', fill='x', expand=True)
+        Btn(row, "Clear", small=True,
+            command=self._clear_telemetry_path).pack(side='left')
+
+    def _clear_telemetry_path(self) -> None:
+        self.app.config.telemetry_path = ''
+        self.app.config.save()
+        self.app.q.put(('settings_changed',))
+        # Rebuild the page so the legacy card disappears
+        for w in self.winfo_children():
+            w.destroy()
+        self._build()
+
+    def _set_racebox_path(self, path: str) -> None:
+        self.app.config.racebox_path = path
+        self.app.config.save()
+        self.app.q.put(('settings_changed',))
+
+    def _set_aim_path(self, path: str) -> None:
+        self.app.config.aim_path = path
+        self.app.config.save()
+        self.app.q.put(('settings_changed',))
+
+    def _set_motec_path(self, path: str) -> None:
+        self.app.config.motec_path = path
+        self.app.config.save()
+        self.app.q.put(('settings_changed',))
+
+    def _set_gpx_path(self, path: str) -> None:
+        self.app.config.gpx_path = path
         self.app.config.save()
         self.app.q.put(('settings_changed',))
 
@@ -182,18 +228,21 @@ class SettingsPage(tk.Frame):
     #  RaceBox actions
     # ─────────────────────────────────────────────────────────────────────────
 
+    def _rb_dest(self) -> str:
+        """Return the folder where RaceBox CSVs should be saved/checked."""
+        return self.app.config.racebox_path or self.app.config.telemetry_path or '.'
+
     def _init_rb_source(self) -> None:
-        dest = self.app.config.telemetry_path or '.'
-        self._rb_source = RaceBoxSource(data_dir=dest)
+        self._rb_source = RaceBoxSource(data_dir=self._rb_dest())
         if self._rb_source.is_authenticated():
             self.lbl_rb_status.config(text="✓ Saved login found", fg=OK)
 
     def _rb_login(self) -> None:
-        dest = self.app.config.telemetry_path
-        if not dest:
+        dest = self._rb_dest()
+        if dest == '.':
             from tkinter import messagebox
             messagebox.showwarning("RaceBox",
-                "Set the Telemetry Folder first so downloaded CSVs have a destination.")
+                "Set the RaceBox folder first so downloaded CSVs have a destination.")
             return
         self._rb_source = RaceBoxSource(data_dir=dest)
         self.lbl_rb_status.config(text="Opening browser…", fg=WARN)
@@ -205,11 +254,11 @@ class SettingsPage(tk.Frame):
             daemon=True).start()
 
     def _rb_download(self) -> None:
-        dest = self.app.config.telemetry_path
-        if not dest:
+        dest = self._rb_dest()
+        if dest == '.':
             from tkinter import messagebox
             messagebox.showwarning("RaceBox",
-                "Set the Telemetry Folder first.")
+                "Set the RaceBox folder first.")
             return
         if not self._rb_source:
             self._init_rb_source()

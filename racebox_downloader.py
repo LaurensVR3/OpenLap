@@ -92,7 +92,16 @@ class DataSource(ABC):
 
     def already_downloaded(self, session: RemoteSession,
                            dest_dir: str) -> bool:
-        return os.path.exists(self.dest_path(session, dest_dir))
+        """Return True if a file with this session's ID exists anywhere under dest_dir."""
+        target = session.source_id
+        if not os.path.isdir(dest_dir):
+            return False
+        for root, _, files in os.walk(dest_dir):
+            for fname in files:
+                stem = os.path.splitext(fname)[0]
+                if stem == target:
+                    return True
+        return False
 
 
 # ── RaceBox source ────────────────────────────────────────────────────────────

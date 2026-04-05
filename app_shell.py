@@ -36,6 +36,7 @@ QUEUE_OWNER = {
     'data_sync_status':      'data_page',
     'data_enable_load_btn':  'data_page',
     'settings_changed':      'data_page',   # triggers rescan
+    'rb_auto_done':          'data_page',   # startup auto-download result
 
     # Export page
     'export_log':            'export_page',
@@ -80,6 +81,7 @@ class App(tk.Tk):
         self._build_layout()
         self._poll()
         threading.Thread(target=self._detect_encoder_bg, daemon=True).start()
+        threading.Thread(target=self._rb_auto_download_bg, daemon=True).start()
 
     # ─────────────────────────────────────────────────────────────────────────
     #  Layout
@@ -185,6 +187,39 @@ class App(tk.Tk):
     def _detect_encoder_bg(self):
         enc = detect_encoder()
         self.q.put(('encoder', enc))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  RaceBox auto-download on startup
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _rb_auto_download_bg(self):
+        """
+        Check for new RaceBox sessions on startup.
+        Posts rb_auto_done(n_downloaded, error_msg) to the queue.
+        n_downloaded == -1  →  not authenticated (prompt to login).
+        n_downloaded == -2  →  exception (error_msg has detail).
+        n_downloaded >= 0   →  success (0 = already up to date).
+        """
+        dest = self.config.telemetry_path
+        if not dest:
+            return   # no folder configured; nothing to do
+        try:
+            from racebox_downloader import RaceBoxSource
+            src = RaceBoxSource(data_dir=dest)
+            if not src.is_authenticated():
+                self.q.put(('rb_auto_done', -1, ''))
+                return
+            sessions = src.list_sessions()
+            new = [s for s in sessions if not src.already_downloaded(s, dest)]
+            if not new:
+                self.q.put(('rb_auto_done', 0, ''))
+                return
+            results = src.download_all(new, dest)
+            self.q.put(('rb_auto_done', len(results), ''))
+            if results:
+                self.q.put(('settings_changed',))   # trigger rescan
+        except Exception as exc:
+            self.q.put(('rb_auto_done', -2, str(exc)))
 
     # ─────────────────────────────────────────────────────────────────────────
     #  TTK styling

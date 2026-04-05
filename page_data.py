@@ -13,10 +13,23 @@ from widgets import Card, Btn, Divider
 from racebox_data import Session
 import racebox_data
 import aim_data
+import gpx_data
+import motec_data
 from video_renderer import concat_videos, video_duration
 from session_scanner import (scan_csvs, scan_videos, group_videos, match_sessions,
                       convert_xrk_files, scan_pending_xrk, MatchedSession,
                       VideoFile, VideoGroup)
+
+
+def _load_session(path: str):
+    """Load a telemetry session from a CSV, GPX, or MoTeC .ld file."""
+    if motec_data.is_motec_ld(path):
+        return motec_data.load_ld(path)
+    if gpx_data.is_gpx(path):
+        return gpx_data.load_gpx(path)
+    if aim_data.is_aim_csv(path):
+        return aim_data.load_csv(path)
+    return racebox_data.load_csv(path)
 
 
 # Status icons
@@ -35,6 +48,7 @@ class DataPage(tk.Frame):
         # Scan state
         self._sessions: List[MatchedSession] = []
         self._csv_to_match: dict = {}   # csv_path -> MatchedSession
+        self._session_meta: dict = {}   # csv_path -> {track, laps, best} (from lazy load)
 
         # Currently selected session (for align panel)
         self._sel_csv: Optional[str] = None
@@ -77,8 +91,13 @@ class DataPage(tk.Frame):
 
         Divider(self).pack(fill='x', padx=24, pady=(0, 8))
 
+        # ── RaceBox banner (hidden by default, shown on auto-download result) ──
+        self._rb_banner = tk.Frame(self, bg=CARD2)
+        # not packed yet; revealed by _show_rb_banner
+
         # ── Main split: tree (left) + detail (right) ──────────────────────────
-        split = tk.Frame(self, bg=BG)
+        self._main_split = tk.Frame(self, bg=BG)
+        split = self._main_split
         split.pack(fill='both', expand=True, padx=24, pady=(0, 8))
 
         left  = tk.Frame(split, bg=BG)
@@ -367,10 +386,7 @@ class DataPage(tk.Frame):
 
     def _load_session_bg(self, csv_path: str):
         try:
-            if aim_data.is_aim_csv(csv_path):
-                sess = aim_data.load_csv(csv_path)
-            else:
-                sess = racebox_data.load_csv(csv_path)
+            sess = _load_session(csv_path)
             self.app.q.put(('data_session_loaded', csv_path, sess, None))
         except Exception as e:
             self.app.q.put(('data_session_loaded', csv_path, None, str(e)))
@@ -455,53 +471,147 @@ class DataPage(tk.Frame):
     # ─────────────────────────────────────────────────────────────────────────
 
     def on_show(self) -> None:
-        """Auto-scan once on first display if paths are configured."""
-        if not self._sessions and self.app.config.telemetry_path:
+        """Load cached sessions immediately, then rescan in the background."""
+        if not self._sessions and self.app.config.all_telemetry_paths():
+            self._load_from_cache()
             self.app.after(150, self._scan)
 
+    def _load_from_cache(self) -> None:
+        """Populate the tree from the last saved scan so the UI is usable immediately."""
+        from app_config import load_scan_cache
+        from datetime import datetime, timezone
+        data = load_scan_cache()
+        if not data:
+            return
+        cached_paths = data.get('tel_paths') or data.get('tel_path', '')
+        if cached_paths != '|'.join(self.app.config.all_telemetry_paths()):
+            return   # paths changed — cache is stale
+
+        sessions = []
+        for e in data.get('sessions', []):
+            csv_start = None
+            if e.get('csv_start'):
+                try:
+                    csv_start = datetime.fromisoformat(e['csv_start'])
+                    if csv_start.tzinfo is None:
+                        csv_start = csv_start.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    pass
+
+            video_paths = e.get('video_paths', [])
+            if video_paths:
+                files = [VideoFile(path=p, creation_time=None, duration=0.0)
+                         for p in video_paths]
+                vg = VideoGroup(files=files, start_time=None, end_time=None,
+                                total_dur=e.get('video_total_dur', 0.0))
+            else:
+                vg = None
+
+            m = MatchedSession(
+                csv_path         = e['csv_path'],
+                video_group      = vg,
+                time_delta       = 0.0,
+                csv_start        = csv_start,
+                video_start      = None,
+                matched          = e.get('matched', False),
+                source           = e.get('source', 'RaceBox'),
+                needs_conversion = e.get('needs_conversion', False),
+                xrk_path         = e.get('xrk_path'),
+            )
+            sessions.append(m)
+            # Restore any previously loaded session metadata
+            meta = {k: e[k] for k in ('track', 'laps', 'best') if e.get(k)}
+            if meta:
+                self._session_meta[m.csv_path] = meta
+
+        if sessions:
+            self._sessions = sessions
+            self._populate_tree()
+            # Fill in rich metadata for rows that have it cached
+            for m in sessions:
+                meta = self._session_meta.get(m.csv_path, {})
+                if meta:
+                    try:
+                        vals = list(self.tree.item(m.csv_path, 'values'))
+                        if meta.get('track'):
+                            vals[2] = meta['track']
+                        if meta.get('laps'):
+                            vals[3] = meta['laps']
+                        if meta.get('best'):
+                            vals[4] = meta['best']
+                        self.tree.item(m.csv_path, values=vals)
+                    except Exception:
+                        pass
+            n = len(sessions)
+            self.lbl_status.config(
+                text=f"Showing {n} cached session(s) — rescanning…", fg=TEXT3)
+
     def _scan(self):
-        tel = self.app.config.telemetry_path
+        tel_paths = self.app.config.all_telemetry_paths()
         vid = self.app.config.video_path
-        if not tel:
+        if not tel_paths:
             messagebox.showwarning("Scan",
-                "Set the Telemetry Folder in Settings first.")
+                "Set at least one telemetry folder in Settings first.")
             return
         self.lbl_status.config(text="Scanning…", fg=WARN)
-        threading.Thread(target=self._scan_bg, args=(tel, vid),
+        threading.Thread(target=self._scan_bg, args=(tel_paths, vid),
                          daemon=True).start()
 
-    def _scan_bg(self, tel_path: str, vid_path: str):
+    def _scan_bg(self, tel_paths: list, vid_path: str):
         try:
             from datetime import datetime, timezone
 
-            def _xrk_progress(msg: str):
+            def _progress(msg: str):
                 self.app.q.put(('data_scan_progress', msg))
 
-            convert_xrk_files(tel_path, progress_cb=_xrk_progress)
+            # XRK conversion: run on all configured paths
+            for p in tel_paths:
+                if os.path.isdir(p):
+                    convert_xrk_files(p, progress_cb=_progress)
 
-            csvs   = scan_csvs(tel_path)
+            _progress("Scanning telemetry files…")
+            seen: set = set()
+            csvs: list = []
+            for p in tel_paths:
+                if os.path.isdir(p):
+                    for f in scan_csvs(p):
+                        if f not in seen:
+                            seen.add(f)
+                            csvs.append(f)
+            _progress(f"Found {len(csvs)} telemetry file(s).")
+
             if vid_path and os.path.isdir(vid_path):
-                videos = scan_videos(vid_path)
+                videos = scan_videos(vid_path, progress_cb=_progress)
+                _progress(f"Found {len(videos)} video file(s) — matching sessions…")
                 groups = group_videos(videos)
             else:
                 groups = []
+                _progress("Matching sessions…")
+
             matches = match_sessions(csvs, groups)
 
             # Any XRK files still without a CSV (conversion failed or first run)
             # appear as pending items so the user can see and retry them.
-            for xrk_path, csv_path in scan_pending_xrk(tel_path):
-                mtime = os.path.getmtime(xrk_path)
-                matches.append(MatchedSession(
-                    csv_path         = csv_path,
-                    video_group      = None,
-                    time_delta       = float('inf'),
-                    csv_start        = datetime.fromtimestamp(mtime, tz=timezone.utc),
-                    video_start      = None,
-                    matched          = False,
-                    source           = 'AIM Mychron',
-                    needs_conversion = True,
-                    xrk_path         = xrk_path,
-                ))
+            pending_xrk_seen: set = set()
+            for p in tel_paths:
+                if not os.path.isdir(p):
+                    continue
+                for xrk_path, csv_path in scan_pending_xrk(p):
+                    if xrk_path in pending_xrk_seen:
+                        continue
+                    pending_xrk_seen.add(xrk_path)
+                    mtime = os.path.getmtime(xrk_path)
+                    matches.append(MatchedSession(
+                        csv_path         = csv_path,
+                        video_group      = None,
+                        time_delta       = float('inf'),
+                        csv_start        = datetime.fromtimestamp(mtime, tz=timezone.utc),
+                        video_start      = None,
+                        matched          = False,
+                        source           = 'AIM Mychron',
+                        needs_conversion = True,
+                        xrk_path         = xrk_path,
+                    ))
 
             matches.sort(key=lambda m: m.csv_start.timestamp() if m.csv_start else 0)
             self.app.q.put(('data_scanned', matches))
@@ -692,6 +802,21 @@ class DataPage(tk.Frame):
             matches: List[MatchedSession] = args[0]
             self._sessions = matches
             self._populate_tree()
+            # Re-apply any cached rich metadata into the refreshed tree rows
+            for m in matches:
+                meta = self._session_meta.get(m.csv_path, {})
+                if meta:
+                    try:
+                        vals = list(self.tree.item(m.csv_path, 'values'))
+                        if meta.get('track'):
+                            vals[2] = meta['track']
+                        if meta.get('laps'):
+                            vals[3] = meta['laps']
+                        if meta.get('best'):
+                            vals[4] = meta['best']
+                        self.tree.item(m.csv_path, values=vals)
+                    except Exception:
+                        pass
             total   = len(matches)
             matched = sum(1 for m in matches if m.matched)
             synced  = sum(1 for m in matches
@@ -708,6 +833,14 @@ class DataPage(tk.Frame):
                 status = f"{src_str}  ·  {matched} with video  ·  {synced} synced"
                 col    = TEXT2
             self.lbl_status.config(text=status, fg=col)
+            # Persist results so the next launch can show them immediately
+            from app_config import save_scan_cache
+            save_scan_cache(
+                '|'.join(self.app.config.all_telemetry_paths()),
+                self.app.config.video_path,
+                matches,
+                self._session_meta,
+            )
 
         elif kind == 'data_scan_progress':
             self.lbl_status.config(text=args[0], fg=WARN)
@@ -725,8 +858,8 @@ class DataPage(tk.Frame):
             # Update tree row with real metadata now that the session is loaded
             if sess is not None:
                 try:
-                    laps_str = str(len(sess.timed_laps)) if sess.timed_laps else '0'
-                    best_str = f"{sess.best_lap_time:.3f}s" if sess.best_lap_time else '—'
+                    laps_str  = str(len(sess.timed_laps)) if sess.timed_laps else '0'
+                    best_str  = f"{sess.best_lap_time:.3f}s" if sess.best_lap_time else '—'
                     track_str = sess.track or os.path.splitext(os.path.basename(csv_path))[0]
                     if sess.source == 'AIM Mychron':
                         track_str = '[AIM] ' + track_str
@@ -735,6 +868,9 @@ class DataPage(tk.Frame):
                     vals[3] = laps_str
                     vals[4] = best_str
                     self.tree.item(csv_path, values=vals)
+                    # Cache for next launch
+                    self._session_meta[csv_path] = {
+                        'track': track_str, 'laps': laps_str, 'best': best_str}
                 except Exception:
                     pass
             elif err:
@@ -769,7 +905,66 @@ class DataPage(tk.Frame):
             if hasattr(self, 'btn_convert'):
                 self.btn_convert.config(state='normal', text='⟳  Retry Convert')
 
+        elif kind == 'rb_auto_done':
+            n, err = args[0], args[1]
+            self._show_rb_banner(n, err)
+
+        elif kind == 'rb_auto_done':
+            n, err = args[0], args[1]
+            self._show_rb_banner(n, err)
+
         elif kind == 'settings_changed':
-            # Auto-rescan when paths change (only if we have a telemetry path)
-            if self.app.config.telemetry_path:
+            # Auto-rescan when paths change (only if we have at least one path)
+            if self.app.config.all_telemetry_paths():
                 self._scan()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  RaceBox auto-download banner
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _show_rb_banner(self, n: int, err: str) -> None:
+        """Populate and reveal the RaceBox status banner below the toolbar."""
+        for w in self._rb_banner.winfo_children():
+            w.destroy()
+
+        if n == 0:
+            return   # up to date — nothing to show
+
+        if n > 0:
+            bg  = CARD2
+            fg  = OK
+            msg = f"✓ Downloaded {n} new RaceBox session{'s' if n != 1 else ''}."
+        elif n == -1:
+            bg  = CARD2
+            fg  = WARN
+            msg = "RaceBox: not logged in — new sessions may be available."
+        else:
+            bg  = CARD2
+            fg  = ERR
+            msg = f"RaceBox download error: {err[:100]}"
+
+        self._rb_banner.config(bg=bg)
+        inner = tk.Frame(self._rb_banner, bg=bg)
+        inner.pack(fill='x', padx=24, pady=6)
+
+        tk.Label(inner, text=msg, bg=bg, fg=fg, font=font(9),
+                 anchor='w').pack(side='left', fill='x', expand=True)
+
+        if n == -1 or n == -2:
+            Btn(inner, "🔐  Login to RaceBox", small=True,
+                command=self._rb_banner_login).pack(side='left', padx=(8, 4))
+
+        Btn(inner, "✕", small=True,
+            command=self._dismiss_rb_banner).pack(side='left')
+
+        # Insert banner below the divider, above the main split
+        self._rb_banner.pack(fill='x', before=self._main_split)
+
+    def _dismiss_rb_banner(self) -> None:
+        self._rb_banner.pack_forget()
+
+    def _rb_banner_login(self) -> None:
+        """Switch to Settings and trigger the RaceBox login flow."""
+        self.app.show_page('settings_page')
+        settings = self.app.pages['settings_page']
+        settings._rb_login()

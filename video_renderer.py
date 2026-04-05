@@ -6,6 +6,7 @@ and final mux. No GUI state — all inputs passed explicitly.
 """
 
 from __future__ import annotations
+import logging
 import math
 import os
 import subprocess
@@ -13,6 +14,8 @@ import sys
 import tempfile
 from multiprocessing import Pool
 from typing import Callable, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 def _run(cmd, **kwargs):
@@ -32,6 +35,7 @@ import numpy as np
 
 from racebox_data import Session, Lap
 from overlay_worker import render_frame_worker, scale_factor, default_layout
+from exceptions import VideoConcatError, VideoMuxError, LapOutOfRangeError
 
 
 # ── FFmpeg helpers ─────────────────────────────────────────────────────────────
@@ -73,7 +77,7 @@ def concat_videos(input_files: List[str], output: str) -> None:
                     '-c:v', 'libx264', '-crf', '18', '-c:a', 'aac', output]
             r2 = _run(cmd2)
             if r2.returncode != 0:
-                raise RuntimeError(r2.stderr.decode(errors='replace')[-600:])
+                raise VideoConcatError(r2.stderr.decode(errors='replace')[-600:])
     finally:
         os.unlink(concat_file)
 
@@ -108,7 +112,7 @@ def mux_audio(raw_video: str, audio_source: str,
            output]
     r = _run(cmd)
     if r.returncode != 0:
-        raise RuntimeError(r.stderr.decode(errors='replace')[-600:])
+        raise VideoMuxError(r.stderr.decode(errors='replace')[-600:])
 
 
 def video_duration(path: str) -> float:
@@ -155,6 +159,7 @@ def render_lap(
     overlay_layout: Optional[dict] = None,   # normalized positions/sizes
     progress_cb:    Optional[Callable[[float, str], None]] = None,
     log_cb:         Optional[Callable[[str], None]] = None,
+    reference_lap:  Optional[Lap] = None,    # lap to compare against for delta time
 ) -> None:
     """
     Render one video with telemetry overlay.
@@ -169,6 +174,22 @@ def render_lap(
         if log_cb: log_cb(msg)
     def prog(pct, msg):
         if progress_cb: progress_cb(pct, msg)
+
+    # ── Delta time setup ───────────────────────────────────────────────────────
+    _delta_fn        = None   # callable(lap_elapsed, dist_m) → float | None
+    _cur_lap_t       = None   # elapsed array for current lap (single-lap render)
+    _cur_lap_d       = None   # distance array for current lap
+    _cur_lap_profiles: dict = {}  # lap_num → (elapsed_arr, dist_arr) for full session
+
+    if reference_lap is not None:
+        from delta_time import compute_lap_profile, make_delta_fn
+        _delta_fn = make_delta_fn(reference_lap,
+                                  current_lap_duration=job.duration)
+        if job.lap is not None:
+            _cur_lap_t, _cur_lap_d = compute_lap_profile(job.lap)
+        else:
+            for lap in session.laps:
+                _cur_lap_profiles[lap.lap_num] = compute_lap_profile(lap)
 
     cap   = cv2.VideoCapture(video_path)
     fps   = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -205,7 +226,7 @@ def render_lap(
     if n_frames <= 0:
         cap.release()
         need_start = vid_lap_start - padding
-        raise ValueError(
+        raise LapOutOfRangeError(
             f"Lap is {job.duration:.1f}s long (at session position {job.gpx_start:.1f}s–{job.gpx_end:.1f}s), "
             f"but with sync offset {sync_offset:.1f}s this maps to video time {need_start:.1f}s–{vid_lap_end+padding:.1f}s, "
             f"which is outside the video duration of {vid_dur_s:.1f}s. "
@@ -268,6 +289,26 @@ def render_lap(
 
                 pt = session.interpolate_at(sess_t)
                 if pt:
+                    # ── Delta time ─────────────────────────────────────────────
+                    delta_val = 0.0
+                    if _delta_fn is not None:
+                        try:
+                            if _cur_lap_t is not None:
+                                # Single-lap render: use precomputed profile
+                                cur_d = float(np.interp(
+                                    pt.lap_elapsed, _cur_lap_t, _cur_lap_d))
+                            else:
+                                # Full-session render: look up by lap number
+                                profile = _cur_lap_profiles.get(pt.lap)
+                                if profile is not None:
+                                    cur_d = float(np.interp(
+                                        pt.lap_elapsed, profile[0], profile[1]))
+                                else:
+                                    cur_d = 0.0
+                            delta_val = _delta_fn(pt.lap_elapsed, cur_d)
+                        except Exception:
+                            delta_val = 0.0
+
                     history_buf.append({
                         't':           lap_t_display,
                         'speed':       pt.speed,
@@ -276,6 +317,7 @@ def render_lap(
                         'lean':        pt.lean_angle,
                         'rpm':         pt.rpm,
                         'exhaust_temp':pt.exhaust_temp,
+                        'delta_time':  delta_val,
                     })
                     if len(history_buf) > HISTORY_MAX:
                         history_buf.pop(0)

@@ -3,14 +3,18 @@
 
 from __future__ import annotations
 import json
+import logging
 import shutil
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Dict, List
 
-CONFIG_FILE = Path.home() / '.openlap' / 'config.json'
-_OLD_CONFIG_V2 = Path.home() / '.telemetry_overlay' / 'config.json'
-_OLD_CONFIG_V1 = Path.home() / '.racebox_studio'    / 'config.json'
+logger = logging.getLogger(__name__)
+
+CONFIG_FILE     = Path.home() / '.openlap' / 'config.json'
+SCAN_CACHE_FILE = Path.home() / '.openlap' / 'scan_cache.json'
+_OLD_CONFIG_V2  = Path.home() / '.telemetry_overlay' / 'config.json'
+_OLD_CONFIG_V1  = Path.home() / '.racebox_studio'    / 'config.json'
 
 
 @dataclass
@@ -59,6 +63,12 @@ class OverlayLayout:
 
 @dataclass
 class AppConfig:
+    # Per-source telemetry directories (preferred)
+    racebox_path:   str = ""
+    aim_path:       str = ""
+    motec_path:     str = ""
+    gpx_path:       str = ""
+    # Legacy single telemetry folder — kept as scan-all fallback for old configs
     telemetry_path: str = ""
     video_path:     str = ""
     export_path:    str = ""
@@ -68,6 +78,27 @@ class AppConfig:
     presets:        Dict[str, dict] = field(default_factory=dict)
     # name -> serialized OverlayLayout dict
     active_preset:  str = ""
+
+    def all_telemetry_paths(self) -> List[str]:
+        """Return all unique non-empty telemetry paths to scan.
+
+        Uses case-insensitive, normalised path comparison so the same
+        directory configured with different separators or casing only
+        appears once.
+        """
+        import os as _os
+        seen: set = set()
+        result: List[str] = []
+        for p in (self.racebox_path, self.aim_path, self.motec_path,
+                  self.gpx_path, self.telemetry_path):
+            p = p.strip()
+            if not p:
+                continue
+            key = _os.path.normcase(_os.path.normpath(p))
+            if key not in seen:
+                seen.add(key)
+                result.append(p)
+        return result
 
     # ── Persistence ───────────────────────────────────────────────────────────
 
@@ -86,13 +117,53 @@ class AppConfig:
                     CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(_src, CONFIG_FILE)
                 except Exception:
-                    pass
+                    logger.debug('Config migration from %s failed', _src, exc_info=True)
         try:
             with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             return _from_dict(data)
         except Exception:
+            logger.warning('Failed to load config from %s, using defaults', CONFIG_FILE, exc_info=True)
             return cls()
+
+
+# ── Scan cache ────────────────────────────────────────────────────────────────
+
+def save_scan_cache(tel_path: str, vid_path: str,
+                    sessions: list, session_meta: dict) -> None:
+    """Persist lightweight scan results so the tree can be populated immediately on next launch."""
+    entries = []
+    for m in sessions:
+        meta = session_meta.get(m.csv_path, {})
+        entries.append({
+            'csv_path':        m.csv_path,
+            'source':          m.source,
+            'csv_start':       m.csv_start.isoformat() if m.csv_start else None,
+            'matched':         m.matched,
+            'video_paths':     m.video_group.paths if m.video_group else [],
+            'video_total_dur': m.video_group.total_dur if m.video_group else 0.0,
+            'needs_conversion': m.needs_conversion,
+            'xrk_path':        m.xrk_path,
+            'track':           meta.get('track', ''),
+            'laps':            meta.get('laps', ''),
+            'best':            meta.get('best', ''),
+        })
+    data = {'tel_path': tel_path, 'tel_paths': tel_path, 'vid_path': vid_path, 'sessions': entries}
+    try:
+        SCAN_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(SCAN_CACHE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2)
+    except Exception:
+        logger.debug('Failed to write scan cache', exc_info=True)
+
+
+def load_scan_cache() -> dict:
+    """Return cached scan data, or {} on miss/error."""
+    try:
+        with open(SCAN_CACHE_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 
 # ── Reconstruction helpers ─────────────────────────────────────────────────────
@@ -122,6 +193,10 @@ def overlay_from_dict(overlay_data: dict) -> OverlayLayout:
 def _from_dict(data: dict) -> AppConfig:
     overlay = overlay_from_dict(data.get('overlay', {}))
     return AppConfig(
+        racebox_path   = data.get('racebox_path',   ''),
+        aim_path       = data.get('aim_path',       ''),
+        motec_path     = data.get('motec_path',     ''),
+        gpx_path       = data.get('gpx_path',       ''),
         telemetry_path = data.get('telemetry_path', ''),
         video_path     = data.get('video_path',     ''),
         export_path    = data.get('export_path',    ''),

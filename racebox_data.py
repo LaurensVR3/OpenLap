@@ -9,9 +9,14 @@ Auto-detects car vs bike mode:
 from __future__ import annotations
 import csv
 import io
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Dict, Optional
+
+from exceptions import MissingHeaderError, NoDataRowsError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -163,7 +168,7 @@ def load_csv(path: str) -> Session:
     data_start = next(
         (i for i, l in enumerate(raw_lines) if l.startswith('Record,Time,')), None)
     if data_start is None:
-        raise ValueError(f"No data header in {path}")
+        raise MissingHeaderError(f"No data header in {path}")
 
     meta: Dict[str, str] = {}
     for line in raw_lines[:data_start]:
@@ -177,7 +182,7 @@ def load_csv(path: str) -> Session:
     reader   = csv.DictReader(io.StringIO(''.join(raw_lines[data_start:])))
     raw_rows = [r for r in reader if r.get('Record', '').strip().isdigit()]
     if not raw_rows:
-        raise ValueError(f"No data rows in {path}")
+        raise NoDataRowsError(f"No data rows in {path}")
 
     all_pts: List[DataPoint] = [DataPoint.from_row(r, is_bike) for r in raw_rows]
 

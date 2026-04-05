@@ -9,11 +9,12 @@ GAUGE_CHANNELS = {
     'gforce_lat':   {'label': 'Lat G',        'unit': 'G',    'hist_key': 'gy',            'min': -3,   'max': 3,     'symmetric': True},
     'lean':         {'label': 'Lean',         'unit': '°',    'hist_key': 'lean',          'min': -60,  'max': 60,    'symmetric': True},
     'lap_time':     {'label': 'Lap Time',     'unit': '',     'hist_key': 't',             'min': 0,    'max': 120,   'symmetric': False},
+    'delta_time':   {'label': 'Delta',        'unit': 's',    'hist_key': 'delta_time',    'min': -30,  'max': 30,    'symmetric': True},
 }
 
-GAUGE_STYLES      = ['Numeric', 'Bar', 'Dial', 'Line', 'Lean']
-GAUGE_STYLES_BIKE = ['Numeric', 'Bar', 'Dial', 'Line', 'Lean']  # all styles in bike mode
-GAUGE_STYLES_CAR  = ['Numeric', 'Bar', 'Dial', 'Line']          # no Lean in car mode
+GAUGE_STYLES      = ['Numeric', 'Bar', 'Dial', 'Line', 'Lean', 'Delta']
+GAUGE_STYLES_BIKE = ['Numeric', 'Bar', 'Dial', 'Line', 'Lean', 'Delta']
+GAUGE_STYLES_CAR  = ['Numeric', 'Bar', 'Dial', 'Line',          'Delta']
 
 GAUGE_COLOURS = [
     '#00d4ff', '#ff6b35', '#a8ff3e', '#ff3ea8',

@@ -1,18 +1,33 @@
 # OpenLap
 
-**OpenLap** is an open-source desktop application that overlays telemetry data on racing video footage. Point it at a folder of telemetry files and a folder of videos, and it matches sessions, syncs timing, and renders professional-looking gauge overlays — all from a single window.
+**OpenLap** is an open-source desktop application that overlays telemetry data on racing video footage. Point it at your telemetry files and a folder of videos, and it matches sessions, syncs timing, and renders professional-looking gauge overlays — all from a single window.
 
 > Licensed under the **GNU General Public License v3**. Free forever. Forks must stay open source.
+
+---
+
+## Preview
+
+**Sample output video** — Spa-Francorchamps, Porsche 992 GT3:
+
+[![OpenLap sample output](https://img.youtube.com/vi/0XuByCyL_mA/maxresdefault.jpg)](https://www.youtube.com/watch?v=0XuByCyL_mA)
+
+### Screenshots
+
+| Data | Export | Settings |
+|---|---|---|
+| ![Data tab](docs/screenshot_data.png) | ![Export tab](docs/screenshot_export.png) | ![Settings tab](docs/screenshot_settings.png) |
 
 ---
 
 ## Features
 
 ### Data & Session Management
-- Scan a folder (recursively) to discover all telemetry sessions and automatically match them to video files
+- Per-source telemetry folders — configure separate directories for RaceBox, AIM, MoTeC, and GPX data
+- Scan folders recursively to discover sessions and automatically match them to video files
 - Manual video reassignment for sessions where auto-matching doesn't find the right clip
 - Multi-clip support — assign several video segments to a single session; they are joined before rendering
-- Frame-accurate sync tool with persistent offsets: set once, remembered forever per CSV file
+- Frame-accurate sync tool with persistent offsets: set once, remembered forever per file
 - RaceBox cloud download directly from the app (requires a RaceBox account)
 - AIM `.xrk` / `.xrz` / `.drk` files are silently converted to CSV on first scan using the AIM MatLabXRK DLL (downloaded automatically)
 
@@ -23,7 +38,7 @@
 - Snap to screen edges on release
 - Live style previews update as you drag and resize
 - **4 overlay themes**: Dark · Light · Colorful · Monochrome — applied to all gauges and the map simultaneously
-- **5 gauge styles**: Numeric · Bar · Dial · Line · Lean
+- **6 gauge styles**: Numeric · Bar · Dial · Line · Lean · Delta
 - **1 map style**: Circuit (overhead trace with driven-portion highlight and position dot)
 - Bike mode — enables Lean gauge style and reads LeanAngle from compatible devices
 - Named preset layouts — save, load, and delete overlay configurations
@@ -46,9 +61,10 @@
 
 | Source | File types | Notes |
 |---|---|---|
-| **RaceBox** | `.csv` (RaceBox format) | Car and bike mode; detects automatically from column layout |
+| **RaceBox** | `.csv` (RaceBox format) | Car and bike mode; auto-detected from column layout |
 | **AIM Mychron** | `.xrk` · `.xrz` · `.drk` | Auto-converted to CSV on scan; AIM DLL downloaded automatically on first use |
-| MoTeC | — | Planned |
+| **MoTeC** | `.ld` | Binary i2 format; full session lap timing + last-lap telemetry from circular buffer |
+| **GPX** | `.gpx` | GPS track files; speed derived from position + timestamp |
 
 ### Telemetry channels
 
@@ -61,6 +77,7 @@
 | `gforce_lat` | Lat G | G | Yes |
 | `lean` | Lean | ° | Yes (bike only) |
 | `lap_time` | Lap Time | s | No |
+| `delta_time` | Delta | s | Yes |
 
 ---
 
@@ -76,7 +93,7 @@
 pip install opencv-python pillow numpy matplotlib
 ```
 
-For AIM `.xrk` conversion (required if you use AIM Mychron):
+For AIM `.xrk` conversion and MoTeC `.ld` parsing:
 
 ```bash
 pip install pandas
@@ -105,10 +122,14 @@ Configuration is stored at `~/.openlap/config.json` and migrated automatically f
 
 ### 1. Settings tab
 
-Set your **Telemetry Folder**, **Video Folder**, and **Export Folder**. These are remembered between sessions.
+Configure separate folders for each telemetry source, your **Video Folder**, and **Export Folder**. All paths are remembered between sessions.
 
-- **RaceBox**: log in to download new sessions from the cloud directly into your telemetry folder
-- **AIM Mychron**: `.xrk` / `.xrz` / `.drk` files placed in the telemetry folder are converted to CSV automatically on the next scan
+- **RaceBox** — set the folder where CSVs are stored; log in to download new sessions from the cloud directly into that folder
+- **AIM Mychron** — point at the folder containing `.xrk` / `.xrz` / `.drk` files; conversion to CSV happens automatically on the next scan
+- **MoTeC** — point at the folder containing `.ld` files
+- **GPX** — point at the folder containing `.gpx` files
+
+> **Migrating from an older version?** If you had a single "Telemetry Folder" set, a **Legacy Folder** card appears at the bottom of the Telemetry Sources section with a **Clear** button. Set the per-source paths first, then clear the legacy folder to remove duplicates from the session list.
 
 ### 2. Data tab
 
@@ -163,6 +184,19 @@ Click **Scan** to discover sessions and match them to video files (also runs aut
 | **Numeric** | Large centred value readout |
 | **Line** | Scrolling area chart of recent history |
 | **Lean** | Motorcycle silhouette tilted to current lean angle (bike mode) |
+| **Delta** | Time delta vs. reference lap — green when ahead, red when behind |
+
+---
+
+## MoTeC .ld Notes
+
+MoTeC i2 exports from ACC (and similar sim/real-world loggers) use a binary circular-buffer format:
+
+- The **TIME channel** (50 Hz) records the full session — lap timing and lap counts are derived from this
+- All other channels (speed, G-forces, RPM, etc.) use a shorter circular buffer covering approximately the **last recorded lap**
+- Lap classification uses a statistical threshold to distinguish full flying laps from sector markers and aborted triggers
+
+The parser is a pure-Python implementation with no third-party dependencies beyond the standard library.
 
 ---
 
@@ -172,15 +206,16 @@ Click **Scan** to discover sessions and match them to video files (also runs aut
 openlap.pyw             Entry point
 
 app_shell.py            Main window: 3-tab sidebar, message queue, shared state
-app_config.py           Persistent config: paths, sync offsets, overlay layout, presets
+app_config.py           Persistent config: per-source paths, sync offsets, overlay layout, presets
                         Saved to ~/.openlap/config.json
 
 design_tokens.py        Colours, fonts, spacing constants (editor UI)
 widgets.py              Shared UI primitives: Card, Btn, Divider, Label
+exceptions.py           Shared exception types (MissingHeaderError, NoDataRowsError)
 
 page_data.py            Data tab: session tree, video matching, sync panel
 page_export.py          Export tab: overlay editor, preset management, render controls
-page_settings.py        Settings tab: folder paths, RaceBox download, encoder detection
+page_settings.py        Settings tab: per-source folder paths, RaceBox download, encoder detection
 
 overlay_editor.py       Drag/resize canvas (letterbox-aware, snapping, live previews)
 overlay_worker.py       Per-frame render worker called by multiprocessing pool
@@ -188,13 +223,16 @@ overlay_utils.py        Helpers: blend_rgba, fig_to_rgba, dummy data generators
 overlay_themes.py       Colour palettes for Dark / Light / Colorful / Monochrome themes
 
 gauge_channels.py       Channel metadata, data builder, and dummy data for previews
+delta_time.py           Delta-time computation: distance-normalised gap vs. reference lap
 
 video_renderer.py       render_lap(), concat_videos(), detect_encoder()
 
 session_scanner.py      Scan folders, match sessions to video files, trigger XRK conversion
 racebox_data.py         Parse RaceBox CSV files into Session/Lap/DataPoint objects
-racebox_downloader.py   Download sessions from RaceBox cloud (Playwright)
+racebox_downloader.py   Download sessions from RaceBox cloud (Playwright); recursive duplicate check
 aim_data.py             Parse AIM CSV files (after XRK conversion) into Session/Lap objects
+motec_data.py           Parse MoTeC .ld binary files into Session/Lap/DataPoint objects
+gpx_data.py             Parse GPX track files into Session/Lap/DataPoint objects
 xrk_to_csv.py           Convert AIM .xrk/.xrz/.drk to CSV via the AIM MatLabXRK DLL
 
 style_registry.py       Discover, cache, and call style plugins from styles/
@@ -206,6 +244,9 @@ styles/
   gauge_dial.py         Gauge style: 240° arc dial with needle
   gauge_line.py         Gauge style: scrolling area chart
   gauge_lean.py         Gauge style: motorcycle lean angle silhouette
+  gauge_delta.py        Gauge style: delta time vs. reference lap
+
+tests/                  pytest suite covering all data parsers, gauge channels, delta time
 ```
 
 ---
@@ -279,6 +320,17 @@ Map-specific data keys:
 | `lons` | `list[float]` | Longitude of every track point |
 | `cur_idx` | `int` | Index of the current position |
 | `_tc` | `dict` | Theme colour tokens (keys: `map_bg_rgba`, `map_track_outer`, `map_track_inner`, `map_driven`, `map_dot`, `map_start`) |
+
+---
+
+## Running Tests
+
+```bash
+pip install pytest
+pytest tests/
+```
+
+Tests cover all data parsers (RaceBox, AIM, MoTeC, GPX), gauge channels, delta-time computation, app config persistence, and session scanning. Integration tests that require a real `.ld` file are skipped automatically when the file is not present.
 
 ---
 

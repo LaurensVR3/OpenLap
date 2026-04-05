@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="OpenLap Test"
+  xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>Derived Speed Test</name>
+    <trkseg>
+      <trkpt lat="50.4372" lon="5.9719"><ele>400.0</ele><time>2024-06-15T14:00:00Z</time></trkpt>
+      <trkpt lat="50.4382" lon="5.9729"><ele>401.0</ele><time>2024-06-15T14:00:02Z</time></trkpt>
+      <trkpt lat="50.4392" lon="5.9739"><ele>402.0</ele><time>2024-06-15T14:00:04Z</time></trkpt>
+      <trkpt lat="50.4402" lon="5.9749"><ele>403.0</ele><time>2024-06-15T14:00:06Z</time></trkpt>
+      <trkpt lat="50.4412" lon="5.9759"><ele>404.0</ele><time>2024-06-15T14:00:08Z</time></trkpt>
+    </trkseg>
+  </trk>
+</gpx>

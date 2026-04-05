@@ -1,11 +1,14 @@
 # overlay_editor.py — Visual drag/resize overlay element editor with live style previews
 
 from __future__ import annotations
+import logging
 import queue
 import threading
 import tkinter as tk
 from typing import Callable, Optional, Tuple
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 from design_tokens import CARD, CARD2, BORDER, TEXT2, TEXT3, ACC, font
 from app_config import OverlayLayout, OverlayElement, GaugeConfig
@@ -285,7 +288,7 @@ class OverlayEditor(tk.Frame):
 
             self._preview_q.put((key, rgba))
         except Exception as exc:
-            print(f'[OverlayEditor] Preview render failed ({key}/{style_name}): {exc}')
+            logger.warning('Preview render failed (%s/%s): %s', key, style_name, exc)
 
     def _poll_previews(self) -> None:
         updated = False

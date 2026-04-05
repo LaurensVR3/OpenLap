@@ -345,11 +345,41 @@ class ExportPage(tk.Frame):
             ('fastest',  'Fastest lap (per session)'),
             ('all_laps', 'All laps (one file per lap)'),
             ('full',     'Full session'),
+            ('clip',     'Custom clip (point to point)'),
         ]
         for val, lbl in scopes:
             tk.Radiobutton(scope_card.body, text=lbl, variable=self.var_scope,
                            value=val, bg=CARD, fg=TEXT, selectcolor=CARD2,
-                           activebackground=CARD, font=font(9)).pack(anchor='w', pady=1)
+                           activebackground=CARD, font=font(9),
+                           command=self._on_scope_change).pack(anchor='w', pady=1)
+
+        # Clip range controls — shown only when scope='clip'
+        self.var_clip_start = tk.DoubleVar(value=0.0)
+        self.var_clip_end   = tk.DoubleVar(value=300.0)
+        self._clip_frame = tk.Frame(scope_card.body, bg=CARD)
+        self._clip_frame.pack(fill='x', pady=(4, 0))
+
+        tk.Label(self._clip_frame, text="Start (s):", bg=CARD, fg=TEXT3,
+                 font=font(8)).grid(row=0, column=0, sticky='w', padx=(0, 4))
+        tk.Spinbox(self._clip_frame, textvariable=self.var_clip_start,
+                   from_=0, to=86400, increment=1.0, width=7, format='%.1f',
+                   font=font(9), bg=CARD2, fg=TEXT, insertbackground=TEXT,
+                   buttonbackground=CARD2, relief='flat',
+                   bd=0, highlightthickness=1,
+                   highlightbackground=BORDER, highlightcolor=ACC,
+                   ).grid(row=0, column=1, sticky='w')
+
+        tk.Label(self._clip_frame, text="End (s):", bg=CARD, fg=TEXT3,
+                 font=font(8)).grid(row=1, column=0, sticky='w', padx=(0, 4), pady=(2, 0))
+        tk.Spinbox(self._clip_frame, textvariable=self.var_clip_end,
+                   from_=0, to=86400, increment=1.0, width=7, format='%.1f',
+                   font=font(9), bg=CARD2, fg=TEXT, insertbackground=TEXT,
+                   buttonbackground=CARD2, relief='flat',
+                   bd=0, highlightthickness=1,
+                   highlightbackground=BORDER, highlightcolor=ACC,
+                   ).grid(row=1, column=1, sticky='w', pady=(2, 0))
+
+        self._clip_frame.pack_forget()   # hidden until 'clip' is selected
 
         # ── Quality ───────────────────────────────────────────────────────────
         tk.Label(p, text="QUALITY", bg=BG, fg=TEXT2,
@@ -400,6 +430,49 @@ class ExportPage(tk.Frame):
                    highlightbackground=BORDER, highlightcolor=ACC
                    ).pack(anchor='w', pady=(0, 4))
 
+        # ── Delta time reference ──────────────────────────────────────────────
+        tk.Label(p, text="DELTA TIME", bg=BG, fg=TEXT2,
+                 font=font(8, bold=True)).pack(anchor='w', pady=(0, 4))
+
+        ref_card = Card(p, title="REFERENCE LAP")
+        ref_card.pack(fill='x', pady=(0, 12))
+
+        self.var_ref_mode = tk.StringVar(value='none')
+        ref_modes = [
+            ('none',         'None'),
+            ('session_best', 'Fastest lap in session'),
+            ('custom',       'Custom lap…'),
+        ]
+        for val, lbl in ref_modes:
+            tk.Radiobutton(ref_card.body, text=lbl, variable=self.var_ref_mode,
+                           value=val, bg=CARD, fg=TEXT, selectcolor=CARD2,
+                           activebackground=CARD, font=font(9),
+                           command=self._on_ref_mode_change).pack(anchor='w', pady=1)
+
+        # Custom file controls — shown only when 'custom' is selected
+        self._ref_custom_path: str = ''
+        self._ref_custom_laps: list = []   # list of (display_str, lap_obj)
+
+        self._ref_custom_frame = tk.Frame(ref_card.body, bg=CARD)
+        self._ref_custom_frame.pack(fill='x', pady=(4, 0))
+
+        Btn(self._ref_custom_frame, "Browse…", small=True,
+            command=self._browse_ref_file).pack(side='left', padx=(0, 6))
+
+        self._lbl_ref_file = tk.Label(self._ref_custom_frame,
+                                      text='(no file selected)',
+                                      bg=CARD, fg=TEXT3, font=font(8),
+                                      anchor='w', wraplength=180)
+        self._lbl_ref_file.pack(side='left', fill='x', expand=True)
+
+        self.var_ref_lap_display = tk.StringVar(value='')
+        self._ref_lap_cb = ttk.Combobox(ref_card.body,
+                                        textvariable=self.var_ref_lap_display,
+                                        state='readonly', font=font(8), width=26)
+        self._ref_lap_cb.pack(anchor='w', pady=(4, 0))
+        self._ref_lap_cb.pack_forget()   # hidden until file is loaded
+        self._ref_custom_frame.pack_forget()
+
         # ── Export button ─────────────────────────────────────────────────────
         tk.Label(p, text="RENDER", bg=BG, fg=TEXT2,
                  font=font(8, bold=True)).pack(anchor='w', pady=(0, 4))
@@ -441,6 +514,55 @@ class ExportPage(tk.Frame):
     # ─────────────────────────────────────────────────────────────────────────
     #  Overlay toggle callbacks
     # ─────────────────────────────────────────────────────────────────────────
+
+    def _on_scope_change(self) -> None:
+        if self.var_scope.get() == 'clip':
+            self._clip_frame.pack(fill='x', pady=(4, 0))
+        else:
+            self._clip_frame.pack_forget()
+
+    def _on_ref_mode_change(self) -> None:
+        if self.var_ref_mode.get() == 'custom':
+            self._ref_custom_frame.pack(fill='x', pady=(4, 0))
+            if self._ref_custom_laps:
+                self._ref_lap_cb.pack(anchor='w', pady=(4, 0))
+        else:
+            self._ref_custom_frame.pack_forget()
+            self._ref_lap_cb.pack_forget()
+
+    def _browse_ref_file(self) -> None:
+        from tkinter.filedialog import askopenfilename
+        path = askopenfilename(
+            title='Select reference telemetry file',
+            filetypes=[
+                ('Telemetry files', '*.csv *.gpx *.CSV *.GPX'),
+                ('CSV files', '*.csv'),
+                ('GPX files', '*.gpx'),
+                ('All files', '*.*'),
+            ],
+            parent=self,
+        )
+        if not path:
+            return
+        self._ref_custom_path = path
+        short = os.path.basename(path)
+        self._lbl_ref_file.config(text=short, fg=TEXT2)
+        # Load reference session in background to populate lap list
+        threading.Thread(target=self._load_ref_session_bg, args=(path,),
+                         daemon=True).start()
+
+    def _load_ref_session_bg(self, path: str) -> None:
+        try:
+            import gpx_data, aim_data, racebox_data
+            if gpx_data.is_gpx(path):
+                sess = gpx_data.load_gpx(path)
+            elif aim_data.is_aim_csv(path):
+                sess = aim_data.load_csv(path)
+            else:
+                sess = racebox_data.load_csv(path)
+            self.app.q.put(('export_ref_loaded', path, sess, None))
+        except Exception as e:
+            self.app.q.put(('export_ref_loaded', path, None, str(e)))
 
     def _on_toggle_map(self):
         self.app.config.overlay.map.visible = self.var_show_map.get()
@@ -522,39 +644,58 @@ class ExportPage(tk.Frame):
         self._log_clear()
         self._log("Starting export…\n")
 
-        scope    = self.var_scope.get()
-        encoder  = self.app.gpu_encoder.get()
-        crf      = self.app.quality_crf.get()
-        workers  = self.app.worker_count.get()
-        padding  = self.app.padding_secs.get()
-        is_bike  = self.app.config.overlay.is_bike
-        show_map = self.app.config.overlay.map.visible
-        show_tel = any(g.visible for g in self.app.config.overlay.gauges)
-        layout   = asdict(self.app.config.overlay)
+        scope       = self.var_scope.get()
+        encoder     = self.app.gpu_encoder.get()
+        crf         = self.app.quality_crf.get()
+        workers     = self.app.worker_count.get()
+        padding     = self.app.padding_secs.get()
+        is_bike     = self.app.config.overlay.is_bike
+        show_map    = self.app.config.overlay.map.visible
+        show_tel    = any(g.visible for g in self.app.config.overlay.gauges)
+        layout      = asdict(self.app.config.overlay)
+        clip_start  = self.var_clip_start.get()
+        clip_end    = self.var_clip_end.get()
+        ref_mode    = self.var_ref_mode.get()
+        ref_path    = self._ref_custom_path
+        # Resolve custom lap object now (on UI thread) to avoid races
+        ref_lap_obj = None
+        if ref_mode == 'custom' and self._ref_custom_laps:
+            idx = self._ref_lap_cb.current()
+            if 0 <= idx < len(self._ref_custom_laps):
+                ref_lap_obj = self._ref_custom_laps[idx][1]
 
         threading.Thread(
             target=self._export_bg,
             args=(items, scope, export_path, encoder, crf, workers,
-                  padding, is_bike, show_map, show_tel, layout),
+                  padding, is_bike, show_map, show_tel, layout,
+                  clip_start, clip_end, ref_mode, ref_lap_obj),
             daemon=True,
         ).start()
 
     def _export_bg(self, items, scope, export_path, encoder, crf, workers,
-                   padding, is_bike, show_map, show_tel, layout) -> None:
+                   padding, is_bike, show_map, show_tel, layout,
+                   clip_start_s: float = 0.0, clip_end_s: float = 300.0,
+                   ref_mode: str = 'none', ref_lap_obj=None) -> None:
         try:
             self._export_bg_inner(items, scope, export_path, encoder, crf, workers,
-                                  padding, is_bike, show_map, show_tel, layout)
+                                  padding, is_bike, show_map, show_tel, layout,
+                                  clip_start_s, clip_end_s, ref_mode, ref_lap_obj)
         except Exception as e:
             import traceback
             self.app.q.put(('export_log', f"\n✗ Unexpected error:\n{traceback.format_exc()}"))
             self.app.q.put(('export_done', False, f"Crashed: {e}"))
 
     def _export_bg_inner(self, items, scope, export_path, encoder, crf, workers,
-                         padding, is_bike, show_map, show_tel, layout) -> None:
-        import racebox_data, aim_data
+                         padding, is_bike, show_map, show_tel, layout,
+                         clip_start_s: float = 0.0, clip_end_s: float = 300.0,
+                         ref_mode: str = 'none', ref_lap_obj=None) -> None:
+        import racebox_data, aim_data, gpx_data
         from video_renderer import render_lap, RenderJob, concat_videos
+        from racebox_data import Lap
 
-        def load_csv(path):
+        def load_session(path):
+            if gpx_data.is_gpx(path):
+                return gpx_data.load_gpx(path)
             if aim_data.is_aim_csv(path):
                 return aim_data.load_csv(path)
             return racebox_data.load_csv(path)
@@ -591,7 +732,7 @@ class ExportPage(tk.Frame):
             log(f"\n── {os.path.basename(csv_path)}")
 
             try:
-                sess = load_csv(csv_path)
+                sess = load_session(csv_path)
             except Exception as e:
                 log(f"  ✗ Load failed: {e}")
                 errors.append(str(e))
@@ -623,6 +764,16 @@ class ExportPage(tk.Frame):
                     done_jobs += 1
                     continue
 
+            # ── Resolve reference lap for this session ────────────────────────
+            reference_lap = None
+            if ref_mode == 'session_best':
+                reference_lap = sess.fastest_lap
+                if reference_lap:
+                    log(f"  Delta vs: session fastest ({reference_lap.duration:.3f}s)")
+            elif ref_mode == 'custom' and ref_lap_obj is not None:
+                reference_lap = ref_lap_obj
+                log(f"  Delta vs: custom lap ({reference_lap.duration:.3f}s)")
+
             # ── Render phase ──────────────────────────────────────────────────
             stem = os.path.splitext(os.path.basename(csv_path))[0]
 
@@ -645,6 +796,7 @@ class ExportPage(tk.Frame):
                         show_telemetry=show_tel, padding=padding,
                         is_bike=is_bike, overlay_layout=layout,
                         progress_cb=scaled_prog, log_cb=log,
+                        reference_lap=reference_lap,
                     )
 
                 elif scope == 'all_laps':
@@ -663,6 +815,7 @@ class ExportPage(tk.Frame):
                             show_telemetry=show_tel, padding=padding,
                             is_bike=is_bike, overlay_layout=layout,
                             progress_cb=scaled_prog, log_cb=log,
+                            reference_lap=reference_lap,
                         )
 
                 elif scope == 'full':
@@ -674,6 +827,38 @@ class ExportPage(tk.Frame):
                         n_workers=workers, show_map=show_map,
                         show_telemetry=show_tel, padding=0.0,
                         is_bike=is_bike, overlay_layout=layout,
+                        progress_cb=scaled_prog, log_cb=log,
+                        reference_lap=reference_lap,
+                    )
+
+                elif scope == 'clip':
+                    pts = sess.all_points
+                    if pts:
+                        sess_end = pts[-1].elapsed
+                        c_start  = max(0.0, min(clip_start_s, sess_end))
+                        c_end    = max(c_start + 0.1, min(clip_end_s, sess_end))
+                    else:
+                        c_start, c_end = clip_start_s, clip_end_s
+                    clip_pts = [p for p in pts if c_start <= p.elapsed <= c_end]
+                    if not clip_pts:
+                        log(f"  ✗ No data points in range {c_start:.1f}–{c_end:.1f}s")
+                        done_jobs += 1
+                        continue
+                    clip_lap = Lap(
+                        lap_num  = -1,
+                        points   = clip_pts,
+                        duration = c_end - c_start,
+                    )
+                    tag = f"{int(c_start)}s_{int(c_end)}s"
+                    out = os.path.join(export_path, f"{stem}_clip_{tag}.mp4")
+                    log(f"  Clip {c_start:.1f}s–{c_end:.1f}s → {os.path.basename(out)}")
+                    render_lap(
+                        video_path or '', out, sess, RenderJob(f"{stem}_clip", clip_lap),
+                        sync_offset=offset, encoder=encoder, crf=crf,
+                        n_workers=workers, show_map=show_map,
+                        show_telemetry=show_tel, padding=padding,
+                        is_bike=is_bike, overlay_layout=layout,
+                        reference_lap=reference_lap,
                         progress_cb=scaled_prog, log_cb=log,
                     )
 
@@ -715,7 +900,25 @@ class ExportPage(tk.Frame):
     # ─────────────────────────────────────────────────────────────────────────
 
     def on_queue(self, kind, *args):
-        if kind == 'export_log':
+        if kind == 'export_ref_loaded':
+            path, sess, err = args[0], args[1], args[2]
+            if path != self._ref_custom_path:
+                return   # stale response
+            if err or sess is None:
+                self._lbl_ref_file.config(
+                    text=f'Load error: {err}', fg=ERR)
+                return
+            # Populate lap combobox
+            entries = []
+            for lap in sess.laps:
+                tag = 'outlap' if lap.is_outlap else ('inlap' if lap.is_inlap else f'{lap.duration:.3f}s')
+                entries.append((f'Lap {lap.lap_num}  ({tag})', lap))
+            self._ref_custom_laps = entries
+            self._ref_lap_cb['values'] = [e[0] for e in entries]
+            if entries:
+                self._ref_lap_cb.current(0)
+            self._ref_lap_cb.pack(anchor='w', pady=(4, 0))
+        elif kind == 'export_log':
             self._log(args[0])
         elif kind == 'export_prog':
             pct, msg = args[0], args[1]

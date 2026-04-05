@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="OpenLap Test"
+  xmlns="http://www.topografix.com/GPX/1/1"
+  xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1">
+  <trk>
+    <name>Spa Test Lap</name>
+    <trkseg>
+      <trkpt lat="50.4372" lon="5.9719">
+        <ele>400.0</ele>
+        <time>2024-06-15T13:00:00Z</time>
+        <extensions><gpxtpx:TrackPointExtension><gpxtpx:speed>0.0</gpxtpx:speed></gpxtpx:TrackPointExtension></extensions>
+      </trkpt>
+      <trkpt lat="50.4373" lon="5.9720">
+        <ele>400.5</ele>
+        <time>2024-06-15T13:00:01Z</time>
+        <extensions><gpxtpx:TrackPointExtension><gpxtpx:speed>10.0</gpxtpx:speed></gpxtpx:TrackPointExtension></extensions>
+      </trkpt>
+      <trkpt lat="50.4375" lon="5.9722">
+        <ele>401.0</ele>
+        <time>2024-06-15T13:00:02Z</time>
+        <extensions><gpxtpx:TrackPointExtension><gpxtpx:speed>20.0</gpxtpx:speed></gpxtpx:TrackPointExtension></extensions>
+      </trkpt>
+      <trkpt lat="50.4378" lon="5.9725">
+        <ele>401.5</ele>
+        <time>2024-06-15T13:00:03Z</time>
+        <extensions><gpxtpx:TrackPointExtension><gpxtpx:speed>30.0</gpxtpx:speed></gpxtpx:TrackPointExtension></extensions>
+      </trkpt>
+      <trkpt lat="50.4382" lon="5.9729">
+        <ele>402.0</ele>
+        <time>2024-06-15T13:00:04Z</time>
+        <extensions><gpxtpx:TrackPointExtension><gpxtpx:speed>25.0</gpxtpx:speed></gpxtpx:TrackPointExtension></extensions>
+      </trkpt>
+      <trkpt lat="50.4385" lon="5.9732">
+        <ele>402.5</ele>
+        <time>2024-06-15T13:00:05Z</time>
+        <extensions><gpxtpx:TrackPointExtension><gpxtpx:speed>15.0</gpxtpx:speed></gpxtpx:TrackPointExtension></extensions>
+      </trkpt>
+      <trkpt lat="50.4387" lon="5.9734">
+        <ele>403.0</ele>
+        <time>2024-06-15T13:00:06Z</time>
+        <extensions><gpxtpx:TrackPointExtension><gpxtpx:speed>5.0</gpxtpx:speed></gpxtpx:TrackPointExtension></extensions>
+      </trkpt>
+      <trkpt lat="50.4388" lon="5.9735">
+        <ele>403.0</ele>
+        <time>2024-06-15T13:00:07Z</time>
+        <extensions><gpxtpx:TrackPointExtension><gpxtpx:speed>0.0</gpxtpx:speed></gpxtpx:TrackPointExtension></extensions>
+      </trkpt>
+    </trkseg>
+  </trk>
+</gpx>

@@ -19,9 +19,12 @@ Matching strategy:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
+
+logger = logging.getLogger(__name__)
 
 
 def _run(cmd, **kwargs):
@@ -41,12 +44,15 @@ from typing import List, Optional, Dict, Tuple  # noqa: F401 – Tuple used in s
 
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.MP4', '.MOV', '.AVI', '.MKV'}
 CSV_EXTENSIONS   = {'.csv', '.CSV'}
+GPX_EXTENSIONS   = {'.gpx', '.GPX'}
+LD_EXTENSIONS    = {'.ld',  '.LD'}
 MAX_GAP          = 120.0    # seconds between consecutive segments of one recording
 MATCH_WINDOW     = 3600.0   # max seconds between CSV start and video group start
 
 # Sentinel stored on MatchedSession.csv_path entries to identify source type
 CSV_SOURCE_RACEBOX = 'racebox'
 CSV_SOURCE_AIM     = 'aim'
+CSV_SOURCE_MOTEC   = 'motec'
 
 
 # ── Video file info ────────────────────────────────────────────────────────────
@@ -83,26 +89,32 @@ def _ffprobe_creation_time(path: str) -> Optional[datetime]:
             return dt, dur
         return None, dur
     except Exception:
+        logger.debug('ffprobe failed for %s', path, exc_info=True)
         return None, 0.0
 
 
-def scan_videos(folder: str) -> List[VideoFile]:
+def scan_videos(folder: str, progress_cb=None) -> List[VideoFile]:
     """Recursively scan a folder for video files."""
-    results = []
+    # Quick pre-count so we can show N/M progress
+    all_paths = []
     for root, _, files in os.walk(folder):
         for fname in sorted(files):
-            if Path(fname).suffix not in VIDEO_EXTENSIONS:
-                continue
-            path = os.path.join(root, fname)
-            ct, dur = _ffprobe_creation_time(path)
-            if ct is None:
-                mtime = os.path.getmtime(path)
-                ct    = datetime.fromtimestamp(mtime, tz=timezone.utc)
-                # Subtract duration: mtime is end of recording, we want start
-                from datetime import timedelta
-                if dur > 0:
-                    ct = ct - timedelta(seconds=dur)
-            results.append(VideoFile(path=path, creation_time=ct, duration=dur))
+            if Path(fname).suffix in VIDEO_EXTENSIONS:
+                all_paths.append(os.path.join(root, fname))
+    total = len(all_paths)
+
+    results = []
+    for i, path in enumerate(all_paths, 1):
+        if progress_cb:
+            progress_cb(f"Reading video metadata… ({i}/{total})  {os.path.basename(path)}")
+        ct, dur = _ffprobe_creation_time(path)
+        if ct is None:
+            mtime = os.path.getmtime(path)
+            ct    = datetime.fromtimestamp(mtime, tz=timezone.utc)
+            from datetime import timedelta
+            if dur > 0:
+                ct = ct - timedelta(seconds=dur)
+        results.append(VideoFile(path=path, creation_time=ct, duration=dur))
     results.sort(key=lambda v: v.sort_key)
     return results
 
@@ -239,13 +251,33 @@ def convert_xrk_files(folder: str, progress_cb=None) -> List[str]:
 # ── CSV scanning ───────────────────────────────────────────────────────────────
 
 def scan_csvs(folder: str) -> List[str]:
-    """Recursively find all RaceBox and AIM Mychron CSV files."""
+    """Recursively find all RaceBox, AIM Mychron CSV, GPX, and MoTeC .ld files."""
+    import motec_data as _motec
     results = []
     for root, _, files in os.walk(folder):
         for fname in sorted(files):
-            if Path(fname).suffix not in CSV_EXTENSIONS:
-                continue
+            suffix = Path(fname).suffix
             path = os.path.join(root, fname)
+
+            if suffix in GPX_EXTENSIONS:
+                # GPX files are identified by extension + quick content check
+                try:
+                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                        chunk = f.read(256)
+                    if '<gpx' in chunk.lower():
+                        results.append(path)
+                except Exception:
+                    logger.debug('Could not read GPX candidate %s', path, exc_info=True)
+                continue
+
+            if suffix in LD_EXTENSIONS:
+                if _motec.is_motec_ld(path):
+                    results.append(path)
+                continue
+
+            if suffix not in CSV_EXTENSIONS:
+                continue
+
             try:
                 with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
                     content = f.read(2000)
@@ -254,7 +286,7 @@ def scan_csvs(folder: str) -> List[str]:
                 elif content.startswith('Time (s),') or '\nTime (s),' in content:
                     results.append(path)
             except Exception:
-                pass
+                logger.debug('Could not read CSV candidate %s', path, exc_info=True)
     return results
 
 
@@ -288,11 +320,16 @@ def scan_pending_xrk(folder: str) -> List[Tuple[str, str]]:
 
 
 def _csv_source(path: str) -> str:
-    """Quick peek at a CSV file to determine its data source."""
+    """Quick peek at a file to determine its data source."""
+    suffix = Path(path).suffix.lower()
+    if suffix == '.gpx':
+        return 'GPX'
+    if suffix == '.ld':
+        return 'MoTeC'
     try:
         with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
-            head = f.read(200)
-        if head.startswith('Time (s),'):
+            head = f.read(300)
+        if head.startswith('Time (s),') or '\nTime (s),' in head:
             return 'AIM Mychron'
     except Exception:
         pass
@@ -311,6 +348,7 @@ def match_sessions(csv_paths: List[str],
             # Only read metadata, not full data (fast)
             csv_start = _read_csv_start_time(csv_path)
         except Exception:
+            logger.debug('Could not read start time from %s', csv_path, exc_info=True)
             csv_start = None
 
         best_group  = None
@@ -343,11 +381,44 @@ def match_sessions(csv_paths: List[str],
 
 
 def _read_csv_start_time(path: str) -> Optional[datetime]:
-    """Read session start time from CSV.
+    """Read session start time from a data file.
 
+    GPX:     reads the first <time> element.
     RaceBox: reads the 'Date UTC,' metadata line.
-    AIM:     falls back to file modification time (no wall-clock header).
+    AIM:     reads the '# Session-Date:' comment or falls back to mtime.
+    MoTeC:   reads the date/time fields from the binary header.
     """
+    if Path(path).suffix.lower() == '.ld':
+        import struct as _s
+        try:
+            with open(path, 'rb') as f:
+                hdr = f.read(0x90)
+            date_str = hdr[0x5E:0x68].split(b'\x00')[0].decode('ascii', errors='replace').strip()
+            time_str = hdr[0x7E:0x86].split(b'\x00')[0].decode('ascii', errors='replace').strip()
+            dt = datetime.strptime(f"{date_str} {time_str}", "%d/%m/%Y %H:%M:%S")
+            return dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            pass
+        mtime = os.path.getmtime(path)
+        return datetime.fromtimestamp(mtime, tz=timezone.utc)
+
+    if Path(path).suffix.lower() == '.gpx':
+        import re
+        try:
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                content = f.read(4096)
+            m = re.search(r'<time>([^<]+)</time>', content)
+            if m:
+                val = m.group(1).strip().replace('Z', '+00:00')
+                dt = datetime.fromisoformat(val)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                return dt
+        except Exception:
+            pass
+        mtime = os.path.getmtime(path)
+        return datetime.fromtimestamp(mtime, tz=timezone.utc)
+
     with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
         for line in f:
             # AIM CSV: embedded session date comment

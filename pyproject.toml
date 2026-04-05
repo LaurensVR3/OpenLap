@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "openlap"
+version = "0.1.0"
+description = "Motorsport telemetry overlay renderer"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+dependencies = [
+    "numpy>=1.24",
+    "matplotlib>=3.7",
+    "Pillow>=10.0",
+    "opencv-python>=4.8",
+    "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+racebox-download = [
+    "requests>=2.31",
+    "playwright>=1.40",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["styles*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

@@ -29,6 +29,7 @@ Usage
 import argparse
 import glob
 import io
+import logging
 import os
 import sys
 import urllib.request
@@ -38,6 +39,8 @@ from ctypes import (
     c_char_p, c_double, c_int,
     byref, cdll,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # DLL discovery
@@ -88,7 +91,7 @@ def _install_dll_from_zip(data: bytes) -> str:
 
         aim_local = os.path.join(SCRIPT_DIR, os.path.basename(aim_entries[0]))
 
-    print(f"DLL saved to: {aim_local}\n")
+    logger.info('DLL saved to: %s', aim_local)
     return aim_local
 
 
@@ -132,9 +135,9 @@ def _download_dll_playwright() -> str:
             f"Or download manually from {DLL_ZIP_URL} and place the DLL next to xrk_to_csv.py."
         )
 
-    print("Opening browser to download AIM MatLabXRK DLL…")
-    print("If a page loads instead of downloading, click the download link yourself.")
-    print("The browser will close automatically once the download starts.\n")
+    logger.info('Opening browser to download AIM MatLabXRK DLL…')
+    logger.info('If a page loads instead of downloading, click the download link yourself.')
+    logger.info('The browser will close automatically once the download starts.')
 
     tmp_zip = os.path.join(SCRIPT_DIR, "_matlabxrk_download.zip")
 
@@ -178,7 +181,7 @@ def _find_dll() -> str:
     if candidates:
         return candidates[0]
 
-    print(f"MatLabXRK DLL not found.  Trying direct download from:\n  {DLL_ZIP_URL}")
+    logger.info('MatLabXRK DLL not found. Trying direct download from: %s', DLL_ZIP_URL)
 
     # 1. Try a plain HTTP download with browser-like headers
     data = _download_dll_urllib()
@@ -186,7 +189,7 @@ def _find_dll() -> str:
         return _install_dll_from_zip(data)
 
     # 2. Direct download blocked (likely 403) — fall back to a real browser via Playwright
-    print("Direct download failed (server returned 403 or connection error).")
+    logger.warning('Direct download failed (server returned 403 or connection error).')
     return _download_dll_playwright()
 
 
@@ -286,7 +289,7 @@ def _build_lap_series(dll, idxf: int, times: list) -> "pd.Series | None":
         values.append(lap_numbers[idx] if idx >= 0 else 0)
 
     s = pd.Series(values, index=times, name="Lap", dtype=int)
-    print(f"  Lap: {len(s):,} samples  ({n_laps} laps from DLL)")
+    logger.debug('Lap: %d samples  (%d laps from DLL)', len(s), n_laps)
     return s
 
 
@@ -347,12 +350,12 @@ def xrk_to_csv(xrk_path: str, csv_path: str, dll_path: str) -> None:
         pass
 
     try:
-        print(f"File    : {xrk_path}")
-        print(f"Vehicle : {dll.get_vehicle_name(idxf).decode()}")
-        print(f"Track   : {dll.get_track_name(idxf).decode()}")
-        print(f"Driver  : {dll.get_racer_name(idxf).decode()}")
+        logger.info('File    : %s', xrk_path)
+        logger.info('Vehicle : %s', dll.get_vehicle_name(idxf).decode())
+        logger.info('Track   : %s', dll.get_track_name(idxf).decode())
+        logger.info('Driver  : %s', dll.get_racer_name(idxf).decode())
         if session_date_str:
-            print(f"Date    : {session_date_str}")
+            logger.info('Date    : %s', session_date_str)
 
         # Channel groups: (label, count_fn, name_fn, units_fn, count_sample_fn, sample_fn)
         groups = [
@@ -387,7 +390,7 @@ def xrk_to_csv(xrk_path: str, csv_path: str, dll_path: str) -> None:
 
         for label, fn_count, fn_name, fn_units, fn_n_samples, fn_samples in groups:
             n = fn_count(idxf)
-            print(f"\n{label.capitalize()} channels: {n}")
+            logger.debug('%s channels: %d', label.capitalize(), n)
             for i in range(n):
                 raw_name  = fn_name(idxf, i).decode("utf-8")
                 raw_units = fn_units(idxf, i).decode("utf-8")
@@ -400,15 +403,15 @@ def xrk_to_csv(xrk_path: str, csv_path: str, dll_path: str) -> None:
 
                 times, values = _read_channel(dll, idxf, i, fn_n_samples, fn_samples)
                 if times is None:
-                    print(f"  SKIP {col!r} (no samples)")
+                    logger.debug('SKIP %r (no samples)', col)
                     continue
 
                 series_list.append(pd.Series(values, index=times, name=col))
-                print(f"  {col}: {len(values):,} samples")
+                logger.debug('  %s: %d samples', col, len(values))
 
         # Build lap-number column from DLL lap-boundary data
         # Use the union of all timestamps so every row gets a lap number
-        print("\nBuilding Lap column from DLL lap info…")
+        logger.debug('Building Lap column from DLL lap info…')
         all_times = sorted({t for s in series_list for t in s.index})
         lap_series = _build_lap_series(dll, idxf, all_times)
         if lap_series is not None:
@@ -420,17 +423,17 @@ def xrk_to_csv(xrk_path: str, csv_path: str, dll_path: str) -> None:
     if not series_list:
         sys.exit("ERROR: No channel data found in the file.")
 
-    print(f"\nMerging {len(series_list)} channels on a common time axis …")
+    logger.info('Merging %d channels on a common time axis…', len(series_list))
     df = pd.concat(series_list, axis=1)
     df.index.name = "Time (s)"
     df.sort_index(inplace=True)
 
-    print(f"Writing {len(df):,} rows × {len(df.columns)} columns → {csv_path}")
+    logger.info('Writing %d rows × %d columns → %s', len(df), len(df.columns), csv_path)
     with open(csv_path, 'w', newline='', encoding='utf-8') as fout:
         if session_date_str:
             fout.write(f"# Session-Date: {session_date_str}\n")
         df.to_csv(fout)
-    print("Done.")
+    logger.info('Done.')
 
 
 # ---------------------------------------------------------------------------
@@ -438,6 +441,8 @@ def xrk_to_csv(xrk_path: str, csv_path: str, dll_path: str) -> None:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
+
     parser = argparse.ArgumentParser(
         description="Convert an AIM .xrk/.xrz/.drk file to a single CSV.",
         formatter_class=argparse.RawDescriptionHelpFormatter,

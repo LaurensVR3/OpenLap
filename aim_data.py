@@ -16,6 +16,7 @@ Channel mapping (fuzzy, case-insensitive substring matching):
 """
 
 from __future__ import annotations
+import logging
 import math
 import os
 from collections import defaultdict
@@ -23,6 +24,9 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from racebox_data import DataPoint, Lap, Session
+from exceptions import NoDataRowsError
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +110,7 @@ def load_csv(path: str) -> Session:
     df = df[df.index.notna()].sort_index()
 
     if df.empty:
-        raise ValueError(f"No data rows in {path}")
+        raise NoDataRowsError(f"No data rows in {path}")
 
     columns = list(df.columns)
 
