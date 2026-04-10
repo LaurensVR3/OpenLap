@@ -45,9 +45,11 @@ class OverlayEditor(tk.Frame):
         self._on_change = on_change
         self._bg_photo  = None
         self._bg_arr    = None
+        self._bg_rgb    = None   # resized RGB frame cached for gauge compositing
 
         self._frame_rect: Tuple[int, int, int, int] = (0, 0, 1, 1)
         self._drag: Optional[dict] = None
+        self._real_history: Optional[list] = None   # real telemetry, set by host page
         self._snap_guides: list = []   # list of ('v'|'h', norm_pos) for active snaps
 
         self._previews:       dict[str, np.ndarray] = {}
@@ -70,6 +72,7 @@ class OverlayEditor(tk.Frame):
 
     def set_frame(self, bgr_frame) -> None:
         self._bg_arr = bgr_frame
+        self._bg_rgb = None   # will be rebuilt in _draw_bg
         self._redraw()
         self._request_all_previews()
 
@@ -82,25 +85,19 @@ class OverlayEditor(tk.Frame):
     # ── Element access helpers ────────────────────────────────────────────────
 
     def _all_keys(self) -> list[str]:
-        """Return all element keys: gauges first (on top), map last (underneath)."""
-        keys = [f'gauge_{i}' for i in range(len(self._layout.gauges))]
-        keys.append('map')
-        return keys
+        """Return all element keys in order (index 0 = bottom-most)."""
+        return [f'gauge_{i}' for i in range(len(self._layout.gauges))]
 
     def _get_elem(self, key: str):
-        if key == 'map':
-            return self._layout.map
-        i = int(key.split('_')[1])
-        return self._layout.gauges[i]
+        return self._layout.gauges[int(key.split('_')[1])]
 
     def _elem_colour(self, key: str) -> str:
-        if key == 'map':
+        i = int(key.split('_')[1])
+        if self._layout.gauges[i].channel == 'map':
             return MAP_COLOUR
-        return _gauge_colour(int(key.split('_')[1]))
+        return _gauge_colour(i)
 
     def _elem_label(self, key: str) -> str:
-        if key == 'map':
-            return f"Map · {self._layout.map_style}"
         i = int(key.split('_')[1])
         g = self._layout.gauges[i]
         return f"{g.channel} · {g.style}"
@@ -133,9 +130,6 @@ class OverlayEditor(tk.Frame):
         else:
             self._draw_placeholder(cw, ch)
 
-        # Draw map first (bottom), then gauges on top
-        if self._layout.map.visible:
-            self._draw_element('map', self._layout.map)
         for i, g in enumerate(self._layout.gauges):
             if g.visible:
                 self._draw_element(f'gauge_{i}', g)
@@ -155,6 +149,7 @@ class OverlayEditor(tk.Frame):
         oy = (ch - dh) // 2
         self._frame_rect = (ox, oy, dw, dh)
         rgb = cv2.cvtColor(cv2.resize(frame, (dw, dh)), cv2.COLOR_BGR2RGB)
+        self._bg_rgb = rgb   # cache for gauge compositing
         img = ImageTk.PhotoImage(Image.fromarray(rgb))
         self._canvas.create_image(ox, oy, anchor='nw', image=img)
         self._bg_photo = img
@@ -180,7 +175,23 @@ class OverlayEditor(tk.Frame):
             try:
                 from PIL import Image, ImageTk
                 img = Image.fromarray(preview, 'RGBA').resize((pw, ph), Image.LANCZOS)
-                bg  = Image.new('RGBA', (pw, ph), (13, 15, 24, 220))
+                # Composite onto actual video frame crop so transparency shows through
+                if self._bg_rgb is not None:
+                    ox, oy, dw, dh = self._frame_rect
+                    fx1 = max(0, x1 - ox)
+                    fy1 = max(0, y1 - oy)
+                    fx2 = min(dw, fx1 + pw)
+                    fy2 = min(dh, fy1 + ph)
+                    crop_w, crop_h = fx2 - fx1, fy2 - fy1
+                    if crop_w > 0 and crop_h > 0:
+                        crop = self._bg_rgb[fy1:fy2, fx1:fx2]
+                        bg = Image.fromarray(crop, 'RGB').convert('RGBA')
+                        if bg.size != (pw, ph):
+                            bg = bg.resize((pw, ph), Image.LANCZOS)
+                    else:
+                        bg = Image.new('RGBA', (pw, ph), (13, 15, 24, 255))
+                else:
+                    bg = Image.new('RGBA', (pw, ph), (13, 15, 24, 255))
                 bg.alpha_composite(img)
                 photo = ImageTk.PhotoImage(bg.convert('RGB'))
                 self._canvas.create_image(x1, y1, anchor='nw', image=photo,
@@ -198,11 +209,13 @@ class OverlayEditor(tk.Frame):
             fill='', outline=colour, width=2,
             tags=(key, f'{key}_body'))
 
-        mid_x  = (x1 + x2) // 2
-        label_y = max(y1 + 10, y2 - 12)
-        self._canvas.create_text(mid_x, label_y,
-            text=label, fill=colour, font=font(8),
-            tags=(key, f'{key}_label'))
+        # Only show the text label when there's no preview rendered yet
+        if preview is None:
+            mid_x   = (x1 + x2) // 2
+            label_y = max(y1 + 10, y2 - 12)
+            self._canvas.create_text(mid_x, label_y,
+                text=label, fill=colour, font=font(8),
+                tags=(key, f'{key}_label'))
 
         for hx, hy, htag in [(x1,y1,'NW'),(x2,y1,'NE'),(x1,y2,'SW'),(x2,y2,'SE')]:
             hs = HANDLE_SIZE
@@ -226,8 +239,6 @@ class OverlayEditor(tk.Frame):
     # ── Preview rendering ─────────────────────────────────────────────────────
 
     def _request_all_previews(self) -> None:
-        if self._layout.map.visible:
-            self._request_preview('map')
         for i, g in enumerate(self._layout.gauges):
             if g.visible:
                 self._request_preview(f'gauge_{i}')
@@ -252,34 +263,55 @@ class OverlayEditor(tk.Frame):
         ph = max(16, int(elem.h * dh))
         is_bike = self._layout.is_bike
         theme   = getattr(self._layout, 'theme', 'Dark')
-
-        if key == 'map':
-            style = self._layout.map_style
-            channel = None
-        else:
-            i = int(key.split('_')[1])
-            g = self._layout.gauges[i]
-            style   = g.style
-            channel = g.channel
+        i       = int(key.split('_')[1])
+        g       = self._layout.gauges[i]
 
         threading.Thread(
             target=self._render_preview_worker,
-            args=(key, style, channel, pw, ph, is_bike, theme),
+            args=(key, g.style, g.channel, pw, ph, is_bike, theme,
+                  self._real_history),
             daemon=True,
         ).start()
 
-    def _render_preview_worker(self, key: str, style_name: str, channel: Optional[str],
+    def set_history(self, history: Optional[list]) -> None:
+        """Supply real telemetry history for gauge previews (replaces dummy data)."""
+        self._real_history = history
+        self._request_all_previews()
+
+    def _render_preview_worker(self, key: str, style_name: str, channel: str,
                                 pw: int, ph: int, is_bike: bool,
-                                theme: str = 'Dark') -> None:
+                                theme: str = 'Dark',
+                                real_history: Optional[list] = None) -> None:
         try:
             from style_registry import render_style
             from overlay_utils  import dummy_map_data
-            from gauge_channels import dummy_gauge_data
+            from gauge_channels import dummy_gauge_data, gauge_data, MULTI_CHANNEL, build_multi_data
 
-            if key == 'map':
+            if channel == 'map':
                 data = dummy_map_data()
                 data['_theme'] = theme
                 rgba = render_style('map', style_name, data, pw, ph)
+            elif channel == 'info':
+                from gauge_channels import dummy_info_data
+                data = dummy_info_data()
+                data['_theme'] = theme
+                rgba = render_style('gauge', style_name, data, pw, ph)
+            elif channel == MULTI_CHANNEL:
+                # Find which sub-channels this gauge uses
+                i = int(key.split('_')[1])
+                g = self._layout.gauges[i]
+                if real_history and g.channels:
+                    data = build_multi_data(g.channels, real_history)
+                else:
+                    data = dummy_gauge_data(MULTI_CHANNEL)
+                data['_theme'] = theme
+                rgba = render_style('gauge', style_name, data, pw, ph)
+            elif real_history:
+                from gauge_channels import GAUGE_CHANNELS
+                data = gauge_data(channel, real_history)
+                data['is_bike'] = is_bike
+                data['_theme']  = theme
+                rgba = render_style('gauge', style_name, data, pw, ph)
             else:
                 data = dummy_gauge_data(channel or 'speed')
                 data['is_bike'] = is_bike

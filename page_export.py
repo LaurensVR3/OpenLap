@@ -2,12 +2,30 @@
 
 from __future__ import annotations
 import os
+import re
 import threading
 from dataclasses import asdict
 from typing import List
 
 import tkinter as tk
 from tkinter import ttk, messagebox
+
+def _export_stem(sess, scope_label: str) -> str:
+    """Build a human-readable export filename stem: YYYY-MM-DD_HH-MM_Track_Scope."""
+    dt = sess.start_time
+    if dt is None and sess.date_utc:
+        try:
+            from datetime import datetime, timezone
+            dt = datetime.fromisoformat(sess.date_utc.replace('Z', '+00:00'))
+        except Exception:
+            dt = None
+    date_part = dt.strftime('%Y-%m-%d') if dt else 'unknown-date'
+    time_part = dt.strftime('%H-%M')    if dt else ''
+    track = re.sub(r'[^\w\s-]', '', sess.track or 'unknown').strip()
+    track = re.sub(r'\s+', '_', track) or 'unknown'
+    parts = [date_part, time_part, track, scope_label] if time_part else [date_part, track, scope_label]
+    return '_'.join(parts)
+
 
 from design_tokens import BG, CARD, CARD2, BORDER, ACC, ACC2, OK, WARN, ERR, TEXT, TEXT2, TEXT3, font
 from widgets import Card, Btn, Divider, Label
@@ -21,6 +39,7 @@ class ExportPage(tk.Frame):
         super().__init__(parent, bg=BG)
         self.app = app
         self._rendering = False
+        self._available_channels: set | None = None  # None = no session loaded, show all
         self._build()
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -58,17 +77,6 @@ class ExportPage(tk.Frame):
         # row 0: Toggle + mode row
         ctrl = tk.Frame(left, bg=BG)
         ctrl.grid(row=0, column=0, sticky='ew', pady=(0, 6))
-
-        self.var_show_map = tk.BooleanVar(value=self.app.config.overlay.map.visible)
-
-        tk.Checkbutton(ctrl, text="Map", variable=self.var_show_map,
-                       bg=BG, fg=TEXT, selectcolor=CARD2, activebackground=BG,
-                       font=font(9), command=self._on_toggle_map).pack(side='left', padx=(0, 12))
-
-        self.var_is_bike = tk.BooleanVar(value=self.app.config.overlay.is_bike)
-        tk.Checkbutton(ctrl, text="Bike mode", variable=self.var_is_bike,
-                       bg=BG, fg=TEXT2, selectcolor=CARD2, activebackground=BG,
-                       font=font(9), command=self._on_toggle_bike).pack(side='left', padx=(0, 12))
 
         Btn(ctrl, "Load preview frame", small=True,
             command=self._load_preview).pack(side='right')
@@ -133,12 +141,6 @@ class ExportPage(tk.Frame):
         self.app.config.overlay = overlay_from_dict(self.app.config.presets[name])
         self.app.config.save()
         # Sync UI controls to loaded layout (guards: may not exist yet during init)
-        if hasattr(self, 'var_show_map'):
-            self.var_show_map.set(self.app.config.overlay.map.visible)
-        if hasattr(self, 'var_is_bike'):
-            self.var_is_bike.set(self.app.config.overlay.is_bike)
-        if hasattr(self, 'var_map_style'):
-            self.var_map_style.set(self.app.config.overlay.map_style)
         if hasattr(self, 'var_theme'):
             self.var_theme.set(getattr(self.app.config.overlay, 'theme', 'Dark'))
         if hasattr(self, '_gauge_list_frame'):
@@ -184,24 +186,11 @@ class ExportPage(tk.Frame):
         self._refresh_preset_dropdown()
 
     def _build_style_row(self, parent) -> None:
-        from style_registry import available_styles, default_style
         from overlay_themes import theme_names
         from tkinter import ttk
 
-        map_styles = available_styles('map') or ['Circuit']
-        cur_map    = self.app.config.overlay.map_style or default_style('map') or map_styles[0]
-
-        tk.Label(parent, text="Map style:", bg=BG, fg=TEXT3,
-                 font=font(8)).pack(side='left', padx=(0, 4))
-        self.var_map_style = tk.StringVar(value=cur_map)
-        cb_map = ttk.Combobox(parent, textvariable=self.var_map_style,
-                              values=map_styles, state='readonly',
-                              font=font(9), width=12)
-        cb_map.pack(side='left', padx=(0, 8))
-        self.var_map_style.trace_add('write', lambda *_: self._on_map_style_change())
-
         tk.Label(parent, text="Theme:", bg=BG, fg=TEXT3,
-                 font=font(8)).pack(side='left', padx=(8, 4))
+                 font=font(8)).pack(side='left', padx=(0, 4))
         self.var_theme = tk.StringVar(value=getattr(self.app.config.overlay, 'theme', 'Dark'))
         cb_theme = ttk.Combobox(parent, textvariable=self.var_theme,
                                 values=theme_names(), state='readonly',
@@ -212,60 +201,108 @@ class ExportPage(tk.Frame):
         Btn(parent, "+ Add gauge", small=True,
             command=self._add_gauge).pack(side='left', padx=(0, 4))
 
-        # Gauge list panel — row 3 in left frame (below style_row at row 2)
+        # Element list panel — row 3 in left frame (below style_row at row 2)
         self._gauge_list_frame = tk.Frame(parent.master, bg=BG)
         self._gauge_list_frame.grid(row=3, column=0, sticky='ew', pady=(0, 2))
         self._rebuild_gauge_list()
 
+    def _make_eye_btn(self, parent, get_vis, set_vis) -> tk.Button:
+        """Return a ●/○ toggle button wired to get_vis/set_vis."""
+        vis = get_vis()
+        btn = tk.Button(parent,
+                        text='●' if vis else '○',
+                        fg=ACC if vis else TEXT3,
+                        bg=BG, activebackground=BG, activeforeground=ACC,
+                        relief='flat', bd=0, font=font(9), width=2,
+                        cursor='hand2')
+        def _toggle(b=btn):
+            new_vis = not get_vis()
+            set_vis(new_vis)
+            b.config(text='●' if new_vis else '○',
+                     fg=ACC if new_vis else TEXT3)
+            self.app.config.save()
+            self.editor.refresh()
+        btn.config(command=_toggle)
+        btn.pack(side='left', padx=(0, 2))
+        return btn
+
     def _rebuild_gauge_list(self) -> None:
-        """Rebuild the scrollable gauge row list."""
+        """Rebuild element list in a 2-column grid — map first, then gauges."""
         from tkinter import ttk
-        from gauge_channels import GAUGE_CHANNELS, GAUGE_STYLES_BIKE, GAUGE_STYLES_CAR
+        from style_registry import available_styles
+        from gauge_channels import GAUGE_CHANNELS, get_channel_styles
 
         for w in self._gauge_list_frame.winfo_children():
             w.destroy()
 
-        is_bike    = self.app.config.overlay.is_bike
-        avail_styles = GAUGE_STYLES_BIKE if is_bike else GAUGE_STYLES_CAR
+        f = self._gauge_list_frame
+        f.columnconfigure(0, weight=1)
+        f.columnconfigure(1, weight=1)
 
-        for i, g in enumerate(self.app.config.overlay.gauges):
-            row = tk.Frame(self._gauge_list_frame, bg=BG)
-            row.pack(fill='x', pady=1)
+        is_bike = self.app.config.overlay.is_bike
+        overlay = self.app.config.overlay
 
-            tk.Label(row, text=f"#{i+1}", bg=BG, fg=TEXT3,
-                     font=font(8), width=3).pack(side='left')
+        avail = self._available_channels  # None = no filter (no session loaded)
+        all_chan_keys = list(GAUGE_CHANNELS.keys()) + ['map', 'multi', 'info']
+        chan_keys = [k for k in all_chan_keys if avail is None or k in avail]
+        n_elems  = len(overlay.gauges)
 
-            # Channel dropdown
-            chan_var = tk.StringVar(value=g.channel)
-            cb_chan  = ttk.Combobox(row, textvariable=chan_var,
-                                    values=list(GAUGE_CHANNELS.keys()),
-                                    state='readonly', font=font(8), width=13)
-            cb_chan.pack(side='left', padx=(0, 4))
-            chan_var.trace_add('write', lambda *_, iv=i, v=chan_var: self._on_gauge_channel(iv, v.get()))
+        for idx, g in enumerate(overlay.gauges):
+            grid_row = idx // 2
+            grid_col = idx % 2
+            cell = tk.Frame(f, bg=BG)
+            cell.grid(row=grid_row, column=grid_col, sticky='ew',
+                      padx=(0, 4) if grid_col == 0 else (0, 0), pady=1)
 
-            # Style dropdown
-            style_var = tk.StringVar(value=g.style if g.style in avail_styles else avail_styles[0])
-            cb_style  = ttk.Combobox(row, textvariable=style_var,
-                                     values=avail_styles,
-                                     state='readonly', font=font(8), width=9)
-            cb_style.pack(side='left', padx=(0, 4))
-            style_var.trace_add('write', lambda *_, iv=i, v=style_var: self._on_gauge_style(iv, v.get()))
+            styles    = get_channel_styles(g.channel, is_bike)
+            cur_style = g.style if g.style in styles else styles[0]
+            if g.style != cur_style:
+                g.style = cur_style
 
-            # Visible toggle
-            vis_var = tk.BooleanVar(value=g.visible)
-            tk.Checkbutton(row, text="", variable=vis_var, bg=BG,
-                           selectcolor=CARD2, activebackground=BG,
-                           command=lambda iv=i, v=vis_var: self._on_gauge_visible(iv, v.get())
-                           ).pack(side='left')
+            chan_var  = tk.StringVar(value=g.channel)
+            style_var = tk.StringVar(value=cur_style)
 
-            # Remove button
-            Btn(row, "✕", small=True,
-                command=lambda iv=i: self._remove_gauge(iv)).pack(side='left', padx=(2, 0))
+            cb_chan = ttk.Combobox(cell, textvariable=chan_var,
+                                   values=chan_keys, state='readonly',
+                                   font=font(8), width=10)
+            cb_chan.pack(side='left', padx=(0, 2))
 
-    def _on_map_style_change(self) -> None:
-        self.app.config.overlay.map_style = self.var_map_style.get()
-        self.app.config.save()
-        self.editor.refresh()
+            if g.channel == 'multi':
+                # Multi-Line: style is fixed, show channel picker instead
+                tk.Label(cell, text='Multi-Line', bg=BG, fg=TEXT2,
+                         font=font(8)).pack(side='left', padx=(0, 2))
+                Btn(cell, 'Edit channels…', small=True,
+                    command=lambda iv=idx: self._edit_multi_channels(iv)
+                    ).pack(side='left', padx=(0, 2))
+            else:
+                cb_style = ttk.Combobox(cell, textvariable=style_var,
+                                        values=styles, state='readonly',
+                                        font=font(8), width=8)
+                cb_style.pack(side='left', padx=(0, 2))
+
+            chan_var.trace_add('write',
+                lambda *_, iv=idx, cv=chan_var, sv=style_var,
+                        cs=(cb_style if g.channel != 'multi' else None):
+                    self._on_gauge_channel_ctx(iv, cv.get(), sv, cs))
+
+            if g.channel != 'multi':
+                style_var.trace_add('write',
+                    lambda *_, iv=idx, sv=style_var:
+                        self._on_gauge_style(iv, sv.get()))
+
+            self._make_eye_btn(cell,
+                get_vis=lambda iv=idx: overlay.gauges[iv].visible,
+                set_vis=lambda v, iv=idx: self._set_gauge_vis(iv, v))
+
+            Btn(cell, '✕', small=True,
+                command=lambda iv=idx: self._remove_gauge(iv)
+                ).pack(side='left', padx=(2, 0))
+
+        # "+ Add gauge" in the next free cell
+        add_row = n_elems // 2
+        add_col = n_elems % 2
+        Btn(f, '+ Add gauge', small=True, command=self._add_gauge).grid(
+            row=add_row, column=add_col, sticky='w', pady=(3, 0))
 
     def _on_theme_change(self) -> None:
         self.app.config.overlay.theme = self.var_theme.get()
@@ -292,12 +329,93 @@ class ExportPage(tk.Frame):
             self._rebuild_gauge_list()
             self.editor.refresh()
 
-    def _on_gauge_channel(self, idx: int, channel: str) -> None:
+    def _edit_multi_channels(self, idx: int) -> None:
+        """Open a channel picker dialog for a Multi-Line gauge."""
+        from gauge_channels import GAUGE_CHANNELS
         gauges = self.app.config.overlay.gauges
-        if 0 <= idx < len(gauges):
-            gauges[idx].channel = channel
+        if not (0 <= idx < len(gauges)):
+            return
+        g = gauges[idx]
+
+        win = tk.Toplevel(self)
+        win.title('Select channels')
+        win.configure(bg=CARD)
+        win.resizable(False, False)
+        win.grab_set()
+
+        tk.Label(win, text='Choose channels to overlay:',
+                 bg=CARD, fg=TEXT2, font=font(9)).pack(anchor='w', padx=12, pady=(10, 4))
+
+        current = set(g.channels)
+        vars_map = {}  # channel_key -> BooleanVar
+
+        scroll_frame = tk.Frame(win, bg=CARD)
+        scroll_frame.pack(fill='x', padx=12, pady=4)
+
+        avail = getattr(self, '_available_channels', None)
+        for ch_key, meta in GAUGE_CHANNELS.items():
+            if avail is not None and ch_key not in avail:
+                continue
+            var = tk.BooleanVar(value=(ch_key in current))
+            vars_map[ch_key] = var
+            row = tk.Frame(scroll_frame, bg=CARD)
+            row.pack(fill='x', pady=1)
+            tk.Checkbutton(row, text=f"{meta['label']}  ({meta['unit']})" if meta['unit'] else meta['label'],
+                           variable=var, bg=CARD, fg=TEXT, selectcolor=CARD2,
+                           activebackground=CARD, font=font(9)).pack(side='left')
+
+        btn_row = tk.Frame(win, bg=CARD)
+        btn_row.pack(fill='x', padx=12, pady=(4, 10))
+
+        def _apply():
+            selected = [k for k, v in vars_map.items() if v.get()]
+            g.channels = selected
+            if not g.style:
+                g.style = 'Multi-Line'
+            self.app.config.save()
+            self._rebuild_gauge_list()
+            self.editor.refresh()
+            win.destroy()
+
+        Btn(btn_row, 'OK',     accent=True, command=_apply).pack(side='left', padx=(0, 6))
+        Btn(btn_row, 'Cancel', command=win.destroy).pack(side='left')
+
+        win.update_idletasks()
+        # Centre over parent
+        px, py = self.winfo_rootx(), self.winfo_rooty()
+        pw, ph = self.winfo_width(), self.winfo_height()
+        ww, wh = win.winfo_width(), win.winfo_height()
+        win.geometry(f'+{px + pw//2 - ww//2}+{py + ph//2 - wh//2}')
+
+    def _on_gauge_channel_ctx(self, idx: int, channel: str,
+                               style_var: tk.StringVar, cb_style) -> None:
+        """Channel changed: update style list and coerce stale style."""
+        from gauge_channels import get_channel_styles
+        gauges = self.app.config.overlay.gauges
+        if not (0 <= idx < len(gauges)):
+            return
+        gauges[idx].channel = channel
+        # For multi, style is fixed and cb_style is None
+        if channel == 'multi':
+            gauges[idx].style = 'Multi-Line'
+            self.app.config.save()
+            self._rebuild_gauge_list()
+            self.editor.refresh()
+            return
+        is_bike = self.app.config.overlay.is_bike
+        new_styles = get_channel_styles(channel, is_bike)
+        if cb_style is not None:
+            cb_style.config(values=new_styles)
+        if style_var.get() not in new_styles:
+            style_var.set(new_styles[0])   # triggers _on_gauge_style via trace
+        else:
             self.app.config.save()
             self.editor.refresh()
+
+    def _set_gauge_vis(self, idx: int, visible: bool) -> None:
+        gauges = self.app.config.overlay.gauges
+        if 0 <= idx < len(gauges):
+            gauges[idx].visible = visible
 
     def _on_gauge_style(self, idx: int, style: str) -> None:
         gauges = self.app.config.overlay.gauges
@@ -439,9 +557,10 @@ class ExportPage(tk.Frame):
 
         self.var_ref_mode = tk.StringVar(value='none')
         ref_modes = [
-            ('none',         'None'),
-            ('session_best', 'Fastest lap in session'),
-            ('custom',       'Custom lap…'),
+            ('none',          'None'),
+            ('session_best',  'Fastest lap in session'),
+            ('track_library', 'Pick from track history…'),
+            ('custom',        'Custom lap…'),
         ]
         for val, lbl in ref_modes:
             tk.Radiobutton(ref_card.body, text=lbl, variable=self.var_ref_mode,
@@ -449,7 +568,39 @@ class ExportPage(tk.Frame):
                            activebackground=CARD, font=font(9),
                            command=self._on_ref_mode_change).pack(anchor='w', pady=1)
 
-        # Custom file controls — shown only when 'custom' is selected
+        # ── Track-library picker — shown when 'track_library' is selected ────
+        self._lib_laps: list = []   # parallel list of lap objects, index = treeview row
+        self._lib_track: str = ''   # track name currently loaded in the treeview
+
+        self._ref_library_frame = tk.Frame(ref_card.body, bg=CARD)
+
+        self._lbl_lib_status = tk.Label(self._ref_library_frame, text='',
+                                        bg=CARD, fg=TEXT3, font=font(8), anchor='w')
+        self._lbl_lib_status.pack(anchor='w', pady=(0, 4))
+
+        lib_tree_frame = tk.Frame(self._ref_library_frame, bg=CARD)
+        lib_tree_frame.pack(fill='x')
+
+        lib_cols = ('date', 'lap', 'time')
+        self._lib_tree = ttk.Treeview(lib_tree_frame, columns=lib_cols,
+                                      show='headings', height=6,
+                                      selectmode='browse')
+        self._lib_tree.heading('date', text='Date')
+        self._lib_tree.heading('lap',  text='Lap')
+        self._lib_tree.heading('time', text='Time')
+        self._lib_tree.column('date', width=100, anchor='w', stretch=True)
+        self._lib_tree.column('lap',  width=35,  anchor='center', stretch=False)
+        self._lib_tree.column('time', width=80,  anchor='e', stretch=False)
+
+        lib_scroll = ttk.Scrollbar(lib_tree_frame, orient='vertical',
+                                   command=self._lib_tree.yview)
+        self._lib_tree.configure(yscrollcommand=lib_scroll.set)
+        self._lib_tree.pack(side='left', fill='x', expand=True)
+        lib_scroll.pack(side='right', fill='y')
+
+        self._ref_library_frame.pack_forget()   # hidden until mode selected
+
+        # ── Custom file controls — shown only when 'custom' is selected ───────
         self._ref_custom_path: str = ''
         self._ref_custom_laps: list = []   # list of (display_str, lap_obj)
 
@@ -522,13 +673,20 @@ class ExportPage(tk.Frame):
             self._clip_frame.pack_forget()
 
     def _on_ref_mode_change(self) -> None:
-        if self.var_ref_mode.get() == 'custom':
+        mode = self.var_ref_mode.get()
+        if mode == 'custom':
             self._ref_custom_frame.pack(fill='x', pady=(4, 0))
             if self._ref_custom_laps:
                 self._ref_lap_cb.pack(anchor='w', pady=(4, 0))
         else:
             self._ref_custom_frame.pack_forget()
             self._ref_lap_cb.pack_forget()
+
+        if mode == 'track_library':
+            self._ref_library_frame.pack(fill='x', pady=(4, 0))
+            self._refresh_library()
+        else:
+            self._ref_library_frame.pack_forget()
 
     def _browse_ref_file(self) -> None:
         from tkinter.filedialog import askopenfilename
@@ -564,21 +722,76 @@ class ExportPage(tk.Frame):
         except Exception as e:
             self.app.q.put(('export_ref_loaded', path, None, str(e)))
 
-    def _on_toggle_map(self):
-        self.app.config.overlay.map.visible = self.var_show_map.get()
-        self.app.config.save()
-        self.editor.refresh()
+    # ── Track library ─────────────────────────────────────────────────────────
 
-    def _on_toggle_bike(self):
-        is_bike = self.var_is_bike.get()
-        self.app.config.overlay.is_bike = is_bike
-        if not is_bike:
-            for g in self.app.config.overlay.gauges:
-                if g.style == 'Lean':
-                    g.style = 'Bar'
-        self.app.config.save()
-        self._rebuild_gauge_list()
-        self.editor.refresh()
+    def _refresh_library(self) -> None:
+        """Determine track from selected sessions and kick off async lap load."""
+        for row in self._lib_tree.get_children():
+            self._lib_tree.delete(row)
+        self._lib_laps = []
+        self._lib_track = ''
+
+        items = getattr(self.app, 'selected_items', [])
+        if not items:
+            self._lbl_lib_status.config(
+                text='Select sessions in the Data tab first.', fg=TEXT3)
+            return
+
+        data_page = self.app.pages.get('data_page')
+        if not data_page:
+            return
+
+        csv_path = items[0].get('csv', '')
+        track, _, _ = data_page._quick_meta(csv_path)
+        if not track or track in ('—', ''):
+            self._lbl_lib_status.config(
+                text='Could not determine track for selected session.', fg=TEXT3)
+            return
+
+        self._lib_track = track
+        self._lbl_lib_status.config(
+            text=f'Loading laps for: {track}…', fg=TEXT3)
+
+        all_sessions = list(data_page._sessions)
+        threading.Thread(
+            target=self._load_library_bg,
+            args=(track, all_sessions, data_page),
+            daemon=True,
+        ).start()
+
+    def _load_library_bg(self, track: str, all_sessions: list,
+                         data_page) -> None:
+        """Background: load all sessions matching *track* and collect timed laps."""
+        import racebox_data, aim_data, gpx_data, motec_data
+
+        def load_sess(path):
+            if motec_data.is_motec_ld(path):
+                return motec_data.load_ld(path)
+            if gpx_data.is_gpx(path):
+                return gpx_data.load_gpx(path)
+            if aim_data.is_aim_csv(path):
+                return aim_data.load_csv(path)
+            return racebox_data.load_csv(path)
+
+        results = []   # list of (date_str, lap_index, lap_duration, lap_obj)
+        for m in all_sessions:
+            csv = getattr(m, 'csv_path', None)
+            if not csv or not os.path.exists(csv):
+                continue
+            t, _, _ = data_page._quick_meta(csv)
+            if t != track:
+                continue
+            try:
+                sess = load_sess(csv)
+                date_str = (m.csv_start.strftime('%Y-%m-%d')
+                            if getattr(m, 'csv_start', None) else '?')
+                for i, lap in enumerate(sess.timed_laps, 1):
+                    results.append((date_str, i, lap.duration, lap))
+            except Exception:
+                pass
+
+        results.sort(key=lambda x: x[2])
+        self.app.q.put(('export_library_loaded', track, results))
 
     def _on_layout_change(self, layout: OverlayLayout) -> None:
         self.app.config.save()
@@ -603,6 +816,66 @@ class ExportPage(tk.Frame):
 
         threading.Thread(target=self._grab_frame_bg, args=(video,),
                          daemon=True).start()
+
+    def _load_preview_history_bg(self, csv_path: str) -> None:
+        """Load real telemetry from the best timed lap and feed to the overlay editor."""
+        try:
+            import math as _math
+            import os as _os
+            from page_data import _load_session
+            sess = _load_session(csv_path)
+            if not sess or not sess.laps:
+                return
+            # Apply bike override and compute lean if session is a bike.
+            abs_csv = _os.path.abspath(csv_path)
+            override = self.app.config.bike_overrides.get(abs_csv)
+            if override is not None:
+                sess.is_bike = override
+            if sess.is_bike:
+                for pt in sess.all_points:
+                    if pt.lean_angle == 0.0:
+                        if abs(pt.gyro_z) > 1e-6:
+                            v = pt.speed / 3.6
+                            w = pt.gyro_z * _math.pi / 180.0
+                            pt.lean_angle = _math.degrees(_math.atan2(v * w, 9.81))
+                        elif abs(pt.gforce_y) > 1e-6:
+                            gy_c = max(-1.0, min(1.0, pt.gforce_y))
+                            pt.lean_angle = -_math.degrees(_math.asin(gy_c))
+            # Pick the fastest timed lap
+            timed = [l for l in sess.laps if not l.is_outlap and not l.is_inlap
+                     and l.duration > 10]
+            lap = min(timed, key=lambda l: l.duration) if timed else sess.laps[0]
+            pts = lap.points
+            if not pts:
+                return
+            history = [{
+                't':            i / max(len(pts) - 1, 1) * lap.duration,
+                'speed':        getattr(p, 'speed',       0.0),
+                'gx':           getattr(p, 'gforce_x',    0.0),
+                'gy':           getattr(p, 'gforce_y',    0.0),
+                'lean':         getattr(p, 'lean_angle',  0.0),
+                'rpm':          getattr(p, 'rpm',         0.0),
+                'exhaust_temp': getattr(p, 'exhaust_temp',0.0),
+                'delta_time':   0.0,
+                'alt':          getattr(p, 'alt',         0.0),
+            } for i, p in enumerate(pts)]
+            # Compute which channels have actual data in this session
+            from gauge_channels import GAUGE_CHANNELS
+            avail: set = set()
+            for ch_key, meta in GAUGE_CHANNELS.items():
+                hk = meta['hist_key']
+                if any(abs(pt.get(hk, 0.0)) > 1e-6 for pt in history):
+                    avail.add(ch_key)
+            # delta_time is computed at render time — always offer it
+            avail.add('delta_time')
+            # multi-line gauge is always available
+            avail.add('multi')
+            # map requires GPS coordinates on the lap points
+            if any(getattr(p, 'lat', None) for p in pts):
+                avail.add('map')
+            self.app.q.put(('export_preview_history', history, avail))
+        except Exception:
+            pass
 
     def _grab_frame_bg(self, video_path: str) -> None:
         try:
@@ -650,19 +923,25 @@ class ExportPage(tk.Frame):
         workers     = self.app.worker_count.get()
         padding     = self.app.padding_secs.get()
         is_bike     = self.app.config.overlay.is_bike
-        show_map    = self.app.config.overlay.map.visible
-        show_tel    = any(g.visible for g in self.app.config.overlay.gauges)
+        gauges   = self.app.config.overlay.gauges
+        show_map = any(g.visible and g.channel == 'map' for g in gauges)
+        show_tel = any(g.visible and g.channel != 'map' for g in gauges)
         layout      = asdict(self.app.config.overlay)
         clip_start  = self.var_clip_start.get()
         clip_end    = self.var_clip_end.get()
         ref_mode    = self.var_ref_mode.get()
         ref_path    = self._ref_custom_path
-        # Resolve custom lap object now (on UI thread) to avoid races
+        # Resolve lap object now (on UI thread) to avoid races
         ref_lap_obj = None
         if ref_mode == 'custom' and self._ref_custom_laps:
             idx = self._ref_lap_cb.current()
             if 0 <= idx < len(self._ref_custom_laps):
                 ref_lap_obj = self._ref_custom_laps[idx][1]
+        elif ref_mode == 'track_library' and self._lib_laps:
+            sel = self._lib_tree.selection()
+            idx = int(sel[0]) if sel else 0
+            if 0 <= idx < len(self._lib_laps):
+                ref_lap_obj = self._lib_laps[idx]
 
         threading.Thread(
             target=self._export_bg,
@@ -739,6 +1018,24 @@ class ExportPage(tk.Frame):
                 done_jobs += 1
                 continue
 
+            # Apply per-session bike override, then compute lean angles when
+            # the session is a bike but lean was not directly logged (e.g. AIM).
+            abs_csv = os.path.abspath(csv_path)
+            override = self.app.config.bike_overrides.get(abs_csv)
+            if override is not None:
+                sess.is_bike = override
+            if sess.is_bike or is_bike:
+                import math as _math
+                for pt in sess.all_points:
+                    if pt.lean_angle == 0.0:
+                        if abs(pt.gyro_z) > 1e-6:
+                            v = pt.speed / 3.6
+                            w = pt.gyro_z * _math.pi / 180.0
+                            pt.lean_angle = _math.degrees(_math.atan2(v * w, 9.81))
+                        elif abs(pt.gforce_y) > 1e-6:
+                            gy_c = max(-1.0, min(1.0, pt.gforce_y))
+                            pt.lean_angle = -_math.degrees(_math.asin(gy_c))
+
             if not videos and scope != 'full':
                 log("  ✗ No video file — skipping")
                 done_jobs += 1
@@ -752,17 +1049,23 @@ class ExportPage(tk.Frame):
                 join_share = 0.10
                 tmp_joined = os.path.join(export_path,
                     f"_tmp_joined_{os.path.basename(csv_path)}.mp4")
-                log(f"  Joining {len(videos)} video segments…")
-                sess_prog(done_jobs, 0.0, 0, "Joining clips…")
-                try:
-                    concat_videos(videos, tmp_joined)
+                newest_src = max(os.path.getmtime(v) for v in videos)
+                if (os.path.exists(tmp_joined) and
+                        os.path.getmtime(tmp_joined) >= newest_src):
+                    log(f"  Reusing cached joined video.")
                     video_path = tmp_joined
-                    sess_prog(done_jobs, join_share, 0, "")
-                except Exception as e:
-                    log(f"  ✗ Join failed: {e}")
-                    errors.append(str(e))
-                    done_jobs += 1
-                    continue
+                else:
+                    log(f"  Joining {len(videos)} video segments…")
+                    sess_prog(done_jobs, 0.0, 0, "Joining clips…")
+                    try:
+                        concat_videos(videos, tmp_joined)
+                        video_path = tmp_joined
+                        sess_prog(done_jobs, join_share, 0, "")
+                    except Exception as e:
+                        log(f"  ✗ Join failed: {e}")
+                        errors.append(str(e))
+                        done_jobs += 1
+                        continue
 
             # ── Resolve reference lap for this session ────────────────────────
             reference_lap = None
@@ -770,13 +1073,11 @@ class ExportPage(tk.Frame):
                 reference_lap = sess.fastest_lap
                 if reference_lap:
                     log(f"  Delta vs: session fastest ({reference_lap.duration:.3f}s)")
-            elif ref_mode == 'custom' and ref_lap_obj is not None:
+            elif ref_mode in ('custom', 'track_library') and ref_lap_obj is not None:
                 reference_lap = ref_lap_obj
-                log(f"  Delta vs: custom lap ({reference_lap.duration:.3f}s)")
+                log(f"  Delta vs: {reference_lap.duration:.3f}s")
 
             # ── Render phase ──────────────────────────────────────────────────
-            stem = os.path.splitext(os.path.basename(csv_path))[0]
-
             def scaled_prog(pct, msg):
                 sess_prog(done_jobs, join_share, pct, msg)
 
@@ -787,10 +1088,10 @@ class ExportPage(tk.Frame):
                         log("  ✗ No timed lap found")
                         done_jobs += 1
                         continue
-                    out = os.path.join(export_path, f"{stem}_fastest.mp4")
+                    out = os.path.join(export_path, f"{_export_stem(sess, 'Fastest')}.mp4")
                     log(f"  Fastest lap: {lap.duration:.3f}s → {os.path.basename(out)}")
                     render_lap(
-                        video_path, out, sess, RenderJob(f"{stem}_fastest", lap),
+                        video_path, out, sess, RenderJob(_export_stem(sess, 'Fastest'), lap),
                         sync_offset=offset, encoder=encoder, crf=crf,
                         n_workers=workers, show_map=show_map,
                         show_telemetry=show_tel, padding=padding,
@@ -806,10 +1107,11 @@ class ExportPage(tk.Frame):
                         done_jobs += 1
                         continue
                     for i, lap in enumerate(laps, 1):
-                        out = os.path.join(export_path, f"{stem}_lap{i:02d}.mp4")
+                        label = f"Lap{i:02d}"
+                        out = os.path.join(export_path, f"{_export_stem(sess, label)}.mp4")
                         log(f"  Lap {i}/{len(laps)}: {lap.duration:.3f}s")
                         render_lap(
-                            video_path, out, sess, RenderJob(f"{stem}_lap{i:02d}", lap),
+                            video_path, out, sess, RenderJob(_export_stem(sess, label), lap),
                             sync_offset=offset, encoder=encoder, crf=crf,
                             n_workers=workers, show_map=show_map,
                             show_telemetry=show_tel, padding=padding,
@@ -819,10 +1121,10 @@ class ExportPage(tk.Frame):
                         )
 
                 elif scope == 'full':
-                    out = os.path.join(export_path, f"{stem}_full.mp4")
+                    out = os.path.join(export_path, f"{_export_stem(sess, 'Full')}.mp4")
                     log(f"  Full session → {os.path.basename(out)}")
                     render_lap(
-                        video_path or '', out, sess, RenderJob(f"{stem}_full", None),
+                        video_path or '', out, sess, RenderJob(_export_stem(sess, 'Full'), None),
                         sync_offset=offset, encoder=encoder, crf=crf,
                         n_workers=workers, show_map=show_map,
                         show_telemetry=show_tel, padding=0.0,
@@ -849,11 +1151,11 @@ class ExportPage(tk.Frame):
                         points   = clip_pts,
                         duration = c_end - c_start,
                     )
-                    tag = f"{int(c_start)}s_{int(c_end)}s"
-                    out = os.path.join(export_path, f"{stem}_clip_{tag}.mp4")
+                    tag = f"Clip_{int(c_start)}s_{int(c_end)}s"
+                    out = os.path.join(export_path, f"{_export_stem(sess, tag)}.mp4")
                     log(f"  Clip {c_start:.1f}s–{c_end:.1f}s → {os.path.basename(out)}")
                     render_lap(
-                        video_path or '', out, sess, RenderJob(f"{stem}_clip", clip_lap),
+                        video_path or '', out, sess, RenderJob(_export_stem(sess, tag), clip_lap),
                         sync_offset=offset, encoder=encoder, crf=crf,
                         n_workers=workers, show_map=show_map,
                         show_telemetry=show_tel, padding=padding,
@@ -866,9 +1168,7 @@ class ExportPage(tk.Frame):
                 log(f"  ✗ Render error: {e}")
                 errors.append(str(e))
             finally:
-                if tmp_joined and os.path.exists(tmp_joined):
-                    try: os.remove(tmp_joined)
-                    except Exception: pass
+                pass  # keep tmp_joined as cache for future exports
 
             done_jobs += 1
             sess_prog(done_jobs, 0, 0, "")   # snap to next session boundary
@@ -918,6 +1218,29 @@ class ExportPage(tk.Frame):
             if entries:
                 self._ref_lap_cb.current(0)
             self._ref_lap_cb.pack(anchor='w', pady=(4, 0))
+        elif kind == 'export_library_loaded':
+            track, results = args[0], args[1]
+            if track != self._lib_track:
+                return   # stale response
+            for row in self._lib_tree.get_children():
+                self._lib_tree.delete(row)
+            self._lib_laps = []
+            if not results:
+                self._lbl_lib_status.config(
+                    text=f'No laps found for: {track}', fg=TEXT3)
+                return
+            def fmt_time(secs):
+                m, s = divmod(secs, 60)
+                return f'{int(m)}:{s:06.3f}'
+            for date_str, lap_idx, duration, lap_obj in results:
+                iid = str(len(self._lib_laps))
+                self._lib_tree.insert('', 'end', iid=iid,
+                    values=(date_str, lap_idx, fmt_time(duration)))
+                self._lib_laps.append(lap_obj)
+            self._lib_tree.selection_set('0')
+            self._lbl_lib_status.config(
+                text=f'{len(results)} lap(s) on {track} — sorted by time',
+                fg=TEXT3)
         elif kind == 'export_log':
             self._log(args[0])
         elif kind == 'export_prog':
@@ -934,18 +1257,44 @@ class ExportPage(tk.Frame):
             self._log(f"\n{'✓' if ok else '✗'} {msg}")
         elif kind == 'export_preview_frame':
             self.editor.set_frame(args[0])
+        elif kind == 'export_preview_history':
+            self.editor.set_history(args[0])
+            self._available_channels = args[1] if len(args) > 1 else None
+            self._rebuild_gauge_list()
 
     # ─────────────────────────────────────────────────────────────────────────
     #  Called when user navigates to this tab
     # ─────────────────────────────────────────────────────────────────────────
 
     def on_show(self) -> None:
-        """Refresh selection count label from app.selected_items."""
+        """Refresh selection count label and auto-load preview frame."""
         items = getattr(self.app, 'selected_items', [])
         n = len(items)
         if n == 0:
             self.lbl_selection.config(text="No sessions selected", fg=TEXT3)
+            if self._available_channels is not None:
+                self._available_channels = None
+                self._rebuild_gauge_list()
         elif n == 1:
             self.lbl_selection.config(text="1 session selected", fg=TEXT2)
         else:
             self.lbl_selection.config(text=f"{n} sessions selected", fg=TEXT2)
+
+        # Auto-load preview frame from first available video
+        video = None
+        for item in items:
+            vids = item.get('videos', [])
+            if vids:
+                video = vids[0]
+                break
+        if video and video != getattr(self, '_last_preview_video', None):
+            self._last_preview_video = video
+            threading.Thread(target=self._grab_frame_bg, args=(video,),
+                             daemon=True).start()
+
+        # Auto-load real telemetry for gauge previews
+        csv = items[0].get('csv') if items else None
+        if csv and csv != getattr(self, '_last_preview_csv', None):
+            self._last_preview_csv = csv
+            threading.Thread(target=self._load_preview_history_bg, args=(csv,),
+                             daemon=True).start()

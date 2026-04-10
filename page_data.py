@@ -15,7 +15,7 @@ import racebox_data
 import aim_data
 import gpx_data
 import motec_data
-from video_renderer import concat_videos, video_duration
+from video_renderer import concat_videos, video_duration, MultiCap
 from session_scanner import (scan_csvs, scan_videos, group_videos, match_sessions,
                       convert_xrk_files, scan_pending_xrk, MatchedSession,
                       VideoFile, VideoGroup)
@@ -200,8 +200,53 @@ class DataPage(tk.Frame):
             best = f"{sess.best_lap_time:.3f}s" if sess.best_lap_time else "—"
             info_row("Laps",    str(laps))
             info_row("Best",    best, OK)
-            mode  = "🏍 Bike" if sess.is_bike else "🏎 Car"
-            info_row("Mode",    mode)
+            # Mode row — inline CAR ●── BIKE toggle
+            mode_row = tk.Frame(info.body, bg=CARD)
+            mode_row.pack(fill='x', pady=1)
+            tk.Label(mode_row, text="Mode", bg=CARD, fg=TEXT3,
+                     font=font(8), width=10, anchor='w').pack(side='left')
+
+            def _toggle_bike_mode(s=sess, m=match):
+                import math as _math
+                s.is_bike = not s.is_bike
+                if s.is_bike:
+                    # Compute lean for all points — prefer gyro (RaceBox),
+                    # fall back to lateral G (MoTeC / AIM / GPX).
+                    for pt in s.all_points:
+                        pt.lean_angle = 0.0  # reset so we recompute cleanly
+                    for pt in s.all_points:
+                        if abs(pt.gyro_z) > 1e-6:
+                            v = pt.speed / 3.6
+                            w = pt.gyro_z * _math.pi / 180.0
+                            pt.lean_angle = _math.degrees(_math.atan2(v * w, 9.81))
+                        elif abs(pt.gforce_y) > 1e-6:
+                            pt.lean_angle = _math.degrees(_math.atan(pt.gforce_y))
+                else:
+                    for pt in s.all_points:
+                        pt.lean_angle = 0.0
+                abs_path = os.path.abspath(m.csv_path)
+                self.app.config.bike_overrides[abs_path] = s.is_bike
+                self.app.config.overlay.is_bike = s.is_bike
+                self.app.config.save()
+                # Force the export tab to reload history with updated lean data
+                export_page = self.app.pages.get('export_page')
+                if export_page:
+                    export_page._last_preview_csv = None
+                self._build_detail_session(m)
+
+            # Inline toggle: CAR ●── BIKE  or  CAR ──● BIKE
+            is_bike = sess.is_bike
+            car_col  = TEXT  if not is_bike else TEXT3
+            bike_col = TEXT  if is_bike     else TEXT3
+            pip      = "──●" if is_bike     else "●──"
+            tk.Label(mode_row, text="CAR", bg=CARD, fg=car_col,
+                     font=font(9, bold=not is_bike)).pack(side='left', padx=(6, 2))
+            tk.Label(mode_row, text=pip, bg=CARD, fg=ACC,
+                     font=font(9, mono=True)).pack(side='left')
+            tk.Label(mode_row, text="BIKE", bg=CARD, fg=bike_col,
+                     font=font(9, bold=is_bike)).pack(side='left', padx=(2, 0))
+            Btn(mode_row, "⇄", command=_toggle_bike_mode,
+                small=True).pack(side='left', padx=(6, 0))
         else:
             info_row("CSV",     os.path.basename(csv))
 
@@ -235,12 +280,12 @@ class DataPage(tk.Frame):
 
         top = tk.Frame(align_card.body, bg=CARD)
         top.pack(fill='x', pady=(0, 6))
-        self.btn_load_prev = Btn(top, "▶  Load Preview",
-                                 command=self._load_sync_preview, accent=True)
-        self.btn_load_prev.pack(side='left')
+        self.btn_load_prev = Btn(top, "▶  Reload Preview",
+                                 command=self._load_sync_preview)
+        self.btn_load_prev.pack(side='left', padx=(0, 4))
         self.lbl_sync_status = tk.Label(top,
-            text="Scrub to lap-1 start, then press M.",
-            bg=CARD, fg=TEXT2, font=font(8), wraplength=260, justify='left')
+            text="Scrub to the start line and press M to mark it.",
+            bg=CARD, fg=TEXT2, font=font(8), wraplength=300, justify='left')
         self.lbl_sync_status.pack(side='left', padx=8)
 
         self.sync_canvas = tk.Canvas(align_card.body, bg='#060810',
@@ -383,6 +428,10 @@ class DataPage(tk.Frame):
 
         # Update app selection
         self._apply_selection(silent=True)
+
+        # Auto-load video preview if this session has video
+        if match.video_group:
+            self._load_sync_preview()
 
     def _load_session_bg(self, csv_path: str):
         try:
@@ -641,6 +690,14 @@ class DataPage(tk.Frame):
                                        end_time=None, total_dur=total_dur)
         match.matched    = True
         match.time_delta = 0.0
+        # Persist so the assignment survives a restart
+        from app_config import save_scan_cache
+        save_scan_cache(
+            '|'.join(self.app.config.all_telemetry_paths()),
+            self.app.config.video_path,
+            self._sessions,
+            self._session_meta,
+        )
         # Rebuild detail panel with video now assigned
         self._build_detail_session(match)
 
@@ -657,26 +714,27 @@ class DataPage(tk.Frame):
         if len(videos) == 1:
             self._open_sync_cap(videos[0])
         else:
-            import tempfile as _tmp
-            joined = os.path.join(_tmp.gettempdir(), '_rb_align_preview.mp4')
-            self.lbl_sync_status.config(
-                text=f"⏳ Joining {len(videos)} clips…", fg=WARN)
-            threading.Thread(target=self._join_preview_bg,
-                             args=(videos, joined), daemon=True).start()
+            threading.Thread(target=self._open_multi_cap_bg,
+                             args=(videos,), daemon=True).start()
 
-    def _join_preview_bg(self, files, out):
+    def _open_multi_cap_bg(self, files):
         try:
-            concat_videos(files, out)
-            self.app.q.put(('data_sync_open', out))
+            cap = MultiCap(files)
+            self.app.q.put(('data_sync_open_cap', cap))
         except Exception as e:
-            self.app.q.put(('data_sync_status', f"✗ Join failed: {e}", ERR))
+            self.app.q.put(('data_sync_status', f"✗ Cannot open clips: {e}", ERR))
             self.app.q.put(('data_enable_load_btn',))
 
-    def _open_sync_cap(self, path: str):
+    def _open_sync_cap(self, path_or_cap):
         import cv2
         if self.sync_cap:
             self.sync_cap.release()
-        cap = cv2.VideoCapture(path)
+        if isinstance(path_or_cap, str):
+            cap = cv2.VideoCapture(path_or_cap)
+            path = path_or_cap
+        else:
+            cap = path_or_cap
+            path = '<multi-clip>'
         if not cap.isOpened():
             self.lbl_sync_status.config(text=f"✗ Cannot open: {path}", fg=ERR)
             self.btn_load_prev.config(state='normal')
@@ -794,12 +852,26 @@ class DataPage(tk.Frame):
             pass
 
     # ─────────────────────────────────────────────────────────────────────────
+    #  Auto-detect start line
+    # ─────────────────────────────────────────────────────────────────────────
+
+    # ─────────────────────────────────────────────────────────────────────────
     #  Queue handler
     # ─────────────────────────────────────────────────────────────────────────
 
     def on_queue(self, kind, *args):
         if kind == 'data_scanned':
             matches: List[MatchedSession] = args[0]
+            # Carry over manually assigned videos — the auto-scan doesn't know
+            # about them and would silently drop them.
+            old_by_csv = {m.csv_path: m for m in self._sessions}
+            for m in matches:
+                if not m.matched:
+                    old = old_by_csv.get(m.csv_path)
+                    if old and old.matched and old.video_group:
+                        m.video_group = old.video_group
+                        m.matched     = True
+                        m.time_delta  = old.time_delta
             self._sessions = matches
             self._populate_tree()
             # Re-apply any cached rich metadata into the refreshed tree rows
@@ -850,6 +922,22 @@ class DataPage(tk.Frame):
 
         elif kind == 'data_session_loaded':
             csv_path, sess, err = args
+            if sess is not None:
+                # Apply any saved bike/car override for this file
+                import math as _math
+                abs_path = os.path.abspath(csv_path)
+                override = self.app.config.bike_overrides.get(abs_path)
+                if override is not None:
+                    sess.is_bike = override
+                if sess.is_bike:
+                    for pt in sess.all_points:
+                        if pt.lean_angle == 0.0:
+                            if abs(pt.gyro_z) > 1e-6:
+                                v = pt.speed / 3.6
+                                w = pt.gyro_z * _math.pi / 180.0
+                                pt.lean_angle = _math.degrees(_math.atan2(v * w, 9.81))
+                            elif abs(pt.gforce_y) > 1e-6:
+                                pt.lean_angle = _math.degrees(_math.atan(pt.gforce_y))
             if csv_path == self._sel_csv:
                 self._sel_session = sess
                 if self._sel_match:
@@ -877,6 +965,9 @@ class DataPage(tk.Frame):
                 self.lbl_status.config(text=f"Load error: {err}", fg=ERR)
 
         elif kind == 'data_sync_open':
+            self._open_sync_cap(args[0])
+
+        elif kind == 'data_sync_open_cap':
             self._open_sync_cap(args[0])
 
         elif kind == 'data_sync_status':

@@ -42,9 +42,9 @@ def render(data: dict, w: int, h: int):
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
     ax.axis('off')
 
-    ax.add_patch(FancyBboxPatch((0.04, 0.04), 0.92, 0.92,
-        boxstyle='round,pad=0.02',
-        facecolor=bg_rgba, edgecolor=bg_edge, linewidth=1))
+    ax.add_patch(FancyBboxPatch((0.02, 0.02), 0.96, 0.96,
+        boxstyle='round,pad=0.025',
+        facecolor=bg_rgba, edgecolor=bg_edge, linewidth=0.8))
 
     fs_label = max(5,  min(int(11 * sc), int(w * 0.13)))
     fs_value = max(10, min(int(34 * sc), int(w * 0.38)))
@@ -56,6 +56,8 @@ def render(data: dict, w: int, h: int):
         s  = value % 60
         txt = f"{m}:{s:06.3f}" if value >= 60 else f"{value:.3f}"
         fs_value = max(8, min(int(20 * sc), int(w * 0.22)))
+    elif channel == 'lean':
+        txt = f"{value:.1f}"
     elif abs(value) >= 10000:
         txt = f"{value:,.0f}"
     elif abs(value) >= 100:
@@ -67,12 +69,12 @@ def render(data: dict, w: int, h: int):
 
     ax.text(0.50, 0.78, label.upper(),
             ha='center', va='center', color=label_col,
-            fontsize=fs_label, fontfamily='monospace')
+            fontsize=fs_label, fontfamily='sans-serif')
     ax.text(0.50, 0.50, txt,
             ha='center', va='center', color=text_col,
-            fontsize=fs_value, fontweight='bold', fontfamily='monospace')
+            fontsize=fs_value, fontweight='bold', fontfamily='sans-serif')
     ax.text(0.50, 0.24, unit,
             ha='center', va='center', color=unit_col,
-            fontsize=fs_unit, fontfamily='monospace')
+            fontsize=fs_unit, fontfamily='sans-serif')
 
     return fig_to_rgba(fig, (w, h))

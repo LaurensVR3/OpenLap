@@ -55,9 +55,13 @@ def render(data: dict, w: int, h: int):
 
     # Background circle
     ax.add_patch(plt.Circle((0, 0), 1.18,
-        facecolor=bg_rgba, edgecolor=bg_edge, linewidth=1))
+        facecolor=bg_rgba, edgecolor=bg_edge, linewidth=0.8))
 
-    fs_value = max(8,  min(int(28 * sc), int(w * 0.22)))
+    # Cap fs_value so value + unit text never overlap at any gauge size.
+    # The two text items share ~0.35 of the gauge height below centre.
+    # 0.35 * h / (100/72) gives the max total pt that fits; split ~75/25.
+    _text_budget = int(min(w, h) * 0.35 * 72 / 100)
+    fs_value = max(8,  min(int(22 * sc), int(_text_budget * 0.72)))
     fs_label = max(5,  min(int(9  * sc), int(w * 0.08)))
     fs_unit  = max(4,  min(int(7  * sc), int(w * 0.06)))
 
@@ -123,14 +127,14 @@ def render(data: dict, w: int, h: int):
     else:
         val_str = f"{value:.2f}"
 
-    ax.text(0, -0.28, val_str,
+    ax.text(0, -0.18, val_str,
             ha='center', va='center', color=text_col,
-            fontsize=fs_value, fontweight='bold', fontfamily='monospace', zorder=6)
-    ax.text(0, -0.58, unit,
+            fontsize=fs_value, fontweight='bold', fontfamily='sans-serif', zorder=6)
+    ax.text(0, -0.72, unit,
             ha='center', va='center', color=unit_col,
-            fontsize=fs_unit, fontfamily='monospace', zorder=6)
+            fontsize=fs_unit, fontfamily='sans-serif', zorder=6)
     ax.text(0, 0.55, label.upper(),
             ha='center', va='center', color=label_col,
-            fontsize=fs_label, fontfamily='monospace', zorder=6)
+            fontsize=fs_label, fontfamily='sans-serif', zorder=6)
 
     return fig_to_rgba(fig, (w, h))

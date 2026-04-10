@@ -328,6 +328,11 @@ def load_ld(path: str) -> Session:
         elapsed    = abs_times[i]
         lap_rel    = raw_time[i]
 
+        # Derive lean angle from lateral G (valid for both bikes and cars,
+        # but only meaningful as a lean proxy on two-wheelers).
+        # Formula: tan(lean) = lat_G  →  lean = atan(lat_G)
+        lean = math.degrees(math.atan(gy))
+
         pt = DataPoint(
             record      = i,
             time        = dt,            # session-start datetime, constant
@@ -340,6 +345,7 @@ def load_ld(path: str) -> Session:
             gforce_z    = 0.0,
             lap         = lap_nums[i],
             gyro_x      = 0.0, gyro_y = 0.0, gyro_z = 0.0,
+            lean_angle  = lean,
             elapsed     = elapsed,
             lap_elapsed = lap_rel,
             rpm         = s_rpm[i],

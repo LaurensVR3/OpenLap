@@ -52,7 +52,7 @@ def render(data: dict, w: int, h: int):
     ax_bg = fig.add_axes([0, 0, 1, 1])
     ax_bg.set_facecolor((0, 0, 0, 0))
     ax_bg.axis('off')
-    ax_bg.add_patch(FancyBboxPatch((0.01, 0.02), 0.98, 0.96,
+    ax_bg.add_patch(FancyBboxPatch((0.02, 0.02), 0.96, 0.96,
         boxstyle='round,pad=0.02',
         facecolor=bg_rgba, edgecolor=bg_edge, linewidth=1))
 
@@ -95,7 +95,7 @@ def render(data: dict, w: int, h: int):
 
     ax_bg.text(0.04, 0.90, label.upper(),
                ha='left', va='top', color=label_col,
-               fontsize=fs_label, fontfamily='monospace',
+               fontsize=fs_label, fontfamily='sans-serif',
                transform=ax_bg.transAxes)
 
     if channel == 'lap_time':
@@ -113,12 +113,12 @@ def render(data: dict, w: int, h: int):
 
     ax_bg.text(0.95, 0.56, val_str,
                ha='right', va='center', color=line_col,
-               fontsize=fs_val, fontweight='bold', fontfamily='monospace',
+               fontsize=fs_val, fontweight='bold', fontfamily='sans-serif',
                transform=ax_bg.transAxes)
     if unit:
         ax_bg.text(0.95, 0.28, unit,
                    ha='right', va='center', color=unit_col,
-                   fontsize=fs_unit, fontfamily='monospace',
+                   fontsize=fs_unit, fontfamily='sans-serif',
                    transform=ax_bg.transAxes)
 
     return fig_to_rgba(fig, (w, h))

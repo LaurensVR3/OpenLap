@@ -33,8 +33,9 @@ QUEUE_OWNER = {
     'data_xrk_convert_failed':   'data_page',
     'data_session_loaded':   'data_page',
     'data_sync_open':        'data_page',
+    'data_sync_open_cap':    'data_page',
     'data_sync_status':      'data_page',
-    'data_enable_load_btn':  'data_page',
+    'data_enable_load_btn':      'data_page',
     'settings_changed':      'data_page',   # triggers rescan
     'rb_auto_done':          'data_page',   # startup auto-download result
 
@@ -43,6 +44,9 @@ QUEUE_OWNER = {
     'export_prog':           'export_page',
     'export_done':           'export_page',
     'export_preview_frame':  'export_page',
+    'export_ref_loaded':       'export_page',
+    'export_library_loaded':   'export_page',
+    'export_preview_history':  'export_page',
 
     # Settings page
     'rb_dl_auth':            'settings_page',

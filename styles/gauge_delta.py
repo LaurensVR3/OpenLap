@@ -60,7 +60,7 @@ def render(data: dict, w: int, h: int):
 
     # Background card
     ax.add_patch(FancyBboxPatch(
-        (0.04, 0.04), 0.92, 0.92,
+        (0.02, 0.02), 0.96, 0.96,
         boxstyle='round,pad=0.02',
         facecolor=bg_rgba, edgecolor=bg_edge, linewidth=1,
     ))
@@ -78,11 +78,11 @@ def render(data: dict, w: int, h: int):
 
     ax.text(0.50, 0.80, label.upper(),
             ha='center', va='center', color=label_col,
-            fontsize=fs_label, fontfamily='monospace')
+            fontsize=fs_label, fontfamily='sans-serif')
 
     ax.text(0.50, 0.54, txt,
             ha='center', va='center', color=colour,
-            fontsize=fs_value, fontweight='bold', fontfamily='monospace')
+            fontsize=fs_value, fontweight='bold', fontfamily='sans-serif')
 
     # ── Sparkline (delta history trend) ───────────────────────────────────────
     if len(history) >= 2:

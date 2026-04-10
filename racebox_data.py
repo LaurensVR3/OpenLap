@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -158,7 +159,9 @@ class Session:
 
 
 def _detect_bike(columns: List[str]) -> bool:
-    return 'LeanAngle' in columns and 'GForceY' not in columns
+    # Primary indicator: RaceBox explicitly omits GForceY on bike exports.
+    # LeanAngle may or may not be present depending on app export settings.
+    return 'GForceY' not in columns
 
 
 def load_csv(path: str) -> Session:
@@ -185,6 +188,15 @@ def load_csv(path: str) -> Session:
         raise NoDataRowsError(f"No data rows in {path}")
 
     all_pts: List[DataPoint] = [DataPoint.from_row(r, is_bike) for r in raw_rows]
+
+    # If this is a bike session but LeanAngle was not exported, compute it from
+    # speed × yaw rate (GyroZ).  Formula: lean = atan(v_m_s × ω_rad_s / g)
+    # GyroZ from RaceBox is in °/s; speed is in km/h.
+    if is_bike and 'LeanAngle' not in columns:
+        for pt in all_pts:
+            v = pt.speed / 3.6                        # km/h → m/s
+            w = pt.gyro_z * math.pi / 180.0           # °/s  → rad/s
+            pt.lean_angle = math.degrees(math.atan2(v * w, 9.81))
 
     t0 = all_pts[0].time
     for pt in all_pts:

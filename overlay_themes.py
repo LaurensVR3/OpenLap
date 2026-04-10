@@ -8,21 +8,21 @@ from __future__ import annotations
 THEMES: dict[str, dict] = {
     'Dark': {
         # Background pill / rounded box
-        'bg_rgba':          (0.00, 0.00, 0.00, 0.72),
-        'bg_edge_rgba':     (1.00, 1.00, 1.00, 0.07),
+        'bg_rgba':          (0.05, 0.07, 0.12, 0.74),
+        'bg_edge_rgba':     (1.00, 1.00, 1.00, 0.09),
         # Arc / bar track (unfilled portion)
-        'track':            '#1a2530',
+        'track':            '#1c2c3a',
         # Fill colours
-        'fill_pos':         '#ffaa00',   # symmetric positive  (right / warm)
-        'fill_neg':         '#44aaff',   # symmetric negative  (left  / cool)
-        'fill_lo':          '#00ccff',   # asymmetric low value
+        'fill_pos':         '#ff9f00',   # symmetric positive  (right / warm)
+        'fill_neg':         '#3dabff',   # symmetric negative  (left  / cool)
+        'fill_lo':          '#00d4ff',   # asymmetric low value
         'fill_hi':          '#ff4422',   # asymmetric high value (warning)
         # Text
-        'text':             'white',
-        'label':            '#445566',
-        'unit':             '#5577aa',
+        'text':             '#f0f4f8',
+        'label':            '#4e6578',
+        'unit':             '#5d7ea0',
         # History trace / sparkline
-        'trace':            '#334455',
+        'trace':            '#2a3d50',
         # Lean gauge extras
         'ground':           '#2a3a4a',
         'bike_body':        'white',
@@ -41,8 +41,8 @@ THEMES: dict[str, dict] = {
         'map_start':        '#00ff88',
     },
     'Light': {
-        'bg_rgba':          (0.96, 0.97, 0.99, 0.92),
-        'bg_edge_rgba':     (0.00, 0.00, 0.00, 0.12),
+        'bg_rgba':          (0.96, 0.97, 0.99, 0.88),
+        'bg_edge_rgba':     (0.00, 0.00, 0.00, 0.08),
         'track':            '#c8d4e0',
         'fill_pos':         '#cc5500',
         'fill_neg':         '#0055cc',

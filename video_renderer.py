@@ -82,6 +82,80 @@ def concat_videos(input_files: List[str], output: str) -> None:
         os.unlink(concat_file)
 
 
+class MultiCap:
+    """
+    Virtual VideoCapture over multiple files.
+    Exposes the same .get()/.set()/.read()/.release() interface as a
+    single cv2.VideoCapture, so callers need no special-casing.
+    Frame indices are global across all clips; seeks are O(1).
+    """
+
+    def __init__(self, paths: List[str]):
+        self._caps: List[cv2.VideoCapture] = []
+        self._offsets: List[int] = []   # global start frame of each clip
+        self._counts:  List[int] = []   # frame count of each clip
+        self._fps: float = 30.0
+        self._total: int = 0
+        self._cur_global: int = 0
+
+        offset = 0
+        for p in paths:
+            cap = cv2.VideoCapture(p)
+            if not cap.isOpened():
+                raise IOError(f"Cannot open video: {p}")
+            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+            cnt = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            self._caps.append(cap)
+            self._offsets.append(offset)
+            self._counts.append(cnt)
+            self._fps = fps          # assume homogeneous; last wins
+            offset += cnt
+
+        self._total = offset
+
+    # ── cv2.VideoCapture-compatible interface ──────────────────────────────
+
+    def isOpened(self) -> bool:
+        return bool(self._caps)
+
+    def get(self, prop_id: int) -> float:
+        if prop_id == cv2.CAP_PROP_FPS:
+            return self._fps
+        if prop_id == cv2.CAP_PROP_FRAME_COUNT:
+            return float(self._total)
+        return 0.0
+
+    def set(self, prop_id: int, value: float) -> bool:
+        if prop_id == cv2.CAP_PROP_POS_FRAMES:
+            self._cur_global = int(value)
+            return True
+        return False
+
+    def read(self):
+        fidx = self._cur_global
+        if fidx < 0 or fidx >= self._total:
+            return False, None
+
+        # Find which clip owns this global frame
+        clip_idx = 0
+        for i, (off, cnt) in enumerate(zip(self._offsets, self._counts)):
+            if off + cnt > fidx:
+                clip_idx = i
+                break
+
+        local_frame = fidx - self._offsets[clip_idx]
+        cap = self._caps[clip_idx]
+        cap.set(cv2.CAP_PROP_POS_FRAMES, local_frame)
+        ret, frame = cap.read()
+        self._cur_global = fidx + 1
+        return ret, frame
+
+    def release(self):
+        for cap in self._caps:
+            cap.release()
+        self._caps.clear()
+
+
 def mux_audio(raw_video: str, audio_source: str,
                output: str, encoder: str, crf: int = 18,
                audio_start: float = 0.0) -> None:
@@ -181,6 +255,12 @@ def render_lap(
     _cur_lap_d       = None   # distance array for current lap
     _cur_lap_profiles: dict = {}  # lap_num → (elapsed_arr, dist_arr) for full session
 
+    # Reference channel arrays and sectors (populated below when reference_lap is set)
+    _ref_dist_u:    np.ndarray | None = None
+    _ref_channels:  dict              = {}   # hist_key -> values aligned to _ref_dist_u
+    _sectors:       list              = []
+    _ref_history_buf: list            = []
+
     if reference_lap is not None:
         from delta_time import compute_lap_profile, make_delta_fn
         _delta_fn = make_delta_fn(reference_lap,
@@ -190,6 +270,70 @@ def render_lap(
         else:
             for lap in session.laps:
                 _cur_lap_profiles[lap.lap_num] = compute_lap_profile(lap)
+
+        # ── Reference channel arrays ───────────────────────────────────────────
+        ref_elapsed_full, ref_dist_full = compute_lap_profile(reference_lap)
+        _, ref_u_idx   = np.unique(ref_dist_full, return_index=True)
+        _ref_dist_u    = ref_dist_full[ref_u_idx]
+        ref_pts        = reference_lap.points
+
+        def _ref_arr(attr: str) -> np.ndarray:
+            return np.array([getattr(p, attr, 0.0) for p in ref_pts],
+                            dtype=float)[ref_u_idx]
+
+        _ref_channels = {
+            'speed':        _ref_arr('speed'),
+            'gx':           _ref_arr('gforce_x'),
+            'gy':           _ref_arr('gforce_y'),
+            'lean':         _ref_arr('lean_angle'),
+            'rpm':          _ref_arr('rpm'),
+            'exhaust_temp': _ref_arr('exhaust_temp'),
+            'alt':          _ref_arr('alt'),
+        }
+
+        # ── Pre-compute sector splits ──────────────────────────────────────────
+        if job.lap is not None and _cur_lap_t is not None and len(_ref_dist_u) > 1:
+            N_SECTORS  = 3
+            total_dist = float(_ref_dist_u[-1])
+            if total_dist > 50.0:   # need meaningful GPS data
+                ref_elapsed_u = ref_elapsed_full[ref_u_idx]
+
+                _, cur_u_idx  = np.unique(_cur_lap_d, return_index=True)
+                cur_dist_u    = _cur_lap_d[cur_u_idx]
+                cur_elapsed_u = _cur_lap_t[cur_u_idx]
+                max_cur_dist  = float(cur_dist_u[-1])
+
+                boundaries = [total_dist * i / N_SECTORS
+                              for i in range(1, N_SECTORS + 1)]
+
+                for i, b in enumerate(boundaries):
+                    prev_b = boundaries[i - 1] if i > 0 else 0.0
+
+                    ref_entry = float(np.interp(prev_b, _ref_dist_u, ref_elapsed_u))
+                    ref_exit  = float(np.interp(b,      _ref_dist_u, ref_elapsed_u))
+                    ref_sec_t = ref_exit - ref_entry
+
+                    if b <= max_cur_dist:
+                        cur_entry = float(np.interp(prev_b, cur_dist_u, cur_elapsed_u))
+                        cur_exit  = float(np.interp(b,      cur_dist_u, cur_elapsed_u))
+                        cur_sec_t = cur_exit - cur_entry
+                        delta     = cur_sec_t - ref_sec_t
+                        done      = True
+                        boundary_elapsed = cur_exit
+                    else:
+                        cur_sec_t        = None
+                        delta            = None
+                        done             = False
+                        boundary_elapsed = float('inf')
+
+                    _sectors.append({
+                        'num':              i + 1,
+                        'ref_t':            ref_sec_t,
+                        'cur_t':            cur_sec_t,
+                        'delta':            delta,
+                        'done':             done,
+                        'boundary_elapsed': boundary_elapsed,
+                    })
 
     cap   = cv2.VideoCapture(video_path)
     fps   = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -238,6 +382,24 @@ def render_lap(
     tmp_raw = out_path.replace('.mp4', '_raw.avi')
     writer  = cv2.VideoWriter(
         tmp_raw, cv2.VideoWriter_fourcc(*'MJPG'), fps, (vw, vh))
+
+    # ── Session metadata for info gauge ──────────────────────────────────────
+    _session_meta: dict = {
+        'info_track':   session.track   or '',
+        'info_vehicle': getattr(session, 'vehicle', '') or '',
+        'info_session': session.session_type or '',
+        'info_source':  session.source  or '',
+        'info_date':    '',
+        'info_time':    '',
+    }
+    if session.date_utc:
+        try:
+            from datetime import datetime
+            _dt = datetime.fromisoformat(session.date_utc.replace('Z', '+00:00'))
+            _session_meta['info_date'] = _dt.strftime('%Y-%m-%d')
+            _session_meta['info_time'] = _dt.strftime('%H:%M')
+        except Exception:
+            pass
 
     # ── Max speed for dynamic gauge scaling ───────────────────────────────────
     speed_pts = job.lap.points if job.lap else session.all_points
@@ -289,8 +451,9 @@ def render_lap(
 
                 pt = session.interpolate_at(sess_t)
                 if pt:
-                    # ── Delta time ─────────────────────────────────────────────
+                    # ── Delta time + reference history ─────────────────────────
                     delta_val = 0.0
+                    cur_d     = 0.0
                     if _delta_fn is not None:
                         try:
                             if _cur_lap_t is not None:
@@ -303,11 +466,29 @@ def render_lap(
                                 if profile is not None:
                                     cur_d = float(np.interp(
                                         pt.lap_elapsed, profile[0], profile[1]))
-                                else:
-                                    cur_d = 0.0
                             delta_val = _delta_fn(pt.lap_elapsed, cur_d)
                         except Exception:
                             delta_val = 0.0
+
+                    # Build reference history at the same track distance
+                    if _ref_dist_u is not None:
+                        try:
+                            d_ref = min(cur_d, float(_ref_dist_u[-1]))
+                            _ref_history_buf.append({
+                                'speed':        float(np.interp(d_ref, _ref_dist_u, _ref_channels['speed'])),
+                                'gx':           float(np.interp(d_ref, _ref_dist_u, _ref_channels['gx'])),
+                                'gy':           float(np.interp(d_ref, _ref_dist_u, _ref_channels['gy'])),
+                                'lean':         float(np.interp(d_ref, _ref_dist_u, _ref_channels['lean'])),
+                                'rpm':          float(np.interp(d_ref, _ref_dist_u, _ref_channels['rpm'])),
+                                'exhaust_temp': float(np.interp(d_ref, _ref_dist_u, _ref_channels['exhaust_temp'])),
+                                't':            0.0,
+                                'delta_time':   0.0,
+                                'alt':          float(np.interp(d_ref, _ref_dist_u, _ref_channels.get('alt', [0.0]*len(_ref_dist_u)))),
+                            })
+                            if len(_ref_history_buf) > HISTORY_MAX:
+                                _ref_history_buf.pop(0)
+                        except Exception:
+                            pass
 
                     history_buf.append({
                         't':           lap_t_display,
@@ -318,6 +499,7 @@ def render_lap(
                         'rpm':         pt.rpm,
                         'exhaust_temp':pt.exhaust_temp,
                         'delta_time':  delta_val,
+                        'alt':         pt.alt,
                     })
                     if len(history_buf) > HISTORY_MAX:
                         history_buf.pop(0)
@@ -331,7 +513,7 @@ def render_lap(
                             best_d, cur_map_idx = d, mi
 
                 chunk_frames.append(frm)
-                chunk_meta.append((list(history_buf), cur_map_idx))
+                chunk_meta.append((list(history_buf), list(_ref_history_buf), cur_map_idx))
                 frame_idx += 1
 
             if not chunk_frames:
@@ -340,13 +522,15 @@ def render_lap(
             args_list = [
                 (frm.tobytes(), frm.shape, cur_map_idx,
                  map_lats, map_lons,
-                 hist, lap_dur,
+                 hist, ref_hist, lap_dur,
                  vw, vh,
                  show_map, show_telemetry,
                  is_bike,
                  layout,
-                 max_speed)
-                for frm, (hist, cur_map_idx) in zip(chunk_frames, chunk_meta)
+                 max_speed,
+                 _sectors,
+                 _session_meta)
+                for frm, (hist, ref_hist, cur_map_idx) in zip(chunk_frames, chunk_meta)
             ]
 
             results = pool.map(render_frame_worker, args_list) if pool else \

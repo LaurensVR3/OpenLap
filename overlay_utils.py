@@ -16,16 +16,19 @@ def scale_factor(vw: int, vh: int, base_w: int = 1920, base_h: int = 1080) -> fl
 
 
 def fig_to_rgba(fig, size: Tuple[int, int]) -> np.ndarray:
-    """Convert a matplotlib figure to an RGBA numpy array at the given (w, h) size."""
+    """
+    Convert a matplotlib figure to an RGBA numpy array at exactly (w, h) pixels.
+    Uses buffer_rgba() on the Agg canvas — pixel-exact, no bbox cropping artifacts.
+    """
     from PIL import Image
     import matplotlib.pyplot as plt
-    buf = BytesIO()
-    fig.savefig(buf, format='png', transparent=True,
-                bbox_inches='tight', pad_inches=0, dpi=fig.dpi)
+    fig.canvas.draw()
+    cw, ch = fig.canvas.get_width_height()
+    arr = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(ch, cw, 4).copy()
     plt.close(fig)
-    buf.seek(0)
-    img = Image.open(buf).convert('RGBA').resize(size, Image.LANCZOS)
-    return np.array(img)
+    if (cw, ch) != size:
+        arr = np.array(Image.fromarray(arr, 'RGBA').resize(size, Image.LANCZOS))
+    return arr
 
 
 def blend_rgba(frame: np.ndarray, rgba: np.ndarray, x: int, y: int) -> None:

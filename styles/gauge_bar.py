@@ -50,9 +50,9 @@ def render(data: dict, w: int, h: int):
     ax.set_xlim(0, 1); ax.set_ylim(0, 1)
     ax.axis('off')
 
-    ax.add_patch(FancyBboxPatch((0.03, 0.03), 0.94, 0.94,
-        boxstyle='round,pad=0.02',
-        facecolor=bg_rgba, edgecolor=bg_edge, linewidth=1))
+    ax.add_patch(FancyBboxPatch((0.02, 0.02), 0.96, 0.96,
+        boxstyle='round,pad=0.025',
+        facecolor=bg_rgba, edgecolor=bg_edge, linewidth=0.8))
 
     fs_label = max(5,  min(int(10 * sc), int(w * 0.08)))
     fs_val   = max(6,  min(int(13 * sc), int(w * 0.10)))
@@ -60,13 +60,14 @@ def render(data: dict, w: int, h: int):
     PAD   = 0.08
     BAR_L = PAD
     BAR_R = 1.0 - PAD
-    BAR_Y = 0.44
+    BAR_Y = 0.52          # moved up; leaves room for value+sparkline below
     BAR_H = 0.22
     bar_w = BAR_R - BAR_L
 
-    ax.text(0.50, 0.88, label.upper(),
+    # Label (top zone: 0.82 – 0.96)
+    ax.text(0.50, 0.89, label.upper(),
             ha='center', va='center', color=label_col,
-            fontsize=fs_label, fontfamily='monospace')
+            fontsize=fs_label, fontfamily='sans-serif')
 
     # Track
     ax.add_patch(plt.Rectangle((BAR_L, BAR_Y), bar_w, BAR_H,
@@ -88,7 +89,6 @@ def render(data: dict, w: int, h: int):
             ax.add_patch(plt.Rectangle((fill_x, BAR_Y), mid_x - fill_x, BAR_H,
                          facecolor=col, alpha=0.90, zorder=3))
 
-        # Centre tick
         ax.plot([mid_x, mid_x], [BAR_Y - 0.02, BAR_Y + BAR_H + 0.02],
                 color='#3a4a5a', lw=1.0, zorder=4)
         val_col = col
@@ -99,19 +99,20 @@ def render(data: dict, w: int, h: int):
                      facecolor=col, alpha=0.90, zorder=3))
         val_col = col
 
-    # Value text
+    # Value text (middle zone: 0.34 – 0.48, safely between bar and sparkline)
     val_str = f"{value:.1f} {unit}" if unit else f"{value:.1f}"
-    ax.text(0.50, 0.30, val_str,
+    ax.text(0.50, 0.41, val_str,
             ha='center', va='center', color=val_col,
-            fontsize=fs_val, fontweight='bold', fontfamily='monospace')
+            fontsize=fs_val, fontweight='bold', fontfamily='sans-serif')
 
-    # Sparkline
+    # Sparkline (bottom zone: 0.05 – 0.27, never reaches value text)
+    # High values plot at top of zone, low values at bottom — correct orientation.
     if len(hist) >= 2:
         n    = min(50, len(hist))
         vals = hist[-n:]
         xs   = [BAR_L + bar_w * (i / (n - 1)) for i in range(n)]
-        lo, hi = mn, mx
-        ys   = [BAR_Y - 0.04 - 0.10 * max(0.0, min(1.0, (v - lo) / (hi - lo or 1)))
+        lo, hi_v = mn, mx
+        ys   = [0.05 + 0.22 * max(0.0, min(1.0, (v - lo) / (hi_v - lo or 1)))
                 for v in vals]
         ax.plot(xs, ys, color=trace_col, lw=max(0.6, 0.8 * sc), zorder=2)
 

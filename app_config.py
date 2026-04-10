@@ -30,21 +30,19 @@ class OverlayElement:
 @dataclass
 class GaugeConfig:
     """One individual gauge element."""
-    channel: str  = 'speed'
-    style:   str  = 'Dial'
-    visible: bool = True
+    channel:  str       = 'speed'
+    style:    str       = 'Dial'
+    visible:  bool      = True
     x: float = 0.0
     y: float = 0.0
     w: float = 0.12
     h: float = 0.20
-
-
-def _default_map() -> OverlayElement:
-    return OverlayElement(visible=True, x=0.74, y=0.02, w=0.24, h=0.30)
+    channels: List[str] = field(default_factory=list)  # multi-line sub-channels
 
 
 def _default_gauges() -> List[GaugeConfig]:
     return [
+        GaugeConfig(channel='map',        style='Circuit', x=0.74, y=0.02, w=0.24, h=0.30),
         GaugeConfig(channel='speed',      style='Dial',    x=0.01, y=0.74, w=0.13, h=0.23),
         GaugeConfig(channel='gforce_lat', style='Bar',     x=0.15, y=0.74, w=0.10, h=0.23),
         GaugeConfig(channel='gforce_lon', style='Bar',     x=0.26, y=0.74, w=0.10, h=0.23),
@@ -54,11 +52,9 @@ def _default_gauges() -> List[GaugeConfig]:
 
 @dataclass
 class OverlayLayout:
-    is_bike:    bool          = False
-    map_style:  str           = 'Circuit'
-    theme:      str           = 'Dark'
-    map:        OverlayElement = field(default_factory=_default_map)
-    gauges:     List[GaugeConfig] = field(default_factory=_default_gauges)
+    is_bike: bool              = False
+    theme:   str               = 'Dark'
+    gauges:  List[GaugeConfig] = field(default_factory=_default_gauges)
 
 
 @dataclass
@@ -75,6 +71,8 @@ class AppConfig:
     overlay:        OverlayLayout = field(default_factory=OverlayLayout)
     offsets:        Dict[str, float] = field(default_factory=dict)
     # key = absolute CSV path, value = float sync offset in seconds
+    bike_overrides: Dict[str, bool]  = field(default_factory=dict)
+    # key = absolute CSV path, value = True (bike) / False (car override)
     presets:        Dict[str, dict] = field(default_factory=dict)
     # name -> serialized OverlayLayout dict
     active_preset:  str = ""
@@ -170,11 +168,22 @@ def load_scan_cache() -> dict:
 
 def overlay_from_dict(overlay_data: dict) -> OverlayLayout:
     """Deserialize an OverlayLayout from a plain dict (e.g. from a preset or config)."""
-    map_data = overlay_data.get('map', {})
-    map_elem = (OverlayElement(**{k: map_data[k] for k in OverlayElement.__dataclass_fields__ if k in map_data})
-                if map_data else _default_map())
+    raw_gauges = list(overlay_data.get('gauges', []))
 
-    raw_gauges = overlay_data.get('gauges', [])
+    # ── Migrate old configs that stored map as a separate field ───────────────
+    old_map = overlay_data.get('map', {})
+    old_map_style = overlay_data.get('map_style', 'Circuit')
+    if old_map and not any(g.get('channel') == 'map' for g in raw_gauges):
+        raw_gauges.insert(0, {
+            'channel': 'map',
+            'style':   old_map_style,
+            'visible': old_map.get('visible', True),
+            'x': old_map.get('x', 0.74),
+            'y': old_map.get('y', 0.02),
+            'w': old_map.get('w', 0.24),
+            'h': old_map.get('h', 0.30),
+        })
+
     if raw_gauges:
         gauges = [GaugeConfig(**{k: g[k] for k in GaugeConfig.__dataclass_fields__ if k in g})
                   for g in raw_gauges]
@@ -182,11 +191,9 @@ def overlay_from_dict(overlay_data: dict) -> OverlayLayout:
         gauges = _default_gauges()
 
     return OverlayLayout(
-        is_bike   = overlay_data.get('is_bike',  False),
-        map_style = overlay_data.get('map_style', 'Circuit'),
-        theme     = overlay_data.get('theme',     'Dark'),
-        map       = map_elem,
-        gauges    = gauges,
+        is_bike = overlay_data.get('is_bike', False),
+        theme   = overlay_data.get('theme',   'Dark'),
+        gauges  = gauges,
     )
 
 
@@ -202,6 +209,7 @@ def _from_dict(data: dict) -> AppConfig:
         export_path    = data.get('export_path',    ''),
         overlay        = overlay,
         offsets        = data.get('offsets',        {}),
+        bike_overrides = data.get('bike_overrides', {}),
         presets        = data.get('presets',        {}),
         active_preset  = data.get('active_preset',  ''),
     )

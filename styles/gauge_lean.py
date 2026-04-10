@@ -61,6 +61,7 @@ def render(data: dict, w: int, h: int):
     fs_val   = max(8,  min(int(24 * sc), int(w * 0.18)))
     fs_label = max(5,  min(int(8  * sc), int(w * 0.07)))
 
+    value    = max(-90.0, min(90.0, value))
     lean_rad = np.radians(-value)
 
     def rot(pts):
@@ -107,9 +108,9 @@ def render(data: dict, w: int, h: int):
 
     ax.text(0, -0.82, val_str,
             ha='center', va='center', color=val_col,
-            fontsize=fs_val, fontweight='bold', fontfamily='monospace', zorder=6)
+            fontsize=fs_val, fontweight='bold', fontfamily='sans-serif', zorder=6)
     ax.text(0, 0.85, label.upper(),
             ha='center', va='center', color=label_col,
-            fontsize=fs_label, fontfamily='monospace', zorder=6)
+            fontsize=fs_label, fontfamily='sans-serif', zorder=6)
 
     return fig_to_rgba(fig, (w, h))
