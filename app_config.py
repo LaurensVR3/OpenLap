@@ -78,6 +78,8 @@ class AppConfig:
     active_preset:  str = ""
     session_info:   Dict[str, dict] = field(default_factory=dict)
     # key = absolute CSV path, value = {track, vehicle, session_type} manual overrides
+    racebox_email:  str = ""
+    # Stored for convenience; password is never persisted
 
     def all_telemetry_paths(self) -> List[str]:
         """Return all unique non-empty telemetry paths to scan.

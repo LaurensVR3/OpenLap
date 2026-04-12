@@ -16,6 +16,7 @@ dependencies = [
     "Pillow>=10.0",
     "opencv-python>=4.8",
     "pandas>=2.0",
+    "pywebview>=5.0",
 ]
 
 [project.optional-dependencies]
@@ -23,10 +24,16 @@ racebox-download = [
     "requests>=2.31",
     "playwright>=1.40",
 ]
+package = [
+    "pyinstaller>=6.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
 ]
+
+[project.scripts]
+openlap = "main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

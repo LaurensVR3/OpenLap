@@ -58,7 +58,7 @@ class WebviewAPI:
         # Update only the simple string/dict fields; leave overlay/presets as-is
         simple_fields = [
             'racebox_path', 'aim_path', 'motec_path', 'gpx_path',
-            'telemetry_path', 'video_path', 'export_path',
+            'telemetry_path', 'video_path', 'export_path', 'racebox_email',
         ]
         for f in simple_fields:
             if f in data:
@@ -298,6 +298,82 @@ class WebviewAPI:
             )
         except Exception as e:
             done_cb(False, str(e))
+
+    # ── RaceBox cloud ─────────────────────────────────────────────────────────
+    def racebox_login(self, email: str, password: str) -> dict:
+        """Test RaceBox cloud credentials. Returns {ok: bool, error?: str}."""
+        try:
+            from racebox_downloader import RaceBoxSource
+            src = RaceBoxSource(email=email, password=password)
+            src.test_login()
+            self._config.racebox_email = email
+            self._config.save()
+            return {'ok': True}
+        except ImportError:
+            return {'ok': False, 'error': 'racebox_downloader not available'}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    # ── Encoder detection ──────────────────────────────────────────────────────
+    def check_encoders(self) -> dict:
+        """
+        Probe FFmpeg and report which video encoders are available.
+        Returns {version, encoders: [{name, label, available}]} or {error}.
+        """
+        import subprocess, shutil, os, sys
+
+        ffmpeg_bin = shutil.which('ffmpeg')
+        if not ffmpeg_bin:
+            base = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+            candidate = os.path.join(base, 'ffmpeg.exe')
+            if os.path.isfile(candidate):
+                ffmpeg_bin = candidate
+        if not ffmpeg_bin:
+            return {'error': 'FFmpeg not found in PATH.'}
+
+        try:
+            r = subprocess.run([ffmpeg_bin, '-version'], capture_output=True, text=True, timeout=10)
+            first = r.stdout.splitlines()[0] if r.stdout else ''
+            version = first.split('version')[-1].strip().split(' ')[0] if 'version' in first else 'unknown'
+        except Exception as e:
+            return {'error': f'FFmpeg error: {e}'}
+
+        candidates = [
+            ('libx264',           'H.264 software'),
+            ('libx265',           'H.265 software'),
+            ('h264_nvenc',        'H.264 NVIDIA NVENC'),
+            ('hevc_nvenc',        'H.265 NVIDIA NVENC'),
+            ('h264_videotoolbox', 'H.264 Apple VideoToolbox'),
+            ('h264_amf',          'H.264 AMD AMF'),
+            ('h264_qsv',          'H.264 Intel QSV'),
+        ]
+
+        def _probe(enc):
+            try:
+                r = subprocess.run(
+                    [ffmpeg_bin, '-f', 'lavfi', '-i', 'nullsrc=s=64x64:d=0.1',
+                     '-vcodec', enc, '-f', 'null', '-'],
+                    capture_output=True, timeout=8
+                )
+                return r.returncode == 0
+            except Exception:
+                return False
+
+        encoders = [
+            {'name': n, 'label': l, 'available': _probe(n)}
+            for n, l in candidates
+        ]
+        return {'version': version, 'encoders': encoders}
+
+    # ── About ──────────────────────────────────────────────────────────────────
+    def get_about_info(self) -> dict:
+        """Return diagnostic strings for the About section."""
+        import sys
+        from app_config import CONFIG_FILE
+        return {
+            'python': f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}',
+            'config': str(CONFIG_FILE),
+        }
 
     # ── Internal helpers ──────────────────────────────────────────────────────
     @staticmethod

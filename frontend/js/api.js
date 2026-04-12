@@ -39,6 +39,11 @@ const API = (() => {
       cancel_export:     () => null,
       get_weather:       () => ({ weather: '—', wind: '—' }),
       edit_session_info: () => null,
+      racebox_login:     () => ({ ok: false, error: 'mock' }),
+      check_encoders:    () => ({ version: 'mock', encoders: [
+        { name: 'libx264', label: 'H.264 software', available: true },
+      ]}),
+      get_about_info:    () => ({ python: '3.x.x', config: '~/.openlap/config.json' }),
     };
     const fn = mocks[method];
     return fn ? fn() : null;
@@ -83,5 +88,9 @@ const API = (() => {
 
     getWeather:        (lat, lon, dt)  => call('get_weather', lat, lon, dt),
     editSessionInfo:   (path, overrides) => call('edit_session_info', path, overrides),
+
+    raceboxLogin:      (email, password) => call('racebox_login', email, password),
+    checkEncoders:     ()              => call('check_encoders'),
+    getAboutInfo:      ()              => call('get_about_info'),
   };
 })();

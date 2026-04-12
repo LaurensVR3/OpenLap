@@ -23,6 +23,7 @@
 /* ── Reset ─────────────────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
+.hidden { display: none !important; }
 
 body {
   font-family: var(--fn);
@@ -593,3 +594,90 @@ input[type="checkbox"] { accent-color: var(--acc); cursor: pointer; }
 }
 .toggle input:checked + .toggle-slider { background: rgba(79,142,247,0.2); border-color: var(--acc); }
 .toggle input:checked + .toggle-slider::before { transform: translateX(14px); background: var(--acc); }
+
+/* ── Settings page ──────────────────────────────────────────────────────────── */
+.settings-page { display: flex; flex-direction: column; height: 100%; }
+
+.settings-body {
+  padding: 20px 28px;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 700px;
+}
+
+.settings-section {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+}
+
+.section-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text2);
+  margin-bottom: 14px;
+}
+
+.section-hint {
+  font-size: 10px;
+  color: var(--text3);
+  margin: -6px 0 12px;
+  line-height: 1.5;
+}
+
+.sett-path-group { margin-bottom: 10px; }
+.sett-path-group:last-child { margin-bottom: 0; }
+
+.path-hint {
+  font-size: 9px;
+  color: var(--text3);
+  margin-top: 2px;
+  padding-left: 2px;
+}
+
+.save-msg {
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.status-msg { font-size: 10px; font-weight: 500; }
+.status-ok   { color: var(--ok); }
+.status-warn { color: var(--warn); }
+.status-err  { color: var(--err); }
+.status-dim  { color: var(--text3); }
+
+/* About section */
+.about-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 4px 0;
+  font-size: 11px;
+  border-bottom: 1px solid rgba(42,46,71,0.4);
+}
+.about-row:last-child { border-bottom: none; }
+.about-key { color: var(--text2); min-width: 80px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; }
+.about-val { color: var(--text); }
+
+/* Encoder results */
+.enc-results { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
+.enc-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 8px;
+  background: rgba(0,0,0,0.2);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+}
+.enc-name  { color: var(--acc2); font-family: var(--mono); min-width: 130px; }
+.enc-label { color: var(--text2); flex: 1; }
+
+/* btn-sm variant */
+.btn-sm { padding: 4px 10px; font-size: 10px; }
