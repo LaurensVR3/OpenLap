@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenLap</title>
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar -->
+    <nav id="sidebar">
+      <div id="logo">
+        <span class="logo-icon">🏎</span>
+        <span class="logo-text">OpenLap</span>
+      </div>
+      <div class="nav-divider"></div>
+      <ul id="nav-list">
+        <li class="nav-item active" data-page="data">
+          <span class="nav-icon">📂</span>
+          <span class="nav-label">Data</span>
+        </li>
+        <li class="nav-item" data-page="editor">
+          <span class="nav-icon">🎨</span>
+          <span class="nav-label">Overlay</span>
+        </li>
+        <li class="nav-item" data-page="export">
+          <span class="nav-icon">🎬</span>
+          <span class="nav-label">Export</span>
+        </li>
+        <li class="nav-item" data-page="settings">
+          <span class="nav-icon">⚙️</span>
+          <span class="nav-label">Settings</span>
+        </li>
+      </ul>
+    </nav>
+
+    <!-- Main content -->
+    <main id="view"></main>
+  </div>
+
+  <script src="js/state.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/router.js"></script>
+  <script src="js/pages/data.js"></script>
+  <script src="js/pages/editor.js"></script>
+  <script src="js/pages/export.js"></script>
+  <script src="js/pages/settings.js"></script>
+  <script>
+    // Bootstrap after pywebview injects its API
+    window.addEventListener('pywebviewready', () => {
+      Router.init();
+    });
+    // Fallback for dev without pywebview (open index.html in browser)
+    if (typeof window.pywebview === 'undefined') {
+      Router.init();
+    }
+  </script>
+</body>
+</html>
