@@ -8,6 +8,7 @@ from tkinter import ttk, messagebox
 from datetime import datetime
 from typing import List, Optional
 
+from utils import compute_lean_angle
 from design_tokens import BG, CARD, CARD2, BORDER, ACC, ACC2, OK, WARN, ERR, TEXT, TEXT2, TEXT3, font
 from widgets import Card, Btn, Divider
 from racebox_data import Session
@@ -207,20 +208,13 @@ class DataPage(tk.Frame):
                      font=font(8), width=10, anchor='w').pack(side='left')
 
             def _toggle_bike_mode(s=sess, m=match):
-                import math as _math
                 s.is_bike = not s.is_bike
                 if s.is_bike:
                     # Compute lean for all points — prefer gyro (RaceBox),
                     # fall back to lateral G (MoTeC / AIM / GPX).
                     for pt in s.all_points:
-                        pt.lean_angle = 0.0  # reset so we recompute cleanly
-                    for pt in s.all_points:
-                        if abs(pt.gyro_z) > 1e-6:
-                            v = pt.speed / 3.6
-                            w = pt.gyro_z * _math.pi / 180.0
-                            pt.lean_angle = _math.degrees(_math.atan2(v * w, 9.81))
-                        elif abs(pt.gforce_y) > 1e-6:
-                            pt.lean_angle = _math.degrees(_math.atan(pt.gforce_y))
+                        pt.lean_angle = compute_lean_angle(
+                            pt.speed, pt.gyro_z, pt.gforce_y)
                 else:
                     for pt in s.all_points:
                         pt.lean_angle = 0.0
@@ -228,10 +222,8 @@ class DataPage(tk.Frame):
                 self.app.config.bike_overrides[abs_path] = s.is_bike
                 self.app.config.overlay.is_bike = s.is_bike
                 self.app.config.save()
-                # Force the export tab to reload history with updated lean data
-                export_page = self.app.pages.get('export_page')
-                if export_page:
-                    export_page._last_preview_csv = None
+                # Signal the export tab to reload history with updated lean data
+                self.app.q.put(('export_invalidate_preview',))
                 self._build_detail_session(m)
 
             # Inline toggle: CAR ●── BIKE  or  CAR ──● BIKE
@@ -368,6 +360,18 @@ class DataPage(tk.Frame):
                 self.tree.insert(
                     day_id, 'end', iid=csv, tags=(tag,),
                     values=(icon, time_str, track, laps_str, best_str))
+
+    # ── Public accessors for inter-page queries ───────────────────────────────
+
+    def get_all_sessions(self) -> list:
+        """Return the current list of MatchedSession objects."""
+        return list(self._sessions)
+
+    def get_track_meta(self, csv_path: str):
+        """Return (track, laps_str, best_str) for *csv_path* (fast header read)."""
+        return self._quick_meta(csv_path)
+
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _quick_meta(self, csv_path: str):
         """Fast header-only metadata read."""

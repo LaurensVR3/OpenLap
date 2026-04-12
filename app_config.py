@@ -76,6 +76,8 @@ class AppConfig:
     presets:        Dict[str, dict] = field(default_factory=dict)
     # name -> serialized OverlayLayout dict
     active_preset:  str = ""
+    session_info:   Dict[str, dict] = field(default_factory=dict)
+    # key = absolute CSV path, value = {track, vehicle, session_type} manual overrides
 
     def all_telemetry_paths(self) -> List[str]:
         """Return all unique non-empty telemetry paths to scan.
@@ -104,6 +106,21 @@ class AppConfig:
         CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(asdict(self), f, indent=2)
+
+    def schedule_save(self, delay: float = 0.5) -> None:
+        """Debounced save — flushes to disk at most once per *delay* seconds.
+
+        Safe to call rapidly (e.g. on every gauge drag tick); the actual
+        write is deferred until the flurry of calls stops.
+        """
+        import threading
+        existing = getattr(self, '_save_timer', None)
+        if existing is not None:
+            existing.cancel()
+        t = threading.Timer(delay, self.save)
+        t.daemon = True
+        t.start()
+        object.__setattr__(self, '_save_timer', t)  # type: ignore[arg-type]
 
     @classmethod
     def load(cls) -> 'AppConfig':
@@ -198,7 +215,16 @@ def overlay_from_dict(overlay_data: dict) -> OverlayLayout:
 
 
 def _from_dict(data: dict) -> AppConfig:
-    overlay = overlay_from_dict(data.get('overlay', {}))
+    presets       = data.get('presets', {})
+    active_preset = data.get('active_preset', '')
+
+    # Always reconstruct the overlay from the saved preset when one is active,
+    # so unsaved in-session edits (add/remove gauge etc.) are discarded on restart.
+    if active_preset and active_preset in presets:
+        overlay = overlay_from_dict(presets[active_preset])
+    else:
+        overlay = overlay_from_dict(data.get('overlay', {}))
+
     return AppConfig(
         racebox_path   = data.get('racebox_path',   ''),
         aim_path       = data.get('aim_path',       ''),
@@ -210,6 +236,7 @@ def _from_dict(data: dict) -> AppConfig:
         overlay        = overlay,
         offsets        = data.get('offsets',        {}),
         bike_overrides = data.get('bike_overrides', {}),
-        presets        = data.get('presets',        {}),
-        active_preset  = data.get('active_preset',  ''),
+        presets        = presets,
+        active_preset  = active_preset,
+        session_info   = data.get('session_info',   {}),
     )

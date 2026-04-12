@@ -21,22 +21,10 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
-import sys
 
 logger = logging.getLogger(__name__)
 
-
-def _run(cmd, **kwargs):
-    """subprocess.run with no visible console window on Windows."""
-    if sys.platform == 'win32':
-        si = subprocess.STARTUPINFO()
-        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        si.wShowWindow = subprocess.SW_HIDE
-        kwargs.setdefault('startupinfo', si)
-        kwargs.setdefault('creationflags', subprocess.CREATE_NO_WINDOW)
-    kwargs.setdefault('capture_output', True)
-    return subprocess.run(cmd, **kwargs)
+from utils import _run
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -95,12 +83,12 @@ def _ffprobe_creation_time(path: str) -> Optional[datetime]:
 
 def scan_videos(folder: str, progress_cb=None) -> List[VideoFile]:
     """Recursively scan a folder for video files."""
-    # Quick pre-count so we can show N/M progress
-    all_paths = []
-    for root, _, files in os.walk(folder):
-        for fname in sorted(files):
-            if Path(fname).suffix in VIDEO_EXTENSIONS:
-                all_paths.append(os.path.join(root, fname))
+    all_paths = [
+        os.path.join(root, fname)
+        for root, _, files in os.walk(folder)
+        for fname in sorted(files)
+        if Path(fname).suffix in VIDEO_EXTENSIONS
+    ]
     total = len(all_paths)
 
     results = []

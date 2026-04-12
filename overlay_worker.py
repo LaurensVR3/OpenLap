@@ -55,6 +55,8 @@ def render_frame_worker(args: tuple) -> bytes:
      *_extra) = args
     session_meta = _extra[0] if _extra else {}
 
+    from gauge_channels import gauge_data_lap_info
+
     frame  = np.frombuffer(frame_bytes, dtype=np.uint8).reshape(shape).copy()
     layout = overlay_layout or default_layout()
     theme  = layout.get('theme', 'Dark')
@@ -72,7 +74,17 @@ def render_frame_worker(args: tuple) -> bytes:
 
         if channel == 'info':
             gd = dict(session_meta)
-            gd['exhaust_temp'] = history[-1].get('exhaust_temp', 0.0) if history else 0.0
+            gd['selected_fields'] = g.get('channels') or []
+            gd['_theme'] = theme
+            try:
+                img = render_style('gauge', style, gd, gw, gh)
+                blend_rgba(frame, img, gx, gy)
+            except Exception:
+                pass
+            continue
+
+        if channel == 'lap_info':
+            gd = gauge_data_lap_info(history)
             gd['_theme'] = theme
             try:
                 img = render_style('gauge', style, gd, gw, gh)

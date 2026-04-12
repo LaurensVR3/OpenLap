@@ -3,6 +3,18 @@
 
 MULTI_CHANNEL = 'multi'   # pseudo-channel: combines multiple real channels
 
+# Selectable fields for the Info gauge (key → display label)
+INFO_FIELDS: dict[str, str] = {
+    'track':    'Track',
+    'datetime': 'Date & Time',
+    'vehicle':  'Vehicle',
+    'session':  'Session type',
+    'weather':  'Weather',
+    'wind':     'Wind',
+}
+# Default set shown when no explicit selection has been made
+INFO_FIELDS_DEFAULT = ['track', 'datetime', 'vehicle', 'weather', 'wind']
+
 GAUGE_CHANNELS = {
     'speed':        {'label': 'Speed',        'unit': 'km/h', 'hist_key': 'speed',        'min': 0,    'max': 250,   'symmetric': False},
     'rpm':          {'label': 'RPM',          'unit': 'rpm',  'hist_key': 'rpm',           'min': 0,    'max': 14000, 'symmetric': False},
@@ -35,6 +47,7 @@ CHANNEL_STYLES = {
     'altitude':   ['Line', 'Bar', 'Numeric', 'Compare'],
     'multi':      ['Multi-Line'],
     'info':       ['Info'],
+    'lap_info':   ['Scoreboard'],
 }
 _DEFAULT_GAUGE_STYLES = ['Bar', 'Compare', 'Dial', 'Line', 'Numeric']
 
@@ -48,6 +61,8 @@ def get_channel_styles(channel: str, is_bike: bool = False) -> list:
         return ['Multi-Line']
     if channel == 'info':
         return ['Info']
+    if channel == 'lap_info':
+        return ['Scoreboard']
     if channel in CHANNEL_STYLES:
         return list(CHANNEL_STYLES[channel])
     return list(_DEFAULT_GAUGE_STYLES)
@@ -109,6 +124,27 @@ def build_multi_data(channels_list: list, history: list,
     return {'multi_channels': entries}
 
 
+def gauge_data_lap_info(history: list) -> dict:
+    """Extract lap-scoreboard data from the current history tail."""
+    last = history[-1] if history else {}
+    return {
+        'lap_num':    last.get('li_lap_num',    1),
+        'total_laps': last.get('li_total_laps', 1),
+        'lap_elapsed': last.get('t',            0.0),
+        'best_so_far': last.get('li_best_so_far'),   # float or None
+    }
+
+
+def dummy_lap_info_data() -> dict:
+    """Fake lap-scoreboard data for overlay editor previews."""
+    return {
+        'lap_num':    3,
+        'total_laps': 8,
+        'lap_elapsed': 45.234,
+        'best_so_far': 83.456,
+    }
+
+
 def dummy_info_data() -> dict:
     """Fake session-info data for overlay editor previews."""
     return {
@@ -117,8 +153,8 @@ def dummy_info_data() -> dict:
         'info_time':    '14:32',
         'info_vehicle': 'Porsche 992 GT3 R',
         'info_session': 'Practice',
-        'info_source':  'MoTeC',
-        'exhaust_temp': 452.0,
+        'info_weather': '22°C  Partly cloudy',
+        'info_wind':    'NW  8 km/h',
     }
 
 
@@ -167,6 +203,10 @@ def dummy_gauge_data(channel: str) -> dict:
     # Info preview
     if channel == 'info':
         return dummy_info_data()
+
+    # Lap scoreboard preview
+    if channel == 'lap_info':
+        return dummy_lap_info_data()
 
     # G-Meter preview: generate a circular trace
     if channel == 'g_meter':

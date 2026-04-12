@@ -10,12 +10,12 @@ from __future__ import annotations
 import csv
 import io
 import logging
-import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import List, Dict, Optional
 
 from exceptions import MissingHeaderError, NoDataRowsError
+from utils import compute_lean_angle
 
 logger = logging.getLogger(__name__)
 
@@ -194,9 +194,7 @@ def load_csv(path: str) -> Session:
     # GyroZ from RaceBox is in °/s; speed is in km/h.
     if is_bike and 'LeanAngle' not in columns:
         for pt in all_pts:
-            v = pt.speed / 3.6                        # km/h → m/s
-            w = pt.gyro_z * math.pi / 180.0           # °/s  → rad/s
-            pt.lean_angle = math.degrees(math.atan2(v * w, 9.81))
+            pt.lean_angle = compute_lean_angle(pt.speed, pt.gyro_z, pt.gforce_y)
 
     t0 = all_pts[0].time
     for pt in all_pts:

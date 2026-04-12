@@ -20,7 +20,7 @@ from matplotlib.patches import FancyBboxPatch
 
 
 def render(data: dict, w: int, h: int):
-    from overlay_utils import fig_to_rgba, scale_factor
+    from overlay_utils import fig_to_rgba
 
     T         = data.get('_tc', {})
     bg_rgba   = T.get('bg_rgba',      (0.04, 0.06, 0.10, 0.78))
@@ -29,40 +29,43 @@ def render(data: dict, w: int, h: int):
     label_col = T.get('label',        '#445566')
     fill_pos  = T.get('fill_pos',     '#ffaa00')
 
-    # Build (label, value) pairs — omit empty / zero fields
-    fields: list[tuple[str, str]] = []
+    from gauge_channels import INFO_FIELDS_DEFAULT
+
+    # Which fields to render — comes from the gauge's channel list, or default set
+    selected: list[str] = data.get('selected_fields') or INFO_FIELDS_DEFAULT
+
+    # Build value lookup — selected fields that are empty show "—" as placeholder
+    # so the layout reflects exactly what has been enabled.
+    _values: dict[str, tuple[str, str]] = {}
 
     track = data.get('info_track', '')
-    if track:
-        fields.append(('TRACK', track))
+    _values['track'] = ('TRACK', track or '—')
 
     date_s = data.get('info_date', '')
     time_s = data.get('info_time', '')
     if date_s and time_s:
-        fields.append(('DATE', f"{date_s}  {time_s}"))
+        _values['datetime'] = ('DATE', f"{date_s}  {time_s}")
     elif date_s:
-        fields.append(('DATE', date_s))
+        _values['datetime'] = ('DATE', date_s)
+    else:
+        _values['datetime'] = ('DATE', '—')
 
     vehicle = data.get('info_vehicle', '')
-    if vehicle:
-        fields.append(('VEHICLE', vehicle))
+    _values['vehicle'] = ('VEHICLE', vehicle or '—')
 
     session_t = data.get('info_session', '')
-    if session_t:
-        fields.append(('SESSION', session_t))
+    _values['session'] = ('SESSION', session_t or '—')
 
-    temp = data.get('exhaust_temp', 0.0)
-    if temp and temp > 0.0:
-        fields.append(('EXH TEMP', f"{temp:.0f} °C"))
+    weather = data.get('info_weather', '')
+    _values['weather'] = ('WEATHER', weather or '—')
 
-    source = data.get('info_source', '')
-    if source:
-        fields.append(('SOURCE', source))
+    wind = data.get('info_wind', '')
+    _values['wind'] = ('WIND', wind or '—')
 
+    fields = [_values[k] for k in selected if k in _values]
     if not fields:
         fields = [('INFO', '—')]
 
-    sc  = scale_factor(w, h, base_w=220, base_h=130)
     dpi = 100
     fig = plt.figure(figsize=(w / dpi, h / dpi), dpi=dpi)
     fig.patch.set_alpha(0)
@@ -79,22 +82,23 @@ def render(data: dict, w: int, h: int):
         facecolor=bg_rgba, edgecolor=bg_edge, linewidth=0.8, zorder=1))
 
     # Thin accent bar on the left edge
-    ax.plot([0.04, 0.04], [0.12, 0.88],
-            color=fill_pos, lw=2.0, solid_capstyle='round', zorder=3)
+    ax.plot([0.035, 0.035], [0.08, 0.92],
+            color=fill_pos, lw=2.5, solid_capstyle='round', zorder=3)
 
-    n = len(fields)
-    pad_l    = 0.09
-    y_top    = 0.88
-    y_bottom = 0.10
+    n        = len(fields)
+    pad_l    = 0.08
+    y_top    = 0.94
+    y_bottom = 0.06
     row_h    = (y_top - y_bottom) / max(n, 1)
 
-    fs_label = max(4, min(int(6.5 * sc), int(h * 0.055)))
-    fs_value = max(5, min(int(9.5 * sc), int(h * 0.082)))
+    # Font sizes scale with available row height (1 pt ≈ 1.39 px at 100 dpi)
+    fs_label = max(4, int(h * row_h * 0.26 / 1.39))
+    fs_value = max(5, int(h * row_h * 0.48 / 1.39))
 
     for i, (lbl, val) in enumerate(fields):
         yc    = y_top - row_h * (i + 0.5)
         y_lbl = yc + row_h * 0.20
-        y_val = yc - row_h * 0.18
+        y_val = yc - row_h * 0.14
 
         ax.text(pad_l, y_lbl, lbl,
                 ha='left', va='center', color=label_col,

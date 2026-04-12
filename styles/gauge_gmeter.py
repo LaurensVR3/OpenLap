@@ -53,9 +53,12 @@ def render(data: dict, w: int, h: int):
         boxstyle='round,pad=0.02',
         facecolor=bg_rgba, edgecolor=bg_edge, linewidth=1))
 
-    # Main axes (square, centred) — margin gives room for axis labels
-    margin = 0.14
-    ax = fig.add_axes([margin, margin, 1 - 2*margin, 1 - 2*margin])
+    # Main axes (square, centred) — extra bottom margin keeps the G readout
+    # from overlapping the ACCEL label.
+    m_side = 0.14
+    m_top  = 0.08
+    m_bot  = 0.22
+    ax = fig.add_axes([m_side, m_bot, 1 - 2 * m_side, 1 - m_bot - m_top])
     ax.set_facecolor((0, 0, 0, 0))
     ax.set_aspect('equal')
     ax.set_xlim(-g_range * 1.20, g_range * 1.20)

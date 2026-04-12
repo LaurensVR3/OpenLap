@@ -50,6 +50,7 @@ class OverlayEditor(tk.Frame):
         self._frame_rect: Tuple[int, int, int, int] = (0, 0, 1, 1)
         self._drag: Optional[dict] = None
         self._real_history: Optional[list] = None   # real telemetry, set by host page
+        self._session_meta: Optional[dict] = None   # real session info for info gauge
         self._snap_guides: list = []   # list of ('v'|'h', norm_pos) for active snaps
 
         self._previews:       dict[str, np.ndarray] = {}
@@ -257,6 +258,9 @@ class OverlayEditor(tk.Frame):
         ch = self._canvas.winfo_height()
         if cw < 2 or ch < 2:
             return
+        idx = int(key.split('_')[1])
+        if idx >= len(self._layout.gauges):
+            return  # gauge was removed before this debounced callback fired
         elem = self._get_elem(key)
         _, _, dw, dh = self._frame_rect
         pw = max(32, int(elem.w * dw))
@@ -269,19 +273,22 @@ class OverlayEditor(tk.Frame):
         threading.Thread(
             target=self._render_preview_worker,
             args=(key, g.style, g.channel, pw, ph, is_bike, theme,
-                  self._real_history),
+                  self._real_history, self._session_meta),
             daemon=True,
         ).start()
 
-    def set_history(self, history: Optional[list]) -> None:
+    def set_history(self, history: Optional[list],
+                    session_meta: Optional[dict] = None) -> None:
         """Supply real telemetry history for gauge previews (replaces dummy data)."""
         self._real_history = history
+        self._session_meta = session_meta
         self._request_all_previews()
 
     def _render_preview_worker(self, key: str, style_name: str, channel: str,
                                 pw: int, ph: int, is_bike: bool,
                                 theme: str = 'Dark',
-                                real_history: Optional[list] = None) -> None:
+                                real_history: Optional[list] = None,
+                                session_meta: Optional[dict] = None) -> None:
         try:
             from style_registry import render_style
             from overlay_utils  import dummy_map_data
@@ -292,8 +299,14 @@ class OverlayEditor(tk.Frame):
                 data['_theme'] = theme
                 rgba = render_style('map', style_name, data, pw, ph)
             elif channel == 'info':
-                from gauge_channels import dummy_info_data
-                data = dummy_info_data()
+                if session_meta:
+                    data = dict(session_meta)
+                else:
+                    from gauge_channels import dummy_info_data
+                    data = dummy_info_data()
+                idx_i = int(key.split('_')[1])
+                if idx_i < len(self._layout.gauges):
+                    data['selected_fields'] = self._layout.gauges[idx_i].channels or []
                 data['_theme'] = theme
                 rgba = render_style('gauge', style_name, data, pw, ph)
             elif channel == MULTI_CHANNEL:
@@ -304,6 +317,13 @@ class OverlayEditor(tk.Frame):
                     data = build_multi_data(g.channels, real_history)
                 else:
                     data = dummy_gauge_data(MULTI_CHANNEL)
+                data['_theme'] = theme
+                rgba = render_style('gauge', style_name, data, pw, ph)
+            elif channel == 'lap_info':
+                # lap_info needs li_* keys that only video_renderer injects;
+                # editor real_history won't have them, so always use dummy data.
+                from gauge_channels import dummy_lap_info_data
+                data = dummy_lap_info_data()
                 data['_theme'] = theme
                 rgba = render_style('gauge', style_name, data, pw, ph)
             elif real_history:

@@ -40,13 +40,14 @@ QUEUE_OWNER = {
     'rb_auto_done':          'data_page',   # startup auto-download result
 
     # Export page
-    'export_log':            'export_page',
-    'export_prog':           'export_page',
-    'export_done':           'export_page',
-    'export_preview_frame':  'export_page',
-    'export_ref_loaded':       'export_page',
-    'export_library_loaded':   'export_page',
-    'export_preview_history':  'export_page',
+    'export_log':               'export_page',
+    'export_prog':              'export_page',
+    'export_done':              'export_page',
+    'export_preview_frame':     'export_page',
+    'export_ref_loaded':        'export_page',
+    'export_library_loaded':    'export_page',
+    'export_preview_history':   'export_page',
+    'export_invalidate_preview':'export_page',
 
     # Settings page
     'rb_dl_auth':            'settings_page',

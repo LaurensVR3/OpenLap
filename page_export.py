@@ -27,6 +27,7 @@ def _export_stem(sess, scope_label: str) -> str:
     return '_'.join(parts)
 
 
+from utils import compute_lean_angle
 from design_tokens import BG, CARD, CARD2, BORDER, ACC, ACC2, OK, WARN, ERR, TEXT, TEXT2, TEXT3, font
 from widgets import Card, Btn, Divider, Label
 from app_config import AppConfig, OverlayLayout, overlay_from_dict
@@ -55,6 +56,8 @@ class ExportPage(tk.Frame):
         self.lbl_selection = tk.Label(hdr, text="No sessions selected",
                                       bg=BG, fg=TEXT3, font=font(9))
         self.lbl_selection.pack(side='left', padx=(16, 0))
+        Btn(hdr, "Edit Info…", self._edit_session_info,
+            width=10).pack(side='right', padx=(0, 4))
 
         # ── Two-column body ───────────────────────────────────────────────────
         body = tk.Frame(self, bg=BG)
@@ -243,7 +246,7 @@ class ExportPage(tk.Frame):
         overlay = self.app.config.overlay
 
         avail = self._available_channels  # None = no filter (no session loaded)
-        all_chan_keys = list(GAUGE_CHANNELS.keys()) + ['map', 'multi', 'info']
+        all_chan_keys = list(GAUGE_CHANNELS.keys()) + ['map', 'multi', 'info', 'lap_info']
         chan_keys = [k for k in all_chan_keys if avail is None or k in avail]
         n_elems  = len(overlay.gauges)
 
@@ -274,18 +277,26 @@ class ExportPage(tk.Frame):
                 Btn(cell, 'Edit channels…', small=True,
                     command=lambda iv=idx: self._edit_multi_channels(iv)
                     ).pack(side='left', padx=(0, 2))
+            elif g.channel == 'info':
+                # Info: style is fixed, show field picker instead
+                tk.Label(cell, text='Info', bg=BG, fg=TEXT2,
+                         font=font(8)).pack(side='left', padx=(0, 2))
+                Btn(cell, 'Edit fields…', small=True,
+                    command=lambda iv=idx: self._edit_info_fields(iv)
+                    ).pack(side='left', padx=(0, 2))
             else:
                 cb_style = ttk.Combobox(cell, textvariable=style_var,
                                         values=styles, state='readonly',
                                         font=font(8), width=8)
                 cb_style.pack(side='left', padx=(0, 2))
 
+            _has_style_cb = g.channel not in ('multi', 'info')
             chan_var.trace_add('write',
                 lambda *_, iv=idx, cv=chan_var, sv=style_var,
-                        cs=(cb_style if g.channel != 'multi' else None):
+                        cs=(cb_style if _has_style_cb else None):
                     self._on_gauge_channel_ctx(iv, cv.get(), sv, cs))
 
-            if g.channel != 'multi':
+            if _has_style_cb:
                 style_var.trace_add('write',
                     lambda *_, iv=idx, sv=style_var:
                         self._on_gauge_style(iv, sv.get()))
@@ -306,7 +317,7 @@ class ExportPage(tk.Frame):
 
     def _on_theme_change(self) -> None:
         self.app.config.overlay.theme = self.var_theme.get()
-        self.app.config.save()
+        self.app.config.schedule_save()
         self.editor.refresh()
 
     def _add_gauge(self) -> None:
@@ -387,6 +398,56 @@ class ExportPage(tk.Frame):
         ww, wh = win.winfo_width(), win.winfo_height()
         win.geometry(f'+{px + pw//2 - ww//2}+{py + ph//2 - wh//2}')
 
+    def _edit_info_fields(self, idx: int) -> None:
+        """Open a field picker dialog for an Info gauge (mirrors _edit_multi_channels)."""
+        from gauge_channels import INFO_FIELDS, INFO_FIELDS_DEFAULT
+        gauges = self.app.config.overlay.gauges
+        if not (0 <= idx < len(gauges)):
+            return
+        g = gauges[idx]
+
+        win = tk.Toplevel(self)
+        win.title('Select info fields')
+        win.configure(bg=CARD)
+        win.resizable(False, False)
+        win.grab_set()
+
+        tk.Label(win, text='Choose fields to display:',
+                 bg=CARD, fg=TEXT2, font=font(9)).pack(anchor='w', padx=12, pady=(10, 4))
+
+        current = set(g.channels) if g.channels else set(INFO_FIELDS_DEFAULT)
+        vars_map = {}
+
+        for field_key, field_label in INFO_FIELDS.items():
+            var = tk.BooleanVar(value=(field_key in current))
+            vars_map[field_key] = var
+            row = tk.Frame(win, bg=CARD)
+            row.pack(fill='x', padx=12, pady=1)
+            tk.Checkbutton(row, text=field_label, variable=var,
+                           bg=CARD, fg=TEXT, selectcolor=CARD2,
+                           activebackground=CARD, font=font(9)).pack(side='left')
+
+        btn_row = tk.Frame(win, bg=CARD)
+        btn_row.pack(fill='x', padx=12, pady=(4, 10))
+
+        def _apply():
+            selected = [k for k in INFO_FIELDS if vars_map[k].get()]
+            g.channels = selected
+            g.style = 'Info'
+            self.app.config.save()
+            self._rebuild_gauge_list()
+            self.editor.refresh()
+            win.destroy()
+
+        Btn(btn_row, 'OK',     accent=True, command=_apply).pack(side='left', padx=(0, 6))
+        Btn(btn_row, 'Cancel', command=win.destroy).pack(side='left')
+
+        win.update_idletasks()
+        px, py = self.winfo_rootx(), self.winfo_rooty()
+        pw, ph = self.winfo_width(), self.winfo_height()
+        ww, wh = win.winfo_width(), win.winfo_height()
+        win.geometry(f'+{px + pw//2 - ww//2}+{py + ph//2 - wh//2}')
+
     def _on_gauge_channel_ctx(self, idx: int, channel: str,
                                style_var: tk.StringVar, cb_style) -> None:
         """Channel changed: update style list and coerce stale style."""
@@ -395,9 +456,17 @@ class ExportPage(tk.Frame):
         if not (0 <= idx < len(gauges)):
             return
         gauges[idx].channel = channel
-        # For multi, style is fixed and cb_style is None
+        # For multi/info, style is fixed and cb_style is None
         if channel == 'multi':
             gauges[idx].style = 'Multi-Line'
+            gauges[idx].channels = []
+            self.app.config.save()
+            self._rebuild_gauge_list()
+            self.editor.refresh()
+            return
+        if channel == 'info':
+            gauges[idx].style = 'Info'
+            gauges[idx].channels = []
             self.app.config.save()
             self._rebuild_gauge_list()
             self.editor.refresh()
@@ -421,7 +490,7 @@ class ExportPage(tk.Frame):
         gauges = self.app.config.overlay.gauges
         if 0 <= idx < len(gauges):
             gauges[idx].style = style
-            self.app.config.save()
+            self.app.config.schedule_save()
             self.editor.refresh()
 
     def _on_gauge_visible(self, idx: int, visible: bool) -> None:
@@ -742,7 +811,7 @@ class ExportPage(tk.Frame):
             return
 
         csv_path = items[0].get('csv', '')
-        track, _, _ = data_page._quick_meta(csv_path)
+        track, _, _ = data_page.get_track_meta(csv_path)
         if not track or track in ('—', ''):
             self._lbl_lib_status.config(
                 text='Could not determine track for selected session.', fg=TEXT3)
@@ -752,7 +821,7 @@ class ExportPage(tk.Frame):
         self._lbl_lib_status.config(
             text=f'Loading laps for: {track}…', fg=TEXT3)
 
-        all_sessions = list(data_page._sessions)
+        all_sessions = data_page.get_all_sessions()
         threading.Thread(
             target=self._load_library_bg,
             args=(track, all_sessions, data_page),
@@ -778,7 +847,7 @@ class ExportPage(tk.Frame):
             csv = getattr(m, 'csv_path', None)
             if not csv or not os.path.exists(csv):
                 continue
-            t, _, _ = data_page._quick_meta(csv)
+            t, _, _ = data_page.get_track_meta(csv)
             if t != track:
                 continue
             try:
@@ -794,7 +863,7 @@ class ExportPage(tk.Frame):
         self.app.q.put(('export_library_loaded', track, results))
 
     def _on_layout_change(self, layout: OverlayLayout) -> None:
-        self.app.config.save()
+        self.app.config.schedule_save()
 
     # ─────────────────────────────────────────────────────────────────────────
     #  Preview frame
@@ -820,27 +889,20 @@ class ExportPage(tk.Frame):
     def _load_preview_history_bg(self, csv_path: str) -> None:
         """Load real telemetry from the best timed lap and feed to the overlay editor."""
         try:
-            import math as _math
-            import os as _os
             from page_data import _load_session
             sess = _load_session(csv_path)
             if not sess or not sess.laps:
                 return
             # Apply bike override and compute lean if session is a bike.
-            abs_csv = _os.path.abspath(csv_path)
+            abs_csv = os.path.abspath(csv_path)
             override = self.app.config.bike_overrides.get(abs_csv)
             if override is not None:
                 sess.is_bike = override
             if sess.is_bike:
                 for pt in sess.all_points:
                     if pt.lean_angle == 0.0:
-                        if abs(pt.gyro_z) > 1e-6:
-                            v = pt.speed / 3.6
-                            w = pt.gyro_z * _math.pi / 180.0
-                            pt.lean_angle = _math.degrees(_math.atan2(v * w, 9.81))
-                        elif abs(pt.gforce_y) > 1e-6:
-                            gy_c = max(-1.0, min(1.0, pt.gforce_y))
-                            pt.lean_angle = -_math.degrees(_math.asin(gy_c))
+                        pt.lean_angle = compute_lean_angle(
+                            pt.speed, pt.gyro_z, pt.gforce_y)
             # Pick the fastest timed lap
             timed = [l for l in sess.laps if not l.is_outlap and not l.is_inlap
                      and l.duration > 10]
@@ -868,12 +930,46 @@ class ExportPage(tk.Frame):
                     avail.add(ch_key)
             # delta_time is computed at render time — always offer it
             avail.add('delta_time')
-            # multi-line gauge is always available
+            # multi-line, session info, and lap scoreboard are always available
             avail.add('multi')
+            avail.add('info')
+            avail.add('lap_info')
             # map requires GPS coordinates on the lap points
             if any(getattr(p, 'lat', None) for p in pts):
                 avail.add('map')
-            self.app.q.put(('export_preview_history', history, avail))
+            # Build real session meta for the info gauge preview
+            abs_csv = os.path.abspath(csv_path)
+            info_ov = self.app.config.session_info.get(abs_csv, {})
+            session_meta = {
+                'info_track':   info_ov.get('info_track')   or sess.track or '',
+                'info_vehicle': info_ov.get('info_vehicle') or getattr(sess, 'vehicle', '') or '',
+                'info_session': info_ov.get('info_session') or getattr(sess, 'session_type', '') or '',
+                'info_source':  getattr(sess, 'source', '') or '',
+                'info_date':    '',
+                'info_time':    '',
+                'info_weather': '',
+                'info_wind':    '',
+            }
+            if getattr(sess, 'date_utc', None):
+                try:
+                    from datetime import datetime as _dt
+                    _d = _dt.fromisoformat(sess.date_utc.replace('Z', '+00:00'))
+                    session_meta['info_date'] = _d.strftime('%Y-%m-%d')
+                    session_meta['info_time'] = _d.strftime('%H:%M')
+                except Exception:
+                    pass
+                # Fetch weather in background (cached after first hit)
+                try:
+                    first_gps = next(
+                        (p for p in pts
+                         if getattr(p, 'lat', 0.0) and getattr(p, 'lon', 0.0)), None)
+                    if first_gps:
+                        from weather import fetch_weather
+                        session_meta['info_weather'], session_meta['info_wind'] = fetch_weather(
+                            first_gps.lat, first_gps.lon, sess.date_utc)
+                except Exception:
+                    pass
+            self.app.q.put(('export_preview_history', history, avail, session_meta))
         except Exception:
             pass
 
@@ -956,229 +1052,94 @@ class ExportPage(tk.Frame):
                    clip_start_s: float = 0.0, clip_end_s: float = 300.0,
                    ref_mode: str = 'none', ref_lap_obj=None) -> None:
         try:
-            self._export_bg_inner(items, scope, export_path, encoder, crf, workers,
-                                  padding, is_bike, show_map, show_tel, layout,
-                                  clip_start_s, clip_end_s, ref_mode, ref_lap_obj)
+            from export_runner import run_export
+            run_export(
+                items=items, scope=scope, export_path=export_path,
+                encoder=encoder, crf=crf, workers=workers, padding=padding,
+                is_bike=is_bike, show_map=show_map, show_tel=show_tel,
+                layout=layout, clip_start_s=clip_start_s, clip_end_s=clip_end_s,
+                ref_mode=ref_mode, ref_lap_obj=ref_lap_obj,
+                bike_overrides=self.app.config.bike_overrides,
+                session_info=self.app.config.session_info,
+                log_cb=lambda msg: self.app.q.put(('export_log', msg)),
+                progress_cb=lambda pct, msg: self.app.q.put(('export_prog', pct, msg)),
+                done_cb=lambda ok, msg: self.app.q.put(('export_done', ok, msg)),
+            )
         except Exception as e:
             import traceback
             self.app.q.put(('export_log', f"\n✗ Unexpected error:\n{traceback.format_exc()}"))
             self.app.q.put(('export_done', False, f"Crashed: {e}"))
 
-    def _export_bg_inner(self, items, scope, export_path, encoder, crf, workers,
-                         padding, is_bike, show_map, show_tel, layout,
-                         clip_start_s: float = 0.0, clip_end_s: float = 300.0,
-                         ref_mode: str = 'none', ref_lap_obj=None) -> None:
-        import racebox_data, aim_data, gpx_data
-        from video_renderer import render_lap, RenderJob, concat_videos
-        from racebox_data import Lap
+    # ─────────────────────────────────────────────────────────────────────────
+    #  Session info editor dialog
+    # ─────────────────────────────────────────────────────────────────────────
 
-        def load_session(path):
-            if gpx_data.is_gpx(path):
-                return gpx_data.load_gpx(path)
-            if aim_data.is_aim_csv(path):
-                return aim_data.load_csv(path)
-            return racebox_data.load_csv(path)
+    def _edit_session_info(self) -> None:
+        """Open a small dialog to manually set/override session metadata."""
+        items = getattr(self.app, 'selected_items', [])
+        if not items:
+            return
+        csv_path = os.path.abspath(items[0].get('csv', ''))
+        if not csv_path:
+            return
 
-        total_jobs = len(items)
-        done_jobs  = 0
+        existing = self.app.config.session_info.get(csv_path, {})
 
-        def log(msg): self.app.q.put(('export_log', msg))
+        dlg = tk.Toplevel(self)
+        dlg.title("Edit Session Info")
+        dlg.resizable(False, False)
+        dlg.configure(bg=BG)
+        dlg.grab_set()
 
-        def sess_prog(done, join_share, render_pct, msg):
-            """Map per-session progress into the overall bar.
+        def row(parent, label, default):
+            fr = tk.Frame(parent, bg=BG)
+            fr.pack(fill='x', pady=3)
+            tk.Label(fr, text=label, bg=BG, fg=TEXT3, font=font(9),
+                     width=14, anchor='w').pack(side='left')
+            var = tk.StringVar(value=default)
+            tk.Entry(fr, textvariable=var, bg=CARD, fg=TEXT,
+                     insertbackground=TEXT, relief='flat',
+                     font=font(9), width=28).pack(side='left', padx=(4, 0))
+            return var
 
-            done       = sessions already fully finished
-            join_share = fraction of this session's slice used by joining (0 or 0.1)
-            render_pct = render_lap's 0-100 progress value
-            """
-            sess_w   = 100.0 / max(total_jobs, 1)
-            base     = done * sess_w
-            within   = join_share * sess_w + (render_pct / 100) * (1 - join_share) * sess_w
-            self.app.q.put(('export_prog', base + within, msg))
+        body = tk.Frame(dlg, bg=BG, padx=16, pady=12)
+        body.pack(fill='x')
+        tk.Label(body, text=os.path.basename(csv_path), bg=BG, fg=TEXT2,
+                 font=font(8), wraplength=340, justify='left').pack(anchor='w', pady=(0, 8))
 
-        errors = []
+        v_track   = row(body, "Track",        existing.get('info_track',   ''))
+        v_vehicle = row(body, "Vehicle",      existing.get('info_vehicle', ''))
+        v_session = row(body, "Session type", existing.get('info_session', ''))
 
-        for item in items:
-            csv_path = item.get('csv')
-            videos   = item.get('videos', [])
-            offset   = item.get('offset') or 0.0   # None (not set) → 0.0
+        tk.Label(body, text="Leave blank to use values parsed from the telemetry file.",
+                 bg=BG, fg=TEXT3, font=font(7), wraplength=340).pack(anchor='w', pady=(6, 0))
 
-            if not csv_path or not os.path.exists(csv_path):
-                log(f"Skipping: CSV not found: {csv_path}")
-                done_jobs += 1
-                continue
+        def save():
+            entry = {}
+            if v_track.get().strip():
+                entry['info_track']   = v_track.get().strip()
+            if v_vehicle.get().strip():
+                entry['info_vehicle'] = v_vehicle.get().strip()
+            if v_session.get().strip():
+                entry['info_session'] = v_session.get().strip()
+            if entry:
+                self.app.config.session_info[csv_path] = entry
+            else:
+                self.app.config.session_info.pop(csv_path, None)
+            self.app.config.schedule_save()
+            dlg.destroy()
+            # Reload preview so info gauge reflects the updated values
+            csv = items[0].get('csv')
+            if csv:
+                self._last_preview_csv = None   # force reload
+                threading.Thread(
+                    target=self._load_preview_history_bg, args=(csv,),
+                    daemon=True).start()
 
-            log(f"\n── {os.path.basename(csv_path)}")
-
-            try:
-                sess = load_session(csv_path)
-            except Exception as e:
-                log(f"  ✗ Load failed: {e}")
-                errors.append(str(e))
-                done_jobs += 1
-                continue
-
-            # Apply per-session bike override, then compute lean angles when
-            # the session is a bike but lean was not directly logged (e.g. AIM).
-            abs_csv = os.path.abspath(csv_path)
-            override = self.app.config.bike_overrides.get(abs_csv)
-            if override is not None:
-                sess.is_bike = override
-            if sess.is_bike or is_bike:
-                import math as _math
-                for pt in sess.all_points:
-                    if pt.lean_angle == 0.0:
-                        if abs(pt.gyro_z) > 1e-6:
-                            v = pt.speed / 3.6
-                            w = pt.gyro_z * _math.pi / 180.0
-                            pt.lean_angle = _math.degrees(_math.atan2(v * w, 9.81))
-                        elif abs(pt.gforce_y) > 1e-6:
-                            gy_c = max(-1.0, min(1.0, pt.gforce_y))
-                            pt.lean_angle = -_math.degrees(_math.asin(gy_c))
-
-            if not videos and scope != 'full':
-                log("  ✗ No video file — skipping")
-                done_jobs += 1
-                continue
-
-            # ── Join phase ────────────────────────────────────────────────────
-            video_path  = videos[0] if videos else None
-            tmp_joined  = None
-            join_share  = 0.0
-            if len(videos) > 1:
-                join_share = 0.10
-                tmp_joined = os.path.join(export_path,
-                    f"_tmp_joined_{os.path.basename(csv_path)}.mp4")
-                newest_src = max(os.path.getmtime(v) for v in videos)
-                if (os.path.exists(tmp_joined) and
-                        os.path.getmtime(tmp_joined) >= newest_src):
-                    log(f"  Reusing cached joined video.")
-                    video_path = tmp_joined
-                else:
-                    log(f"  Joining {len(videos)} video segments…")
-                    sess_prog(done_jobs, 0.0, 0, "Joining clips…")
-                    try:
-                        concat_videos(videos, tmp_joined)
-                        video_path = tmp_joined
-                        sess_prog(done_jobs, join_share, 0, "")
-                    except Exception as e:
-                        log(f"  ✗ Join failed: {e}")
-                        errors.append(str(e))
-                        done_jobs += 1
-                        continue
-
-            # ── Resolve reference lap for this session ────────────────────────
-            reference_lap = None
-            if ref_mode == 'session_best':
-                reference_lap = sess.fastest_lap
-                if reference_lap:
-                    log(f"  Delta vs: session fastest ({reference_lap.duration:.3f}s)")
-            elif ref_mode in ('custom', 'track_library') and ref_lap_obj is not None:
-                reference_lap = ref_lap_obj
-                log(f"  Delta vs: {reference_lap.duration:.3f}s")
-
-            # ── Render phase ──────────────────────────────────────────────────
-            def scaled_prog(pct, msg):
-                sess_prog(done_jobs, join_share, pct, msg)
-
-            try:
-                if scope == 'fastest':
-                    lap = sess.fastest_lap
-                    if not lap:
-                        log("  ✗ No timed lap found")
-                        done_jobs += 1
-                        continue
-                    out = os.path.join(export_path, f"{_export_stem(sess, 'Fastest')}.mp4")
-                    log(f"  Fastest lap: {lap.duration:.3f}s → {os.path.basename(out)}")
-                    render_lap(
-                        video_path, out, sess, RenderJob(_export_stem(sess, 'Fastest'), lap),
-                        sync_offset=offset, encoder=encoder, crf=crf,
-                        n_workers=workers, show_map=show_map,
-                        show_telemetry=show_tel, padding=padding,
-                        is_bike=is_bike, overlay_layout=layout,
-                        progress_cb=scaled_prog, log_cb=log,
-                        reference_lap=reference_lap,
-                    )
-
-                elif scope == 'all_laps':
-                    laps = sess.laps
-                    if not laps:
-                        log("  ✗ No laps found")
-                        done_jobs += 1
-                        continue
-                    for i, lap in enumerate(laps, 1):
-                        label = f"Lap{i:02d}"
-                        out = os.path.join(export_path, f"{_export_stem(sess, label)}.mp4")
-                        log(f"  Lap {i}/{len(laps)}: {lap.duration:.3f}s")
-                        render_lap(
-                            video_path, out, sess, RenderJob(_export_stem(sess, label), lap),
-                            sync_offset=offset, encoder=encoder, crf=crf,
-                            n_workers=workers, show_map=show_map,
-                            show_telemetry=show_tel, padding=padding,
-                            is_bike=is_bike, overlay_layout=layout,
-                            progress_cb=scaled_prog, log_cb=log,
-                            reference_lap=reference_lap,
-                        )
-
-                elif scope == 'full':
-                    out = os.path.join(export_path, f"{_export_stem(sess, 'Full')}.mp4")
-                    log(f"  Full session → {os.path.basename(out)}")
-                    render_lap(
-                        video_path or '', out, sess, RenderJob(_export_stem(sess, 'Full'), None),
-                        sync_offset=offset, encoder=encoder, crf=crf,
-                        n_workers=workers, show_map=show_map,
-                        show_telemetry=show_tel, padding=0.0,
-                        is_bike=is_bike, overlay_layout=layout,
-                        progress_cb=scaled_prog, log_cb=log,
-                        reference_lap=reference_lap,
-                    )
-
-                elif scope == 'clip':
-                    pts = sess.all_points
-                    if pts:
-                        sess_end = pts[-1].elapsed
-                        c_start  = max(0.0, min(clip_start_s, sess_end))
-                        c_end    = max(c_start + 0.1, min(clip_end_s, sess_end))
-                    else:
-                        c_start, c_end = clip_start_s, clip_end_s
-                    clip_pts = [p for p in pts if c_start <= p.elapsed <= c_end]
-                    if not clip_pts:
-                        log(f"  ✗ No data points in range {c_start:.1f}–{c_end:.1f}s")
-                        done_jobs += 1
-                        continue
-                    clip_lap = Lap(
-                        lap_num  = -1,
-                        points   = clip_pts,
-                        duration = c_end - c_start,
-                    )
-                    tag = f"Clip_{int(c_start)}s_{int(c_end)}s"
-                    out = os.path.join(export_path, f"{_export_stem(sess, tag)}.mp4")
-                    log(f"  Clip {c_start:.1f}s–{c_end:.1f}s → {os.path.basename(out)}")
-                    render_lap(
-                        video_path or '', out, sess, RenderJob(_export_stem(sess, tag), clip_lap),
-                        sync_offset=offset, encoder=encoder, crf=crf,
-                        n_workers=workers, show_map=show_map,
-                        show_telemetry=show_tel, padding=padding,
-                        is_bike=is_bike, overlay_layout=layout,
-                        reference_lap=reference_lap,
-                        progress_cb=scaled_prog, log_cb=log,
-                    )
-
-            except Exception as e:
-                log(f"  ✗ Render error: {e}")
-                errors.append(str(e))
-            finally:
-                pass  # keep tmp_joined as cache for future exports
-
-            done_jobs += 1
-            sess_prog(done_jobs, 0, 0, "")   # snap to next session boundary
-
-        if errors:
-            self.app.q.put(('export_done', False,
-                             f"{len(errors)} error(s) — see log"))
-        else:
-            self.app.q.put(('export_done', True,
-                             f"Done — {done_jobs} session(s) exported"))
+        btn_row = tk.Frame(dlg, bg=BG)
+        btn_row.pack(fill='x', padx=16, pady=(0, 12))
+        Btn(btn_row, "Save", save).pack(side='right', padx=(4, 0))
+        Btn(btn_row, "Cancel", dlg.destroy).pack(side='right')
 
     # ─────────────────────────────────────────────────────────────────────────
     #  Log helpers
@@ -1258,9 +1219,12 @@ class ExportPage(tk.Frame):
         elif kind == 'export_preview_frame':
             self.editor.set_frame(args[0])
         elif kind == 'export_preview_history':
-            self.editor.set_history(args[0])
+            session_meta = args[2] if len(args) > 2 else None
+            self.editor.set_history(args[0], session_meta=session_meta)
             self._available_channels = args[1] if len(args) > 1 else None
             self._rebuild_gauge_list()
+        elif kind == 'export_invalidate_preview':
+            self._last_preview_csv = None
 
     # ─────────────────────────────────────────────────────────────────────────
     #  Called when user navigates to this tab

@@ -15,7 +15,9 @@ def test_default_telemetry_path():
 
 
 def test_default_map_style():
-    assert AppConfig().overlay.map_style == 'Circuit'
+    map_gauge = next((g for g in AppConfig().overlay.gauges if g.channel == 'map'), None)
+    assert map_gauge is not None
+    assert map_gauge.style == 'Circuit'
 
 
 def test_default_theme():
@@ -96,18 +98,23 @@ def test_overlay_from_dict_empty():
 
 
 def test_overlay_from_dict_round_trip():
-    original = OverlayLayout()
+    original   = OverlayLayout()
     serialized = asdict(original)
-    restored = overlay_from_dict(serialized)
-    assert restored.map_style == original.map_style
+    restored   = overlay_from_dict(serialized)
     assert restored.theme == original.theme
     assert len(restored.gauges) == len(original.gauges)
+    orig_map    = next((g for g in original.gauges  if g.channel == 'map'), None)
+    restored_map = next((g for g in restored.gauges if g.channel == 'map'), None)
+    assert orig_map is not None and restored_map is not None
+    assert restored_map.style == orig_map.style
 
 
 def test_overlay_from_dict_missing_keys():
-    layout = overlay_from_dict({'theme': 'Carbon'})
+    layout   = overlay_from_dict({'theme': 'Carbon'})
     assert layout.theme == 'Carbon'
-    assert layout.map_style == 'Circuit'  # default
+    map_gauge = next((g for g in layout.gauges if g.channel == 'map'), None)
+    assert map_gauge is not None
+    assert map_gauge.style == 'Circuit'  # default
 
 
 # ── _from_dict ─────────────────────────────────────────────────────────────────
