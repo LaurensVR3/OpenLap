@@ -55,7 +55,7 @@ class WebviewAPI:
         return cfg
 
     def save_config(self, data: dict) -> None:
-        # Update only the simple string/dict fields; leave overlay/presets as-is
+        # Update string fields
         simple_fields = [
             'racebox_path', 'aim_path', 'motec_path', 'gpx_path',
             'telemetry_path', 'video_path', 'export_path', 'racebox_email',
@@ -63,6 +63,9 @@ class WebviewAPI:
         for f in simple_fields:
             if f in data:
                 setattr(self._config, f, data[f])
+        # Merge sync offsets dict (JS may send partial updates)
+        if 'offsets' in data and isinstance(data['offsets'], dict):
+            self._config.offsets.update(data['offsets'])
         self._config.save()
 
     # ── Overlay ───────────────────────────────────────────────────────────────
