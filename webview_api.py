@@ -63,9 +63,11 @@ class WebviewAPI:
         for f in simple_fields:
             if f in data:
                 setattr(self._config, f, data[f])
-        # Merge sync offsets dict (JS may send partial updates)
+        # Merge dict fields (JS may send partial updates)
         if 'offsets' in data and isinstance(data['offsets'], dict):
             self._config.offsets.update(data['offsets'])
+        if 'bike_overrides' in data and isinstance(data['bike_overrides'], dict):
+            self._config.bike_overrides.update(data['bike_overrides'])
         self._config.save()
 
     # ── Overlay ───────────────────────────────────────────────────────────────
@@ -162,6 +164,68 @@ class WebviewAPI:
                 'best':           s.get('best') or None,
             })
         return result
+
+    # ── Session metadata (fast header read) ──────────────────────────────────
+    def get_session_meta(self, csv_path: str) -> dict:
+        """
+        Quick read of track name, lap count, and best lap time.
+        Reads only the CSV header block — does not parse all data points.
+        """
+        try:
+            import os
+            suffix = os.path.splitext(csv_path)[1].lower()
+
+            # GPX / MoTeC: need a full load but they're usually small
+            if suffix in ('.gpx', '.ld'):
+                session = self._load_session(csv_path)
+                if not session:
+                    return {'track': '', 'laps': '', 'best': '', 'best_secs': None}
+                laps = getattr(session, 'laps', [])
+                durs = [l.duration for l in laps if l.duration]
+                best = min(durs) if durs else None
+                return {
+                    'track':     getattr(session, 'track', '') or '',
+                    'laps':      str(len(laps)),
+                    'best':      f'{best:.3f}s' if best else '',
+                    'best_secs': best,
+                }
+
+            # AIM CSV: no metadata header; use filename
+            if suffix == '.csv':
+                track = laps_str = best_str = ''
+                best_secs = None
+                with open(csv_path, encoding='utf-8-sig', errors='ignore') as f:
+                    first = f.readline()
+                    if first.startswith('Time (s),'):
+                        # AIM format — no header block
+                        return {
+                            'track': '',
+                            'laps': '',
+                            'best': '',
+                            'best_secs': None,
+                        }
+                    # RaceBox CSV — key:value header
+                    from itertools import chain
+                    for line in chain([first], f):
+                        if line.startswith('Track,'):
+                            track = line.strip().split(',', 1)[1]
+                        elif line.startswith('Laps,'):
+                            laps_str = line.strip().split(',', 1)[1]
+                        elif line.startswith('Best Lap Time,'):
+                            raw = line.strip().split(',', 1)[1]
+                            try:
+                                best_secs = float(raw)
+                                best_str  = f'{best_secs:.3f}s'
+                            except Exception:
+                                best_str = raw
+                        elif line.startswith('Record,'):
+                            break
+                return {'track': track, 'laps': laps_str,
+                        'best': best_str, 'best_secs': best_secs}
+
+        except Exception:
+            pass
+        return {'track': '', 'laps': '', 'best': '', 'best_secs': None}
 
     # ── Lap loading ───────────────────────────────────────────────────────────
     def get_laps(self, csv_path: str) -> list:

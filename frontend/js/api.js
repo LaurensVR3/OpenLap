@@ -44,6 +44,7 @@ const API = (() => {
         { name: 'libx264', label: 'H.264 software', available: true },
       ]}),
       get_about_info:    () => ({ python: '3.x.x', config: '~/.openlap/config.json' }),
+      get_session_meta:  () => ({ track: '', laps: '', best: '', best_secs: null }),
     };
     const fn = mocks[method];
     return fn ? fn() : null;
@@ -88,6 +89,8 @@ const API = (() => {
 
     getWeather:        (lat, lon, dt)  => call('get_weather', lat, lon, dt),
     editSessionInfo:   (path, overrides) => call('edit_session_info', path, overrides),
+
+    getSessionMeta:    (csvPath)       => call('get_session_meta', csvPath),
 
     raceboxLogin:      (email, password) => call('racebox_login', email, password),
     checkEncoders:     ()              => call('check_encoders'),

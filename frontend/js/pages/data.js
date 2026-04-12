@@ -1,269 +1,440 @@
 /**
  * data.js — Data Selection page.
  *
- * Fixes vs original:
- *  - Sessions persist across navigation (no re-fetch on every mount)
- *  - Sorted newest-first; grouped by calendar period (Today/Yesterday/etc.)
- *  - Laps & best lap populated asynchronously per-session after scan
- *  - Video sync offset editable inline per session
- *  - Cleaner "Add to Export" UX: click chips to stage, one footer button to enqueue
+ * Layout: sessions list (left, scrollable) | detail + sync panel (right, fixed 340px)
+ *
+ * Flow:
+ *  1. Mount: load cache immediately, auto-trigger background scan
+ *  2. Sessions grouped by actual date (YYYY-MM-DD), newest-first
+ *  3. Click session → right panel shows info, lap chips, video sync
+ *  4. Lap chips → staged, then "Add to Export" queues them in State
+ *  5. Align video: <video> element + scrub slider + mark button → saves offset
  */
 (function () {
 
-  // ── Persistent module state (survives unmount/remount) ────────────────────────
-  let _sessions    = [];   // flat list from scan_sessions, sorted newest-first
-  let _lapMeta     = {};   // csv_path → {count, best}  (populated async)
-  let _lapDetails  = {};   // csv_path → [{lap_idx, duration, is_best}]
-  let _loading     = new Set();  // csv_paths currently loading laps
-  let _expanded    = null; // csv_path of expanded row
-  let _staged      = [];   // [{csv_path,lap_idx,…}] staged but not yet in export queue
-  let _config      = null;
-  let _scanning    = false;
-  let _lastScanStatus = 'Ready — click Scan to find sessions.';
+  // ── Persistent module state ───────────────────────────────────────────────────
+  let _sessions   = [];   // flat list, sorted newest-first
+  let _meta       = {};   // csv_path → {track, laps, best}
+  let _lapDetails = {};   // csv_path → [{lap_idx, duration, is_best}]
+  let _staged     = [];   // lap items staged for export
+  let _selCsv     = null; // currently selected session csv_path
+  let _config     = null;
+  let _scanning   = false;
+  let _statusMsg  = '';
+  let _container  = null;
+  let _metaQueue  = [];   // sessions waiting for meta fetch
+  let _metaBusy   = false;
 
-  // ── Utilities ──────────────────────────────────────────────────────────────────
+  // Best per day: csv_path → true if this session has the day's best lap
+  let _dayBest = {};
+
+  // ── Utilities ─────────────────────────────────────────────────────────────────
 
   function fmtTime(secs) {
-    if (secs == null || secs < 0) return '—';
+    if (secs == null || secs < 0 || isNaN(secs)) return '—';
     const m = Math.floor(secs / 60);
     const s = (secs % 60).toFixed(3).padStart(6, '0');
     return `${m}:${s}`;
   }
 
-  function fmtDate(iso) {
+  function fmtDateTime(iso) {
     if (!iso) return '—';
     try {
       return new Date(iso).toLocaleString(undefined,
-        { year: 'numeric', month: 'short', day: 'numeric',
-          hour: '2-digit', minute: '2-digit' });
+        { year:'numeric', month:'2-digit', day:'2-digit',
+          hour:'2-digit', minute:'2-digit' });
     } catch { return iso; }
   }
 
-  function calendarGroup(iso) {
-    if (!iso) return 'Unknown date';
-    const d   = new Date(iso);
-    const now = new Date();
-    const diffDays = (now - d) / 86400000;
-    if (diffDays < 1)                         return 'Today';
-    if (diffDays < 2)                         return 'Yesterday';
-    if (diffDays < 7)                         return 'This week';
-    if (d.getFullYear() === now.getFullYear()) return d.toLocaleString(undefined, { month: 'long' });
-    return String(d.getFullYear());
+  function dateKey(iso) {
+    if (!iso) return 'Unknown';
+    try { return new Date(iso).toISOString().slice(0, 10); }
+    catch { return 'Unknown'; }
   }
 
   function esc(s) {
-    return String(s || '')
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
   function baseName(p) {
-    return (p || '').replace(/\\/g, '/').split('/').pop() || p;
+    return (p||'').replace(/\\/g,'/').split('/').pop() || p;
   }
 
-  // ── Session grouping & sorting ─────────────────────────────────────────────────
+  function fileUrl(winPath) {
+    return 'file:///' + winPath.replace(/\\/g, '/');
+  }
 
-  function sortedGrouped(sessions) {
-    // Sort newest first
-    const sorted = [...sessions].sort((a, b) => {
+  // ── Compute day-best ──────────────────────────────────────────────────────────
+
+  function recomputeDayBest() {
+    _dayBest = {};
+    const byDay = {};
+    for (const s of _sessions) {
+      const d = dateKey(s.csv_start);
+      if (!byDay[d]) byDay[d] = [];
+      const m = _meta[s.csv_path];
+      if (m && m.best_secs != null) byDay[d].push({ csv: s.csv_path, best: m.best_secs });
+    }
+    for (const entries of Object.values(byDay)) {
+      if (!entries.length) continue;
+      entries.sort((a, b) => a.best - b.best);
+      _dayBest[entries[0].csv] = true;
+    }
+  }
+
+  // ── Session grouping ──────────────────────────────────────────────────────────
+
+  function sortedGroups() {
+    const sorted = [..._sessions].sort((a, b) => {
       const ta = a.csv_start ? new Date(a.csv_start).getTime() : 0;
       const tb = b.csv_start ? new Date(b.csv_start).getTime() : 0;
       return tb - ta;
     });
-
-    // Group by calendar period
     const groups = [];
-    let lastLabel = null;
+    let lastDay = null;
     for (const s of sorted) {
-      const label = calendarGroup(s.csv_start);
-      if (label !== lastLabel) {
-        groups.push({ label, sessions: [] });
-        lastLabel = label;
-      }
+      const day = dateKey(s.csv_start);
+      if (day !== lastDay) { groups.push({ day, sessions: [] }); lastDay = day; }
       groups[groups.length - 1].sessions.push(s);
     }
     return groups;
   }
 
-  // ── Render ─────────────────────────────────────────────────────────────────────
+  // ── Left panel: session list ──────────────────────────────────────────────────
 
-  function statusBadge(s) {
-    if (s.needs_conversion)       return `<span class="badge badge-warn">Needs conv.</span>`;
-    if (!s.matched)               return `<span class="badge badge-muted">No video</span>`;
-    if (s.sync_offset != null)    return `<span class="badge badge-ok">Synced</span>`;
-    return `<span class="badge badge-warn">Unsynced</span>`;
-  }
-
-  function renderTable(container) {
-    const tbody = container.querySelector('#sessions-tbody');
-    if (!tbody) return;
-
-    tbody.innerHTML = '';
+  function renderLeft() {
+    const pane = _container?.querySelector('#data-left');
+    if (!pane) return;
 
     if (_sessions.length === 0) {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td colspan="7" style="text-align:center; padding:32px; color:var(--text3)">
-        No sessions found — configure folders in Settings then click Scan.</td>`;
-      tbody.appendChild(tr);
+      pane.innerHTML = `<div class="dl-empty">No sessions — configure folders in Settings and click Scan.</div>`;
       return;
     }
 
-    const groups = sortedGrouped(_sessions);
+    const groups = sortedGroups();
+    pane.innerHTML = groups.map(g => `
+      <div class="dl-day-hdr">${esc(g.day)}</div>
+      ${g.sessions.map(s => sessionRow(s)).join('')}
+    `).join('');
 
-    for (const group of groups) {
-      // Group header row
-      const hdr = document.createElement('tr');
-      hdr.classList.add('group-header-row');
-      hdr.innerHTML = `<td colspan="7" class="group-header">${esc(group.label)}</td>`;
-      tbody.appendChild(hdr);
+    pane.querySelectorAll('.dl-row').forEach(row => {
+      row.addEventListener('click', () => selectSession(row.dataset.csv));
+    });
+  }
 
-      for (const s of group.sessions) {
-        tbody.appendChild(buildSessionRow(s, container));
-        if (_expanded === s.csv_path) {
-          tbody.appendChild(buildLapSubrow(s, container));
-        }
-      }
+  function sessionRow(s) {
+    const m       = _meta[s.csv_path] || {};
+    const isSel   = s.csv_path === _selCsv;
+    const isDayB  = _dayBest[s.csv_path];
+    const time    = s.csv_start ? new Date(s.csv_start)
+                      .toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}) : '—';
+    const track   = m.track || baseName(s.csv_path);
+    const lapStr  = m.laps  || '—';
+    const bestStr = m.best  || (m.best_secs != null ? fmtTime(m.best_secs) : '—');
+    const icon    = s.needs_conversion ? '⟳'
+                  : (!s.matched)       ? '✗'
+                  : (s.sync_offset != null) ? '✓' : '≈';
+    const iconCls = s.needs_conversion ? 'di-pending'
+                  : (!s.matched)       ? 'di-novid'
+                  : (s.sync_offset != null) ? 'di-synced' : 'di-unsync';
+
+    return `<div class="dl-row${isSel?' sel':''}${isDayB?' day-best':''}" data-csv="${esc(s.csv_path)}">
+      <span class="dl-icon ${iconCls}">${icon}</span>
+      <span class="dl-time">${esc(time)}</span>
+      <span class="dl-track" title="${esc(s.csv_path)}">${esc(track)}</span>
+      <span class="dl-source">${esc(s.source||'RaceBox')}</span>
+      <span class="dl-num">${esc(lapStr)}</span>
+      <span class="dl-num">${esc(bestStr)}</span>
+    </div>`;
+  }
+
+  function selectSession(csvPath) {
+    _selCsv = csvPath;
+    // Update selection highlight
+    _container?.querySelectorAll('.dl-row').forEach(r => {
+      r.classList.toggle('sel', r.dataset.csv === csvPath);
+    });
+    renderRight();
+
+    // Load laps if not cached
+    const s = _sessions.find(x => x.csv_path === csvPath);
+    if (s && !_lapDetails[csvPath]) loadLaps(s);
+  }
+
+  // ── Right panel: session detail + sync ────────────────────────────────────────
+
+  function renderRight() {
+    const pane = _container?.querySelector('#data-right');
+    if (!pane) return;
+
+    const s = _sessions.find(x => x.csv_path === _selCsv);
+    if (!s) {
+      pane.innerHTML = `<div class="dr-empty">Select a session to see details and align video.</div>`;
+      return;
     }
-  }
 
-  function buildSessionRow(s, container) {
-    const tr  = document.createElement('tr');
-    tr.dataset.csvPath = s.csv_path;
-    tr.classList.add('session-row');
-    if (_staged.some(x => x.csv_path === s.csv_path)) tr.classList.add('selected');
-
-    const meta    = _lapMeta[s.csv_path];
-    const lapStr  = meta ? String(meta.count) : (_loading.has(s.csv_path) ? '…' : '—');
-    const bestStr = meta ? fmtTime(meta.best)  : (_loading.has(s.csv_path) ? '…' : '—');
-    const name    = baseName(s.csv_path);
-    const isOpen  = _expanded === s.csv_path;
-
-    tr.innerHTML = `
-      <td class="expand-cell">${isOpen ? '▾' : '▸'}</td>
-      <td class="cell-date">${fmtDate(s.csv_start)}</td>
-      <td class="cell-name" title="${esc(s.csv_path)}">${esc(name)}</td>
-      <td class="cell-source"><span class="source-tag">${esc(s.source || 'RaceBox')}</span></td>
-      <td class="cell-num">${lapStr}</td>
-      <td class="cell-num">${bestStr}</td>
-      <td class="cell-status">${statusBadge(s)}</td>`;
-
-    tr.addEventListener('click', () => toggleExpand(s, container));
-    return tr;
-  }
-
-  function buildLapSubrow(s, container) {
-    const tr = document.createElement('tr');
-    tr.dataset.lapRow = s.csv_path;
-    tr.classList.add('lap-subrow');
-
-    const td = document.createElement('td');
-    td.colSpan = 7;
-    td.style.padding = '0';
-
+    const m    = _meta[s.csv_path] || {};
     const laps = _lapDetails[s.csv_path];
+    const off  = s.sync_offset;
 
-    if (_loading.has(s.csv_path)) {
-      td.innerHTML = `<div class="lap-tray"><span class="spinner"></span><span style="color:var(--text3);font-size:10px">Loading laps…</span></div>`;
-    } else if (!laps || laps.length === 0) {
-      td.innerHTML = `<div class="lap-tray"><span style="color:var(--text3);font-size:10px">No laps found in this file.</span></div>`;
-    } else {
-      const chips = laps.map(lap => {
-        const isStaged = _staged.some(x => x.csv_path === s.csv_path && x.lap_idx === lap.lap_idx);
-        return `<div class="lap-chip ${isStaged ? 'selected' : ''} ${lap.is_best ? 'best' : ''}"
-                     data-csv="${esc(s.csv_path)}" data-lap="${lap.lap_idx}">
-                  <span class="lc-num">L${lap.lap_idx + 1}</span>
-                  <span class="lc-time">${fmtTime(lap.duration)}</span>
-                  ${lap.is_best ? '<span class="lc-best">BEST</span>' : ''}
-                </div>`;
-      }).join('');
+    // Session info
+    const vidPaths = s.video_paths || [];
+    const hasVid   = s.matched && vidPaths.length > 0;
 
-      const syncVal = s.sync_offset != null ? s.sync_offset.toFixed(2) : '';
-      const hasVid  = s.matched && (s.video_paths || []).length > 0;
+    pane.innerHTML = `
+<!-- Info card -->
+<div class="dr-card">
+  <div class="dr-card-title">SESSION INFO</div>
+  <div class="dr-rows">
+    <div class="dr-row"><span class="dr-lbl">Source</span><span class="dr-val">${esc(s.source||'RaceBox')}</span></div>
+    <div class="dr-row"><span class="dr-lbl">Track</span><span class="dr-val dr-track-val">${esc(m.track||'—')}</span></div>
+    <div class="dr-row"><span class="dr-lbl">Date</span><span class="dr-val">${esc(fmtDateTime(s.csv_start))}</span></div>
+    <div class="dr-row"><span class="dr-lbl">Laps</span><span class="dr-val">${esc(m.laps||'—')}</span></div>
+    <div class="dr-row"><span class="dr-lbl">Best</span><span class="dr-val" style="color:var(--ok)">${esc(m.best||'—')}</span></div>
+    <div class="dr-row"><span class="dr-lbl">Video</span><span class="dr-val ${hasVid?'':'dr-warn'}">${hasVid ? `✓ ${vidPaths.length} clip(s)` : '✗ No match'}</span></div>
+    <div class="dr-row"><span class="dr-lbl">Offset</span><span class="dr-val ${off!=null?'':'dr-warn'}" id="dr-off-display">${off!=null ? off.toFixed(3)+'s ✓' : 'not set'}</span></div>
+  </div>
+  <div class="dr-actions">
+    <label class="dr-mode-label">Mode:
+      <select class="input-field dr-mode-sel" id="dr-bike-sel">
+        <option value="car">Car</option>
+        <option value="bike"${(s.is_bike?' selected':'')}>Bike</option>
+      </select>
+    </label>
+  </div>
+</div>
 
-      td.innerHTML = `
-        <div class="lap-tray">
-          <div class="lap-chips-row">${chips}</div>
-          <div class="lap-tray-footer">
-            ${hasVid ? `
-              <label class="sync-label">Video offset (s):
-                <input type="number" class="sync-input" step="0.1"
-                       value="${esc(syncVal)}" placeholder="0.00"
-                       data-csv="${esc(s.csv_path)}" title="Sync offset: positive = video starts this many seconds after telemetry">
-              </label>
-              <button class="btn btn-secondary btn-sm sync-save-btn" data-csv="${esc(s.csv_path)}">Set Sync</button>
-            ` : '<span style="color:var(--text3);font-size:9px">No video matched</span>'}
-            <div style="flex:1"></div>
-            <button class="btn btn-sm sel-all-btn" data-csv="${esc(s.csv_path)}">Select all</button>
-            <button class="btn btn-accent btn-sm queue-btn" data-csv="${esc(s.csv_path)}">+ Add to Export</button>
-          </div>
-        </div>`;
-    }
+<!-- Lap chips -->
+<div class="dr-card">
+  <div class="dr-card-title">EXPORT LAPS</div>
+  <div id="dr-laps">${renderLapChips(s)}</div>
+  <div class="dr-actions">
+    <button class="btn btn-sm" id="dr-sel-all">All</button>
+    <button class="btn btn-sm" id="dr-sel-best">Best</button>
+    <button class="btn btn-accent btn-sm" id="dr-add-export">+ Add to Export</button>
+  </div>
+</div>
 
-    tr.appendChild(td);
+<!-- Video align -->
+${hasVid ? renderAlignCard(s, vidPaths, off) : ''}
+`;
 
-    // Wire chip clicks
-    td.querySelectorAll('.lap-chip').forEach(chip => {
-      chip.addEventListener('click', e => {
-        e.stopPropagation();
+    wirePropPanel(s, pane);
+  }
+
+  function renderLapChips(s) {
+    const laps = _lapDetails[s.csv_path];
+    if (!laps) return `<div class="dr-loading"><span class="spinner"></span> Loading…</div>`;
+    if (laps.length === 0) return `<div class="dr-hint">No laps found in this file.</div>`;
+    return `<div class="dr-chip-row">` + laps.map(l => {
+      const isSel = _staged.some(x => x.csv_path === s.csv_path && x.lap_idx === l.lap_idx);
+      return `<div class="dr-chip${isSel?' sel':''}${l.is_best?' best':''}"
+                   data-csv="${esc(s.csv_path)}" data-lap="${l.lap_idx}">
+                <span class="drc-n">L${l.lap_idx+1}</span>
+                <span class="drc-t">${fmtTime(l.duration)}</span>
+                ${l.is_best?'<span class="drc-b">★</span>':''}
+              </div>`;
+    }).join('') + `</div>`;
+  }
+
+  function renderAlignCard(s, vidPaths, off) {
+    const offVal = off != null ? off.toFixed(3) : '';
+    return `
+<div class="dr-card dr-align-card">
+  <div class="dr-card-title">ALIGN VIDEO</div>
+  <video id="sync-video" class="sync-video" preload="metadata"
+         src="${esc(fileUrl(vidPaths[0]))}"></video>
+  <div class="sync-controls">
+    <button class="btn btn-sm" id="sv-mm">◀◀ −1s</button>
+    <button class="btn btn-sm" id="sv-m">◀ −1f</button>
+    <button class="btn btn-sm" id="sv-p">▶ +1f</button>
+    <button class="btn btn-sm" id="sv-pp">▶▶ +1s</button>
+    <span class="sync-time" id="sv-time">0:00.000</span>
+  </div>
+  <input type="range" id="sv-scrub" class="sync-scrub" min="0" max="1000" value="0" step="1">
+  <div class="sync-mark-row">
+    <button class="btn btn-ok btn-sm" id="sv-mark">🏁 Mark Lap 1 start</button>
+    <span class="sync-mark-val" id="sv-mark-val">${off!=null ? 'Marked — offset: '+off.toFixed(3)+'s' : ''}</span>
+  </div>
+  <div class="sync-offset-row">
+    <label style="font-size:9px;color:var(--text3)">Manual offset (s):</label>
+    <input type="number" id="sv-off-input" class="input-field input-narrow sync-off-input"
+           step="0.001" value="${esc(offVal)}" placeholder="0.000">
+    <button class="btn btn-sm" id="sv-save">Save</button>
+  </div>
+  ${vidPaths.length > 1 ? `<div style="font-size:9px;color:var(--text3);margin-top:4px">+ ${vidPaths.length-1} more clip(s)</div>` : ''}
+</div>`;
+  }
+
+  function wirePropPanel(s, pane) {
+    // Lap chips
+    pane.querySelectorAll('.dr-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
         toggleStage(s, parseInt(chip.dataset.lap));
-        refreshLapSubrow(s, container);
-        refreshSessionRow(s, container);
-        refreshFooter(container);
+        const lapsEl = pane.querySelector('#dr-laps');
+        if (lapsEl) lapsEl.innerHTML = renderLapChips(s);
+        wireLapChips(s, pane);
+        refreshFooter();
       });
     });
 
-    // Select all
-    const selAll = td.querySelector('.sel-all-btn');
-    if (selAll) {
-      selAll.addEventListener('click', e => {
-        e.stopPropagation();
+    // Select all / best
+    pane.querySelector('#dr-sel-all')?.addEventListener('click', () => {
+      const laps = _lapDetails[s.csv_path] || [];
+      for (const l of laps) {
+        if (!_staged.some(x => x.csv_path === s.csv_path && x.lap_idx === l.lap_idx))
+          _staged.push(makeStagedItem(s, l));
+      }
+      const lapsEl = pane.querySelector('#dr-laps');
+      if (lapsEl) lapsEl.innerHTML = renderLapChips(s);
+      wireLapChips(s, pane);
+      refreshFooter();
+    });
+
+    pane.querySelector('#dr-sel-best')?.addEventListener('click', () => {
+      const laps  = _lapDetails[s.csv_path] || [];
+      const best  = laps.find(l => l.is_best) || laps[0];
+      if (best && !_staged.some(x => x.csv_path === s.csv_path && x.lap_idx === best.lap_idx))
+        _staged.push(makeStagedItem(s, best));
+      const lapsEl = pane.querySelector('#dr-laps');
+      if (lapsEl) lapsEl.innerHTML = renderLapChips(s);
+      wireLapChips(s, pane);
+      refreshFooter();
+    });
+
+    // Add to export
+    pane.querySelector('#dr-add-export')?.addEventListener('click', () => {
+      // If nothing staged for this session, auto-add best
+      let toAdd = _staged.filter(x => x.csv_path === s.csv_path);
+      if (toAdd.length === 0) {
         const laps = _lapDetails[s.csv_path] || [];
-        for (const lap of laps) {
-          if (!_staged.some(x => x.csv_path === s.csv_path && x.lap_idx === lap.lap_idx)) {
-            _staged.push(buildStagedItem(s, lap));
-          }
-        }
-        refreshLapSubrow(s, container);
-        refreshSessionRow(s, container);
-        refreshFooter(container);
-      });
-    }
+        const best = laps.find(l => l.is_best) || laps[0];
+        if (best) toAdd = [makeStagedItem(s, best)];
+      }
+      if (!toAdd.length) return;
+      const existing = State.get('selectedItems') || [];
+      const merged   = [...existing];
+      for (const item of toAdd) {
+        if (!merged.some(e => e.csv_path === item.csv_path && e.lap_idx === item.lap_idx))
+          merged.push(item);
+      }
+      State.set('selectedItems', merged);
+      _staged = _staged.filter(x => x.csv_path !== s.csv_path);
+      const lapsEl = pane.querySelector('#dr-laps');
+      if (lapsEl) lapsEl.innerHTML = renderLapChips(s);
+      wireLapChips(s, pane);
+      refreshFooter();
+      flashFooter(`✓ ${toAdd.length} lap${toAdd.length!==1?'s':''} added to export queue`);
+    });
 
-    // + Add to Export
-    const queueBtn = td.querySelector('.queue-btn');
-    if (queueBtn) {
-      queueBtn.addEventListener('click', e => {
-        e.stopPropagation();
-        pushStagedToExport(s.csv_path, container);
-      });
-    }
+    // Bike mode
+    pane.querySelector('#dr-bike-sel')?.addEventListener('change', async e => {
+      s.is_bike = e.target.value === 'bike';
+      const cfg = await API.getConfig();
+      const overrides = { ...(cfg.bike_overrides || {}) };
+      overrides[s.csv_path] = s.is_bike;
+      await API.saveConfig({ bike_overrides: overrides });
+    });
 
-    // Sync save
-    const syncBtn = td.querySelector('.sync-save-btn');
-    if (syncBtn) {
-      syncBtn.addEventListener('click', async e => {
-        e.stopPropagation();
-        const input = td.querySelector(`.sync-input[data-csv]`);
-        const val   = parseFloat(input?.value ?? '') || 0;
-        // Persist via config
-        await API.saveConfig({ offsets: { ...(_config?.offsets || {}), [s.csv_path]: val } });
-        s.sync_offset = val;
-        // Update badge
-        refreshSessionRow(s, container);
-        const msg = document.createElement('span');
-        msg.style.cssText = 'color:var(--ok);font-size:9px;margin-left:6px';
-        msg.textContent = 'Saved';
-        syncBtn.after(msg);
-        setTimeout(() => msg.remove(), 1500);
-      });
-    }
-
-    return tr;
+    // Video sync
+    wireVideoSync(s, pane);
   }
 
-  // ── Staging & export queue ─────────────────────────────────────────────────────
+  function wireLapChips(s, pane) {
+    pane.querySelectorAll('.dr-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        toggleStage(s, parseInt(chip.dataset.lap));
+        const lapsEl = pane.querySelector('#dr-laps');
+        if (lapsEl) lapsEl.innerHTML = renderLapChips(s);
+        wireLapChips(s, pane);
+        refreshFooter();
+      });
+    });
+  }
 
-  function buildStagedItem(session, lap) {
+  function wireVideoSync(s, pane) {
+    const video  = pane.querySelector('#sync-video');
+    const scrub  = pane.querySelector('#sv-scrub');
+    const timeEl = pane.querySelector('#sv-time');
+    const markEl = pane.querySelector('#sv-mark-val');
+    const offInp = pane.querySelector('#sv-off-input');
+
+    if (!video) return;
+
+    let fps = 30; // default; will be updated from metadata
+
+    function fmtVTime(t) {
+      const m = Math.floor(t / 60);
+      const s = (t % 60).toFixed(3).padStart(6, '0');
+      return `${m}:${s}`;
+    }
+
+    video.addEventListener('loadedmetadata', () => {
+      scrub.max = Math.round(video.duration * 1000);
+      fps = 30; // estimate; HTML video doesn't expose fps reliably
+    });
+
+    video.addEventListener('timeupdate', () => {
+      if (!video.seeking) {
+        scrub.value = Math.round(video.currentTime * 1000);
+        if (timeEl) timeEl.textContent = fmtVTime(video.currentTime);
+      }
+    });
+
+    scrub?.addEventListener('input', () => {
+      video.currentTime = scrub.value / 1000;
+      if (timeEl) timeEl.textContent = fmtVTime(video.currentTime);
+    });
+
+    function step(frameDelta) {
+      // frameDelta in frames (positive/negative); if > 20 treat as seconds
+      const dt = Math.abs(frameDelta) > 10 ? (frameDelta > 0 ? 1 : -1) : frameDelta / fps;
+      video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + dt));
+    }
+
+    pane.querySelector('#sv-mm')?.addEventListener('click', () => step(-fps));
+    pane.querySelector('#sv-m')?.addEventListener ('click', () => step(-1));
+    pane.querySelector('#sv-p')?.addEventListener ('click', () => step(1));
+    pane.querySelector('#sv-pp')?.addEventListener('click', () => step(fps));
+
+    // Mark: save current video time as the lap-1-start moment
+    pane.querySelector('#sv-mark')?.addEventListener('click', async () => {
+      const markT  = video.currentTime;
+      // offset = video time at which lap 1 starts = we'll use it as is
+      // The export pipeline subtracts this from the video so it starts at the mark
+      const offset = markT;
+      s.sync_offset = offset;
+      if (offInp) offInp.value = offset.toFixed(3);
+      if (markEl) markEl.textContent = `Marked at ${fmtVTime(markT)} → offset ${offset.toFixed(3)}s`;
+      await saveOffset(s);
+      // Update display in left panel and info card
+      renderLeft();
+      const dispEl = pane.querySelector('#dr-off-display');
+      if (dispEl) { dispEl.textContent = offset.toFixed(3)+'s ✓'; dispEl.className = 'dr-val'; }
+    });
+
+    // Manual offset save
+    pane.querySelector('#sv-save')?.addEventListener('click', async () => {
+      const val = parseFloat(offInp?.value ?? '') || 0;
+      s.sync_offset = val;
+      await saveOffset(s);
+      if (markEl) markEl.textContent = `Offset ${val.toFixed(3)}s saved ✓`;
+      renderLeft();
+      const dispEl = pane.querySelector('#dr-off-display');
+      if (dispEl) { dispEl.textContent = val.toFixed(3)+'s ✓'; dispEl.className = 'dr-val'; }
+    });
+  }
+
+  async function saveOffset(s) {
+    const offsets = { ...(_config?.offsets || {}), [s.csv_path]: s.sync_offset };
+    _config = { ..._config, offsets };
+    await API.saveConfig({ offsets });
+  }
+
+  // ── Staging ───────────────────────────────────────────────────────────────────
+
+  function makeStagedItem(session, lap) {
     return {
       csv_path:    session.csv_path,
       lap_idx:     lap.lap_idx,
@@ -280,246 +451,157 @@
     if (idx >= 0) {
       _staged.splice(idx, 1);
     } else {
-      const laps = _lapDetails[session.csv_path] || [];
-      const lap  = laps.find(l => l.lap_idx === lapIdx);
-      if (lap) _staged.push(buildStagedItem(session, lap));
+      const lap = (_lapDetails[session.csv_path]||[]).find(l => l.lap_idx === lapIdx);
+      if (lap) _staged.push(makeStagedItem(session, lap));
     }
   }
 
-  function pushStagedToExport(csvPath, container) {
-    const toAdd  = _staged.filter(x => x.csv_path === csvPath);
-    if (toAdd.length === 0) {
-      // If nothing staged for this session, add best lap automatically
-      const laps = _lapDetails[csvPath] || [];
-      const best = laps.find(l => l.is_best) || laps[0];
-      if (best) {
-        const s = _sessions.find(s => s.csv_path === csvPath);
-        if (s) toAdd.push(buildStagedItem(s, best));
-      }
-    }
-    if (toAdd.length === 0) return;
+  // ── Footer ────────────────────────────────────────────────────────────────────
 
-    const existing = State.get('selectedItems') || [];
-    const merged   = [...existing];
-    for (const item of toAdd) {
-      if (!merged.some(e => e.csv_path === item.csv_path && e.lap_idx === item.lap_idx)) {
-        merged.push(item);
-      }
-    }
-    State.set('selectedItems', merged);
-
-    // Clear staging for this session
-    _staged = _staged.filter(x => x.csv_path !== csvPath);
-    refreshLapSubrow({ csv_path: csvPath, ..._sessions.find(s => s.csv_path === csvPath) }, container);
-    refreshSessionRow(_sessions.find(s => s.csv_path === csvPath), container);
-    refreshFooter(container);
-
-    // Brief confirmation
-    const footer = container.querySelector('#data-footer');
-    if (footer) {
-      const prev = footer.innerHTML;
-      footer.innerHTML = `<span class="ok-flash">✓ ${toAdd.length} lap${toAdd.length !== 1 ? 's' : ''} added to export queue</span>`;
-      setTimeout(() => refreshFooter(container), 1800);
-    }
-  }
-
-  // ── Expand / collapse ──────────────────────────────────────────────────────────
-
-  async function toggleExpand(session, container) {
-    const wasOpen = _expanded === session.csv_path;
-    _expanded = wasOpen ? null : session.csv_path;
-
-    renderTable(container);
-
-    if (!wasOpen && !_lapDetails[session.csv_path] && !_loading.has(session.csv_path)) {
-      await loadLaps(session, container);
-    }
-  }
-
-  async function loadLaps(session, container) {
-    _loading.add(session.csv_path);
-    refreshLapSubrow(session, container);
-
-    try {
-      const laps = await API.getLaps(session.csv_path);
-      _lapDetails[session.csv_path] = laps;
-      if (laps.length > 0) {
-        const best = laps.filter(l => l.duration != null)
-                         .reduce((b, l) => (l.duration < b ? l.duration : b), Infinity);
-        _lapMeta[session.csv_path] = {
-          count: laps.length,
-          best:  isFinite(best) ? best : null,
-        };
-      }
-    } catch (_) {
-      _lapDetails[session.csv_path] = [];
-    }
-
-    _loading.delete(session.csv_path);
-    // Refresh both the session row (to show count/best) and the lap tray
-    refreshLapSubrow(session, container);
-    refreshSessionRow(session, container);
-  }
-
-  // ── Partial DOM refreshes (avoid full redraw) ──────────────────────────────────
-
-  function _findRow(container, attr, value) {
-    // Use a loop instead of CSS.escape — Windows paths contain characters
-    // (backslash, colon) that are tricky to escape for CSS attribute selectors.
-    const rows = container.querySelectorAll(`tr[${attr}]`);
-    for (const row of rows) {
-      if (row.dataset[_camel(attr)] === value) return row;
-    }
-    return null;
-  }
-
-  function _camel(attrName) {
-    // 'data-csv-path' → 'csvPath'  (matches element.dataset key)
-    return attrName.replace(/^data-/, '').replace(/-([a-z])/g, (_, c) => c.toUpperCase());
-  }
-
-  function refreshSessionRow(session, container) {
-    if (!session) return;
-    const old = _findRow(container, 'data-csv-path', session.csv_path);
-    if (old) old.replaceWith(buildSessionRow(session, container));
-  }
-
-  function refreshLapSubrow(session, container) {
-    if (!session) return;
-    const old = _findRow(container, 'data-lap-row', session.csv_path);
-    if (old) old.replaceWith(buildLapSubrow(session, container));
-  }
-
-  function refreshFooter(container) {
-    const footer = container.querySelector('#data-footer');
+  function refreshFooter() {
+    const footer = _container?.querySelector('#data-footer');
     if (!footer) return;
     const n      = _staged.length;
-    const queued = (State.get('selectedItems') || []).length;
-
+    const queued = (State.get('selectedItems')||[]).length;
     if (n === 0) {
       footer.innerHTML = `
-        <span class="footer-hint">Click laps to stage them, then <strong>+ Add to Export</strong></span>
-        ${queued > 0 ? `<span class="badge badge-ok">${queued} in export queue</span>` : ''}`;
+        <span class="footer-hint">Select a session, pick laps, click <strong>+ Add to Export</strong></span>
+        ${queued>0 ? `<span class="badge badge-ok">${queued} in export queue</span>` : ''}`;
     } else {
       footer.innerHTML = `
-        <span class="footer-hint"><strong>${n}</strong> lap${n !== 1 ? 's' : ''} staged</span>
-        <button class="btn btn-secondary btn-sm" id="footer-clear">Clear</button>
-        <button class="btn btn-accent" id="footer-add">+ Add to Export</button>
-        ${queued > 0 ? `<span class="badge badge-ok">${queued} in queue</span>` : ''}`;
-
-      footer.querySelector('#footer-clear')?.addEventListener('click', () => {
+        <span class="footer-hint"><strong>${n}</strong> lap${n!==1?'s':''} staged</span>
+        <button class="btn btn-secondary btn-sm" id="ftr-clear">Clear</button>
+        <button class="btn btn-accent" id="ftr-add">+ Add to Export</button>
+        ${queued>0 ? `<span class="badge badge-ok">${queued} in queue</span>` : ''}`;
+      footer.querySelector('#ftr-clear')?.addEventListener('click', () => {
         _staged = [];
-        renderTable(container);
-        refreshFooter(container);
+        refreshFooter();
+        const pane = _container?.querySelector('#data-right');
+        const s    = _sessions.find(x => x.csv_path === _selCsv);
+        if (s && pane) {
+          const lapsEl = pane.querySelector('#dr-laps');
+          if (lapsEl) lapsEl.innerHTML = renderLapChips(s);
+          wireLapChips(s, pane);
+        }
       });
-
-      footer.querySelector('#footer-add')?.addEventListener('click', () => {
+      footer.querySelector('#ftr-add')?.addEventListener('click', () => {
         const existing = State.get('selectedItems') || [];
         const merged   = [...existing];
         for (const item of _staged) {
-          if (!merged.some(e => e.csv_path === item.csv_path && e.lap_idx === item.lap_idx)) {
+          if (!merged.some(e => e.csv_path === item.csv_path && e.lap_idx === item.lap_idx))
             merged.push(item);
-          }
         }
         State.set('selectedItems', merged);
         _staged = [];
-        renderTable(container);
-        refreshFooter(container);
+        refreshFooter();
       });
     }
   }
 
-  // ── Post-scan: populate lap counts/bests in background ────────────────────────
-
-  async function enrichSessionsAsync(sessions, container) {
-    // Load laps for all sessions concurrently in small batches
-    const BATCH = 4;
-    for (let i = 0; i < sessions.length; i += BATCH) {
-      const batch = sessions.slice(i, i + BATCH);
-      await Promise.all(batch.map(async s => {
-        if (_lapMeta[s.csv_path]) return;
-        try {
-          _loading.add(s.csv_path);
-          const laps = await API.getLaps(s.csv_path);
-          _lapDetails[s.csv_path] = laps;
-          if (laps.length > 0) {
-            const bestDur = laps.filter(l => l.duration != null)
-                               .reduce((b, l) => (l.duration < b ? l.duration : b), Infinity);
-            _lapMeta[s.csv_path] = {
-              count: laps.length,
-              best:  isFinite(bestDur) ? bestDur : null,
-            };
-          }
-        } catch (_) {}
-        _loading.delete(s.csv_path);
-      }));
-      // Refresh visible rows after each batch
-      renderTable(container);
-    }
+  function flashFooter(msg) {
+    const footer = _container?.querySelector('#data-footer');
+    if (!footer) return;
+    const prev = footer.innerHTML;
+    footer.innerHTML = `<span class="ok-flash">${esc(msg)}</span>`;
+    setTimeout(() => refreshFooter(), 1800);
   }
 
-  // ── Scan ───────────────────────────────────────────────────────────────────────
+  // ── Lap loading ───────────────────────────────────────────────────────────────
 
-  async function doScan(container) {
+  async function loadLaps(session) {
+    if (_lapDetails[session.csv_path]) { renderRight(); return; }
+    try {
+      const laps = await API.getLaps(session.csv_path);
+      _lapDetails[session.csv_path] = laps;
+    } catch (_) {
+      _lapDetails[session.csv_path] = [];
+    }
+    if (_selCsv === session.csv_path) renderRight();
+  }
+
+  // ── Meta enrichment (track, laps, best) ──────────────────────────────────────
+
+  async function enrichMeta(sessions) {
+    // Queue sessions that don't have meta yet
+    for (const s of sessions) {
+      if (!_meta[s.csv_path]) _metaQueue.push(s);
+    }
+    if (_metaBusy) return;
+    _metaBusy = true;
+
+    while (_metaQueue.length > 0) {
+      const batch = _metaQueue.splice(0, 6);
+      await Promise.all(batch.map(async s => {
+        try {
+          const m = await API.getSessionMeta(s.csv_path);
+          _meta[s.csv_path] = m;
+          // Also mirror sync_offset from config
+          if (_config?.offsets?.[s.csv_path] != null)
+            s.sync_offset = _config.offsets[s.csv_path];
+        } catch (_) {}
+      }));
+      recomputeDayBest();
+      renderLeft();
+    }
+    _metaBusy = false;
+  }
+
+  // ── Scan ──────────────────────────────────────────────────────────────────────
+
+  function setStatus(msg) {
+    _statusMsg = msg;
+    const el = _container?.querySelector('#scan-status');
+    if (el) el.textContent = msg;
+  }
+
+  async function doScan(auto = false) {
     if (_scanning) return;
     _config = _config || await API.getConfig();
     const paths = _config?.all_telemetry_paths || [];
-
-    if (paths.length === 0) {
-      setStatus(container, 'No telemetry folders configured — go to Settings first.');
+    if (!paths.length) {
+      setStatus('No telemetry folders configured — go to Settings first.');
       return;
     }
 
     _scanning = true;
-    _lapMeta  = {};
-    _lapDetails = {};
-    setStatus(container, 'Scanning…');
-    container.querySelector('#scan-btn')?.setAttribute('disabled', '');
+    setStatus(auto ? 'Auto-scanning…' : 'Scanning…');
+    _container?.querySelector('#scan-btn')?.setAttribute('disabled', '');
 
     try {
       const all = [];
       for (const p of paths) {
-        const results = await API.scanSessions(p);
-        all.push(...results);
+        const r = await API.scanSessions(p);
+        all.push(...r);
       }
       _sessions = all;
-      _expanded = null;
-      _staged   = [];
-
-      renderTable(container);
-      _lastScanStatus = `${_sessions.length} session${_sessions.length !== 1 ? 's' : ''} found — loading lap details…`;
-      setStatus(container, _lastScanStatus);
-
-      // Populate laps/best in background
-      enrichSessionsAsync(_sessions, container).then(() => {
-        _lastScanStatus = `${_sessions.length} session${_sessions.length !== 1 ? 's' : ''} — ready.`;
-        setStatus(container, _lastScanStatus);
-      });
-
+      // Apply stored offsets
+      for (const s of _sessions) {
+        if (_config?.offsets?.[s.csv_path] != null)
+          s.sync_offset = _config.offsets[s.csv_path];
+      }
+      _metaQueue = []; // reset queue so new sessions get fetched
+      renderLeft();
+      setStatus(`${_sessions.length} session${_sessions.length!==1?'s':''} found.`);
+      enrichMeta(_sessions);
     } catch (e) {
-      _lastScanStatus = 'Scan failed: ' + e;
-      setStatus(container, _lastScanStatus);
+      setStatus('Scan failed: ' + e);
     }
 
     _scanning = false;
-    container.querySelector('#scan-btn')?.removeAttribute('disabled');
-  }
-
-  function setStatus(container, msg) {
-    _lastScanStatus = msg;
-    const el = container.querySelector('#scan-status');
-    if (el) el.textContent = msg;
+    _container?.querySelector('#scan-btn')?.removeAttribute('disabled');
   }
 
   // ── Mount / Unmount ────────────────────────────────────────────────────────────
 
   async function mount(container) {
+    _container = container;
+
     container.innerHTML = `
 <div class="page data-page">
   <div class="toolbar">
     <div class="toolbar-left">
       <span class="page-title">Data</span>
-      <span class="status-text" id="scan-status">${esc(_lastScanStatus)}</span>
+      <span class="status-text" id="scan-status">${esc(_statusMsg||'Loading…')}</span>
     </div>
     <div class="toolbar-right">
       <button class="btn btn-secondary" id="scan-btn">↺ Scan</button>
@@ -527,68 +609,77 @@
   </div>
   <div class="page-divider"></div>
 
-  <div class="data-table-wrap">
-    <table class="data-table">
-      <colgroup>
-        <col style="width:24px">
-        <col style="width:170px">
-        <col>
-        <col style="width:90px">
-        <col style="width:52px">
-        <col style="width:80px">
-        <col style="width:90px">
-      </colgroup>
-      <thead>
-        <tr>
-          <th></th>
-          <th>Date</th>
-          <th>File</th>
-          <th>Source</th>
-          <th>Laps</th>
-          <th>Best</th>
-          <th>Status</th>
-        </tr>
-      </thead>
-      <tbody id="sessions-tbody"></tbody>
-    </table>
+  <div class="data-split">
+
+    <!-- Left: session list -->
+    <div class="data-left-panel">
+      <div class="dl-header">
+        <span class="dl-col dl-col-icon"></span>
+        <span class="dl-col dl-col-time">Time</span>
+        <span class="dl-col dl-col-track">Track</span>
+        <span class="dl-col dl-col-src">Source</span>
+        <span class="dl-col dl-col-num">Laps</span>
+        <span class="dl-col dl-col-num">Best</span>
+      </div>
+      <div class="dl-scroll" id="data-left"></div>
+    </div>
+
+    <!-- Right: detail + sync -->
+    <div class="data-right-panel" id="data-right">
+      <div class="dr-empty">Select a session to see details and align video.</div>
+    </div>
+
   </div>
 
   <div class="data-footer" id="data-footer">
-    <span class="footer-hint">Click laps to stage them, then <strong>+ Add to Export</strong></span>
+    <span class="footer-hint">Select a session, pick laps, click <strong>+ Add to Export</strong></span>
   </div>
 </div>`;
 
-    container.querySelector('#scan-btn').addEventListener('click', () => doScan(container));
+    container.querySelector('#scan-btn').addEventListener('click', () => doScan(false));
 
-    // If we already have sessions from a previous scan, show them immediately
+    // If we already have sessions from this session's scan, restore immediately
     if (_sessions.length > 0) {
-      renderTable(container);
-      refreshFooter(container);
+      renderLeft();
+      if (_selCsv) renderRight();
+      refreshFooter();
+      setStatus(_statusMsg);
       return;
     }
 
-    // First visit: try cache, then show ready state
+    // First visit: load config + cache, then auto-scan
     _config = await API.getConfig();
+
+    // Apply stored offsets to sessions immediately
+    const applyOffsets = () => {
+      for (const s of _sessions) {
+        if (_config?.offsets?.[s.csv_path] != null)
+          s.sync_offset = _config.offsets[s.csv_path];
+      }
+    };
+
     try {
       const cached = await API.scanSessions('__cache__');
       if (cached && cached.length > 0) {
         _sessions = cached;
-        renderTable(container);
-        // Enrich from cache too
-        enrichSessionsAsync(_sessions, container).then(() => {
-          setStatus(container, `${_sessions.length} sessions (cached) — click Scan to refresh.`);
-        });
-        setStatus(container, `${_sessions.length} sessions (cached) — loading details…`);
+        applyOffsets();
+        renderLeft();
+        setStatus(`${_sessions.length} cached sessions — rescanning in background…`);
+        enrichMeta(_sessions);
+        // Auto-scan in background
+        setTimeout(() => doScan(true), 200);
         return;
       }
     } catch (_) {}
 
-    setStatus(container, 'Ready — click Scan to find sessions.');
+    // No cache: auto-scan immediately
+    setStatus('Scanning…');
+    doScan(true);
   }
 
   function unmount() {
-    // Module state (_sessions, _lapMeta, etc.) is intentionally preserved
-    // so navigating away and back doesn't lose the scan results.
+    _container = null;
+    // Module state preserved intentionally
   }
 
   Router.register('data', { mount, unmount });
