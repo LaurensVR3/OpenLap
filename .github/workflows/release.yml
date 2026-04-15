@@ -1,0 +1,50 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install pywebview opencv-python pillow numpy pandas matplotlib
+          pip install playwright pyinstaller
+        shell: pwsh
+
+      - name: Install ffmpeg
+        run: |
+          choco install ffmpeg -y --no-progress
+          # Copy binaries next to spec so PyInstaller can bundle them
+          $ffmpeg  = (Get-Command ffmpeg).Source
+          $ffprobe = (Get-Command ffprobe).Source
+          Copy-Item $ffmpeg  -Destination "${{ github.workspace }}\ffmpeg.exe"
+          Copy-Item $ffprobe -Destination "${{ github.workspace }}\ffprobe.exe"
+        shell: pwsh
+
+      - name: Build exe
+        run: pyinstaller OpenLap.spec --clean -y
+        shell: pwsh
+
+      - name: Zip release
+        run: Compress-Archive -Path dist\OpenLap\* -DestinationPath OpenLap-${{ github.ref_name }}-windows.zip
+        shell: pwsh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: OpenLap-${{ github.ref_name }}-windows.zip
+          generate_release_notes: true

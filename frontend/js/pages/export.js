@@ -32,6 +32,10 @@
     _container = container;
     // Do NOT reset _logLines or _exporting — they persist while navigating away
 
+    // Always (re-)derive selectedItems from previewSession on mount
+    const initPs = State.get('previewSession');
+    State.set('selectedItems', initPs ? [_itemFromPreview(initPs)] : []);
+
     const cfg = State.get('config') || {};
 
     const items = State.get('selectedItems') || [];
@@ -61,6 +65,11 @@
     _unlistenFns.push(State.on('selectedItems', newItems => {
       _refreshItemList(newItems);
       _updateStartBtn(newItems);
+    }));
+
+    // Keep selectedItems in sync when previewSession changes while on this page
+    _unlistenFns.push(State.on('previewSession', ps => {
+      if (ps) State.set('selectedItems', [_itemFromPreview(ps)]);
     }));
 
     // Listen for push events from Python
@@ -123,8 +132,14 @@
             <label>Clip end (s)</label>
             <input type="number" id="exp-clip-end" class="input-field input-narrow" value="0" min="0" step="0.1">
           </div>
-          <div class="form-row" style="margin-top:6px;font-size:10px;color:var(--text3);">
-            Scope is set on the Overlay tab.
+          <div class="form-row">
+            <label>Scope</label>
+            <select id="exp-scope" class="input-field">
+              <option value="selected_lap">Selected Lap</option>
+              <option value="fastest_lap">Fastest Lap</option>
+              <option value="all_laps">All Laps</option>
+              <option value="full">Full Session</option>
+            </select>
           </div>
         </div>
       </div>
@@ -162,13 +177,13 @@
 
     // Show clip rows only when scope=clip
     const _syncClipRows = () => {
-      const scope = State.get('exportScope') || 'selected_lap';
+      const scope = $('exp-scope')?.value || 'selected_lap';
       _container.querySelectorAll('.exp-clip-row').forEach(r => {
         r.classList.toggle('hidden', scope !== 'clip');
       });
     };
     _syncClipRows();
-    State.on('exportScope', _syncClipRows);
+    $('exp-scope').addEventListener('change', _syncClipRows);
 
     // Start
     $('exp-start-btn').addEventListener('click', () => _startExport());
@@ -263,7 +278,7 @@
 
     const params = {
       items:        items,
-      scope:        State.get('exportScope') || 'selected_lap',
+      scope:        $('exp-scope')?.value    || 'selected_lap',
       clip_start_s: parseFloat($('exp-clip-start')?.value) || 0,
       clip_end_s:   parseFloat($('exp-clip-end')?.value)   || 0,
       padding:      parseFloat($('exp-padding').value)    || 5.0,

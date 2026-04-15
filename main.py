@@ -62,7 +62,8 @@ def main():
     api.set_window(window)
 
     # Use GUI thread blocking call — webview.start() must be on main thread.
-    webview.start(debug=True)
+    # Disable DevTools in packaged builds; keep enabled when running from source.
+    webview.start(debug=not getattr(sys, 'frozen', False))
 
 
 if __name__ == '__main__':

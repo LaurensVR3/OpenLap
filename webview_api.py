@@ -471,6 +471,71 @@ class WebviewAPI:
             done_cb(False, str(e))
 
     # ── RaceBox cloud ─────────────────────────────────────────────────────────
+    def racebox_playwright_status(self) -> dict:
+        """Return whether playwright and Chromium are ready to use."""
+        try:
+            from playwright._impl._driver import compute_driver_executable
+            node_exe, cli_js = compute_driver_executable()
+            import os
+            playwright_ok = os.path.isfile(str(node_exe))
+        except Exception:
+            return {'playwright': False, 'chromium': False}
+
+        # Check if Chromium exists in PLAYWRIGHT_BROWSERS_PATH (same location
+        # the runtime hook and the driver will use at runtime).
+        import glob as _glob, os
+        local_app = os.environ.get('LOCALAPPDATA', os.path.expanduser('~'))
+        browsers_path = os.environ.get(
+            'PLAYWRIGHT_BROWSERS_PATH',
+            os.path.join(local_app, 'ms-playwright'),
+        )
+        chromium_dirs = _glob.glob(os.path.join(browsers_path, 'chromium*'))
+        return {'playwright': playwright_ok, 'chromium': bool(chromium_dirs)}
+
+    def install_playwright_chromium(self) -> None:
+        """Download Chromium for Playwright in the background.
+        Pushes events: racebox_setup_log {message}, racebox_setup_done {ok, message}."""
+        import threading
+
+        def _run():
+            try:
+                from playwright._impl._driver import compute_driver_executable
+                node_exe, cli_js = compute_driver_executable()
+                import subprocess, os
+                self._push('racebox_setup_log', message='Downloading Chromium (~130 MB, one-time)…')
+                env = os.environ.copy()
+                proc = subprocess.Popen(
+                    [str(node_exe), str(cli_js), 'install', 'chromium'],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, env=env,
+                )
+                # Read char-by-char so \r-terminated progress lines are captured
+                buf = ''
+                while True:
+                    ch = proc.stdout.read(1)
+                    if not ch:
+                        break
+                    if ch in ('\n', '\r'):
+                        line = buf.strip()
+                        if line:
+                            self._push('racebox_setup_log', message=line)
+                        buf = ''
+                    else:
+                        buf += ch
+                if buf.strip():
+                    self._push('racebox_setup_log', message=buf.strip())
+                proc.wait()
+                if proc.returncode == 0:
+                    self._push('racebox_setup_done', ok=True,
+                               message='Chromium installed. You can now use RaceBox cloud download.')
+                else:
+                    self._push('racebox_setup_done', ok=False,
+                               message=f'Install failed (exit {proc.returncode}).')
+            except Exception as e:
+                self._push('racebox_setup_done', ok=False, message=f'Error: {e}')
+
+        threading.Thread(target=_run, daemon=True).start()
+
     def racebox_login(self, email: str, password: str) -> dict:
         """Check whether saved RaceBox auth is still valid (headless).
         If no saved auth exists, returns a prompt to use Download Sessions instead.
@@ -558,11 +623,61 @@ class WebviewAPI:
     # ── AIM DLL status ────────────────────────────────────────────────────────
     def aim_dll_status(self) -> dict:
         """Return whether the AIM MatLabXRK DLL is present."""
-        import glob as _glob
-        import sys, os
-        base = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-        dlls = _glob.glob(os.path.join(base, 'MatLabXRK*.dll'))
-        return {'found': bool(dlls), 'path': dlls[0] if dlls else ''}
+        import glob as _glob, sys, os
+        from pathlib import Path
+        # Persistent user directory is checked first so the DLL survives app rebuilds.
+        search_dirs = [str(Path.home() / '.openlap')]
+        if getattr(sys, 'frozen', False):
+            search_dirs += [sys._MEIPASS, os.path.dirname(sys.executable)]
+        else:
+            search_dirs.append(os.path.dirname(os.path.abspath(__file__)))
+        for base in search_dirs:
+            dlls = _glob.glob(os.path.join(base, 'MatLabXRK*.dll'))
+            if dlls:
+                return {'found': True, 'path': dlls[0]}
+        return {'found': False, 'path': ''}
+
+    def download_aim_dll(self) -> dict:
+        """Download the AIM MatLabXRK DLL from aim-sportline.com in a background thread.
+        Progress is pushed as openlap events: aim_dll_progress {value, message}, aim_dll_done {ok, message}."""
+        import threading
+
+        def _run():
+            try:
+                import sys, os
+                from xrk_to_csv import _download_dll_urllib, _install_dll_from_zip, DLL_ZIP_URL
+                self._push('aim_dll_progress', value=10, message='Connecting to aim-sportline.com…')
+                data = _download_dll_urllib()
+                if not data:
+                    self._push('aim_dll_done', ok=False, message='Download failed — could not reach aim-sportline.com.')
+                    return
+                self._push('aim_dll_progress', value=70, message='Extracting DLL…')
+                from pathlib import Path as _Path
+                install_dir = str(_Path.home() / '.openlap')
+                os.makedirs(install_dir, exist_ok=True)
+                import io, zipfile, glob as _glob
+                with zipfile.ZipFile(io.BytesIO(data)) as zf:
+                    for entry in zf.namelist():
+                        if not entry.lower().endswith('.dll'):
+                            continue
+                        local_name = os.path.basename(entry)
+                        if not local_name:
+                            continue
+                        local_path = os.path.join(install_dir, local_name)
+                        if os.path.isfile(local_path):
+                            continue
+                        with zf.open(entry) as src, open(local_path, 'wb') as dst:
+                            dst.write(src.read())
+                dlls = _glob.glob(os.path.join(install_dir, 'MatLabXRK*.dll'))
+                if dlls:
+                    self._push('aim_dll_progress', value=100, message='DLL installed.')
+                    self._push('aim_dll_done', ok=True, message='MatLabXRK DLL installed — restart OpenLap to use AIM XRK conversion.')
+                else:
+                    self._push('aim_dll_done', ok=False, message='Zip downloaded but MatLabXRK DLL not found inside.')
+            except Exception as e:
+                self._push('aim_dll_done', ok=False, message=f'Error: {e}')
+
+        threading.Thread(target=_run, daemon=True).start()
 
     # ── AIM XRK conversion ────────────────────────────────────────────────────
     def convert_xrk_session(self, csv_path: str) -> dict:
@@ -580,11 +695,18 @@ class WebviewAPI:
             return {'ok': False, 'error': 'XRK source file not found'}
         try:
             import xrk_to_csv as _xrk
-            import glob as _glob
-            import sys
-            base = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-            dlls = _glob.glob(os.path.join(base, 'MatLabXRK*.dll'))
-            dll_path = dlls[0] if dlls else None
+            import glob as _glob, sys
+            from pathlib import Path
+            search_dirs = [str(Path.home() / '.openlap')]
+            if getattr(sys, 'frozen', False):
+                search_dirs += [sys._MEIPASS, os.path.dirname(sys.executable)]
+            else:
+                search_dirs.append(os.path.dirname(os.path.abspath(__file__)))
+            dll_path = next(
+                (d[0] for base in search_dirs
+                 for d in [_glob.glob(os.path.join(base, 'MatLabXRK*.dll'))] if d),
+                None
+            )
             _xrk.xrk_to_csv(actual_xrk, csv_path, dll_path)
             return {'ok': True}
         except Exception as e:

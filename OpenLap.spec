@@ -13,6 +13,7 @@
 
 import os, sys, shutil
 from pathlib import Path
+import playwright as _pw_mod
 
 HERE = Path(SPECPATH)
 
@@ -36,6 +37,9 @@ datas = [
     (str(HERE / 'frontend'), 'frontend'),
     # Style plugins (matplotlib gauge renderers for video export)
     (str(HERE / 'styles'), 'styles'),
+    # Playwright — bundle the entire package including its Node.js driver
+    # so RaceBox cloud download works without any extra installs.
+    (os.path.dirname(_pw_mod.__file__), 'playwright'),
 ]
 
 # AIM / DLL files present in the project root
@@ -103,6 +107,14 @@ hidden_imports = [
     'xml.etree.ElementTree',
     'json',
     'logging.handlers',
+    # Playwright (RaceBox cloud download)
+    'playwright',
+    'playwright.sync_api',
+    'playwright._impl._driver',
+    'playwright._impl._transport',
+    'playwright._impl._connection',
+    'playwright._impl._browser_type',
+    'racebox_downloader',
 ]
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
@@ -114,7 +126,7 @@ a = Analysis(
     hiddenimports=hidden_imports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[],
+    runtime_hooks=['rthooks/pyi_rth_path.py'],
     excludes=[
         # Exclude heavy packages we do not need at runtime
         'tkinter',
@@ -124,7 +136,6 @@ a = Analysis(
         'IPython',
         'notebook',
         'pytest',
-        'playwright',      # only used for RaceBox downloader, optional
     ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,

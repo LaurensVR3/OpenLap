@@ -3,7 +3,7 @@ import pytest
 from dataclasses import asdict
 
 from app_config import (
-    AppConfig, OverlayLayout, OverlayElement, GaugeConfig,
+    AppConfig, OverlayLayout,
     overlay_from_dict, _from_dict,
 )
 
@@ -15,9 +15,9 @@ def test_default_telemetry_path():
 
 
 def test_default_map_style():
-    map_gauge = next((g for g in AppConfig().overlay.gauges if g.channel == 'map'), None)
+    map_gauge = next((g for g in AppConfig().overlay.gauges if g['channel'] == 'map'), None)
     assert map_gauge is not None
-    assert map_gauge.style == 'Circuit'
+    assert map_gauge['style'] == 'Circuit'
 
 
 def test_default_theme():
@@ -59,11 +59,11 @@ def test_offsets_preserved(tmp_config_dir):
 
 def test_gauges_preserved_after_round_trip(tmp_config_dir):
     cfg = AppConfig()
-    cfg.overlay.gauges[0].channel = 'rpm'
+    cfg.overlay.gauges[0]['channel'] = 'rpm'
     cfg.save()
 
     loaded = AppConfig.load()
-    assert loaded.overlay.gauges[0].channel == 'rpm'
+    assert loaded.overlay.gauges[0]['channel'] == 'rpm'
 
 
 def test_presets_preserved(tmp_config_dir):
@@ -103,18 +103,18 @@ def test_overlay_from_dict_round_trip():
     restored   = overlay_from_dict(serialized)
     assert restored.theme == original.theme
     assert len(restored.gauges) == len(original.gauges)
-    orig_map    = next((g for g in original.gauges  if g.channel == 'map'), None)
-    restored_map = next((g for g in restored.gauges if g.channel == 'map'), None)
+    orig_map    = next((g for g in original.gauges  if g['channel'] == 'map'), None)
+    restored_map = next((g for g in restored.gauges if g['channel'] == 'map'), None)
     assert orig_map is not None and restored_map is not None
-    assert restored_map.style == orig_map.style
+    assert restored_map['style'] == orig_map['style']
 
 
 def test_overlay_from_dict_missing_keys():
     layout   = overlay_from_dict({'theme': 'Carbon'})
     assert layout.theme == 'Carbon'
-    map_gauge = next((g for g in layout.gauges if g.channel == 'map'), None)
+    map_gauge = next((g for g in layout.gauges if g['channel'] == 'map'), None)
     assert map_gauge is not None
-    assert map_gauge.style == 'Circuit'  # default
+    assert map_gauge['style'] == 'Circuit'  # default
 
 
 # ── _from_dict ─────────────────────────────────────────────────────────────────

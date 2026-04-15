@@ -49,9 +49,12 @@ const API = (() => {
       save_sessions_cache:      () => null,
       convert_xrk_session:       () => ({ ok: false, error: 'mock' }),
       assign_video:              () => null,
-      aim_dll_status:            () => ({ found: false, path: '' }),
-      download_racebox_sessions: () => null,
-      cancel_racebox_download:   () => null,
+      aim_dll_status:                () => ({ found: false, path: '' }),
+      download_aim_dll:              () => null,
+      download_racebox_sessions:     () => null,
+      cancel_racebox_download:       () => null,
+      racebox_playwright_status:     () => ({ playwright: false, chromium: false }),
+      install_playwright_chromium:   () => null,
     };
     const fn = mocks[method];
     return fn ? fn() : null;
@@ -107,8 +110,11 @@ const API = (() => {
 
     convertXrkSession:        (csvPath)            => call('convert_xrk_session', csvPath),
     assignVideo:              (csvPath, videoPath) => call('assign_video', csvPath, videoPath),
-    aimDllStatus:             ()                   => call('aim_dll_status'),
-    downloadRaceboxSessions:  ()                   => call('download_racebox_sessions'),
-    cancelRaceboxDownload:    ()                   => call('cancel_racebox_download'),
+    aimDllStatus:               ()                   => call('aim_dll_status'),
+    downloadAimDll:             ()                   => call('download_aim_dll'),
+    downloadRaceboxSessions:    ()                   => call('download_racebox_sessions'),
+    cancelRaceboxDownload:      ()                   => call('cancel_racebox_download'),
+    raceboxPlaywrightStatus:    ()                   => call('racebox_playwright_status'),
+    installPlaywrightChromium:  ()                   => call('install_playwright_chromium'),
   };
 })();

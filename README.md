@@ -6,6 +6,22 @@
 
 ---
 
+## Quick Start (Windows — no technical knowledge needed)
+
+1. **Download** the latest release: **[⬇ OpenLap for Windows](https://github.com/LaurensVR3/OpenLap/releases/latest)**
+2. **Unzip** the downloaded `.zip` file anywhere you like (e.g. your Desktop or `C:\Tools\OpenLap`)
+3. **Run** `OpenLap.exe` — Windows may show a SmartScreen warning the first time; click **More info → Run anyway** (the app is open source and safe)
+4. **Settings tab** — set the folders where your telemetry files live (RaceBox CSV, AIM `.xrk`, MoTeC `.ld`, or GPX) and your video folder
+   - *AIM users:* click **Download DLL** the first time — this fetches the conversion library automatically
+   - *RaceBox cloud users:* click **Download Login Component**, wait for it to finish, then **Check Auth**
+5. **Data tab** — sessions are scanned automatically; click **▶** next to a session to open it in the editor
+6. **Overlay tab** — drag gauges onto the video preview, pick a theme, adjust styles
+7. **Export tab** — choose quality and encoding, then **Start Export** — finished videos are saved to your Export Folder
+
+> **Important:** keep `OpenLap.exe` and the `_internal` folder in the same directory — they must stay together.
+
+---
+
 ## Preview
 
 **Sample output video** — Karting Haute Picardie Arvillers:
@@ -75,13 +91,7 @@
 
 ---
 
-## Installation
-
-### Option A — Pre-built Windows executable
-
-Download the latest release from the [Releases](../../releases) page and run `OpenLap.exe`. No Python or dependencies required.
-
-### Option B — Run from source
+## Run from source
 
 **Requirements**
 

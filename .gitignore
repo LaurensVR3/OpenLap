@@ -5,6 +5,10 @@ racebox_auth.json
 *.dll
 .claude/
 
+# FFmpeg binaries (copied locally for bundling — not committed)
+ffmpeg.exe
+ffprobe.exe
+
 # Build / distribution
 build/
 dist/

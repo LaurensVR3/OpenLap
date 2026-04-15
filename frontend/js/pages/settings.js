@@ -61,12 +61,26 @@
     <!-- RaceBox cloud -->
     <section class="settings-section">
       <div class="section-title">RaceBox Cloud</div>
-      <p class="section-hint">Downloads sessions directly from racebox.pro. On first use a browser opens for login — auth is saved automatically for future downloads.</p>
-      <div class="form-row">
-        <button class="btn btn-secondary" id="rb-login-btn">Check Auth</button>
-        <button class="btn btn-accent btn-sm" id="rb-download-btn">⬇ Download New Sessions</button>
-        <button class="btn btn-secondary btn-sm hidden" id="rb-cancel-btn">Cancel</button>
-        <span id="rb-login-msg" class="status-msg"></span>
+      <p class="section-hint">Downloads sessions directly from racebox.pro. On first use a small login window opens — auth is saved for future downloads.</p>
+      <div id="rb-setup-wrap">
+        <div id="rb-pw-status" class="form-row" style="font-size:10px;color:var(--text3)">Checking…</div>
+        <div class="form-row" id="rb-install-row">
+          <button class="btn btn-secondary" id="rb-install-btn">Download Login Component</button>
+          <span id="rb-install-msg" class="status-msg"></span>
+        </div>
+        <div id="rb-setup-log-wrap" class="hidden" style="margin-top:6px;">
+          <textarea id="rb-setup-log" class="log-area" readonly
+                    style="height:80px;font-size:10px;"
+                    placeholder="Install log…"></textarea>
+        </div>
+      </div>
+      <div id="rb-ready-wrap" class="hidden">
+        <div class="form-row">
+          <button class="btn btn-secondary" id="rb-login-btn">Check Auth</button>
+          <button class="btn btn-accent btn-sm" id="rb-download-btn">⬇ Download New Sessions</button>
+          <button class="btn btn-secondary btn-sm hidden" id="rb-cancel-btn">Cancel</button>
+          <span id="rb-login-msg" class="status-msg"></span>
+        </div>
       </div>
       <div id="rb-log-wrap" class="hidden" style="margin-top:8px;">
         <div class="progress-bar-wrap" style="margin-bottom:6px;">
@@ -81,11 +95,21 @@
       </div>
     </section>
 
+    <!-- AIM Mychron DLL -->
+    <section class="settings-section">
+      <div class="section-title">AIM Mychron</div>
+      <p class="section-hint">AIM .xrk / .xrz / .drk files are converted to CSV automatically on scan. This requires the MatLabXRK DLL provided free by AIM.</p>
+      <div id="aim-dll-status" class="form-row" style="font-size:10px;color:var(--text3)">Checking…</div>
+      <div class="form-row" style="margin-top:6px">
+        <button class="btn btn-secondary" id="aim-dll-btn">Download DLL</button>
+        <span id="aim-dll-msg" class="status-msg"></span>
+      </div>
+    </section>
+
     <!-- Encoder -->
     <section class="settings-section">
       <div class="section-title">Encoder</div>
       <p class="section-hint">OpenLap uses FFmpeg for video processing. These settings apply to every export.</p>
-      <div id="aim-dll-status" class="form-row" style="font-size:10px;color:var(--text3)">Checking AIM DLL…</div>
       <div class="form-row">
         <label>Codec</label>
         <select data-config-key="encoder" class="input-field">
@@ -164,19 +188,83 @@
       });
     });
 
+    // RaceBox playwright/chromium status
+    function _refreshRbStatus() {
+      API.raceboxPlaywrightStatus().then(s => {
+        const statusEl   = $('rb-pw-status');
+        const installRow = $('rb-install-row');
+        const setupWrap  = $('rb-setup-wrap');
+        const readyWrap  = $('rb-ready-wrap');
+        if (!s || !s.playwright) {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--err)">● Browser engine not available in this build.</span>';
+          if (installRow) installRow.classList.add('hidden');
+          return;
+        }
+        if (!s.chromium) {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--warn)">○ Login component not installed — one-time ~130 MB download of Google Chromium (headless, only used to log into racebox.pro).</span>';
+          if (installRow) installRow.classList.remove('hidden');
+          if (setupWrap)  setupWrap.classList.remove('hidden');
+          if (readyWrap)  readyWrap.classList.add('hidden');
+        } else {
+          if (statusEl) statusEl.innerHTML = '<span style="color:var(--ok)">● Login component ready.</span>';
+          if (installRow) installRow.classList.add('hidden');
+          if (setupWrap)  setupWrap.classList.remove('hidden');
+          if (readyWrap)  readyWrap.classList.remove('hidden');
+        }
+      }).catch(() => {});
+    }
+    _refreshRbStatus();
+
+    _unlistenFns.push(API.on('racebox_setup_log', detail => {
+      const wrap = $('rb-setup-log-wrap');
+      const ta   = $('rb-setup-log');
+      if (wrap) wrap.classList.remove('hidden');
+      if (ta)   { ta.value += (detail.message || '') + '\n'; ta.scrollTop = ta.scrollHeight; }
+    }));
+    _unlistenFns.push(API.on('racebox_setup_done', detail => {
+      const ok = detail.ok !== false;
+      _setMsg($('rb-install-msg'), detail.message || '', ok ? 'ok' : 'err');
+      const btn = $('rb-install-btn');
+      if (btn) btn.disabled = false;
+      if (ok) _refreshRbStatus();
+    }));
+
+    $('rb-install-btn').addEventListener('click', () => {
+      const btn = $('rb-install-btn');
+      if (btn) btn.disabled = true;
+      const ta = $('rb-setup-log');
+      if (ta) ta.value = '';
+      const logWrap = $('rb-setup-log-wrap');
+      if (logWrap) logWrap.classList.remove('hidden');
+      _setMsg($('rb-install-msg'), '', 'dim');
+      API.installPlaywrightChromium();
+    });
+
     // RaceBox auth check
     $('rb-login-btn').addEventListener('click', async () => {
+      const btn   = $('rb-login-btn');
       const msgEl = $('rb-login-msg');
-      _setMsg(msgEl, 'Checking…', 'dim');
-      $('rb-login-btn').disabled = true;
+      btn.textContent       = 'Checking…';
+      btn.disabled          = true;
+      btn.style.color       = '';
+      btn.style.borderColor = '';
+      _setMsg(msgEl, '', 'dim');
       try {
         const result = await API.raceboxLogin('', '');
-        _setMsg(msgEl, result?.ok ? '✓ Auth valid.' : (result?.error || 'Not authenticated.'),
-                result?.ok ? 'ok' : 'warn');
+        if (result?.ok) {
+          btn.textContent       = '✓ Auth OK';
+          btn.style.color       = 'var(--ok)';
+          btn.style.borderColor = 'var(--ok)';
+        } else {
+          btn.textContent = 'Check Auth';
+          const notAvail = result?.error?.includes('Playwright') || result?.error?.includes('not available');
+          _setMsg(msgEl, result?.error || 'Not authenticated.', notAvail ? 'dim' : 'warn');
+        }
       } catch (e) {
+        btn.textContent = 'Check Auth';
         _setMsg(msgEl, String(e), 'err');
       } finally {
-        $('rb-login-btn').disabled = false;
+        btn.disabled = false;
       }
     });
 
@@ -281,35 +369,34 @@
       }
     });
 
-    // AIM DLL status
-    API.aimDllStatus().then(r => {
-      const el = $('aim-dll-status');
-      if (!el) return;
-      if (r && r.found) {
-        el.innerHTML = '<span style="color:var(--ok)">● MatLabXRK DLL found — AIM XRK conversion available.</span>';
-      } else {
-        el.innerHTML = '<span style="color:var(--warn)">○ MatLabXRK DLL not found — AIM XRK conversion unavailable. Place the DLL next to OpenLap.exe.</span>';
-      }
-    }).catch(() => {});
-
-    // RaceBox download
-    $('rb-download-btn').addEventListener('click', async () => {
-      const msgEl = $('rb-login-msg');
-      const btn   = $('rb-download-btn');
-      _setMsg(msgEl, 'Downloading…', 'dim');
-      btn.disabled = true;
-      try {
-        const result = await API.downloadRaceboxSessions();
-        if (result && result.ok) {
-          _setMsg(msgEl, result.message || 'Download complete.', 'ok');
+    // AIM DLL status + download
+    function _refreshAimStatus() {
+      API.aimDllStatus().then(r => {
+        const el = $('aim-dll-status');
+        if (!el) return;
+        if (r && r.found) {
+          el.innerHTML = '<span style="color:var(--ok)">● MatLabXRK DLL found — AIM XRK conversion available.</span>';
         } else {
-          _setMsg(msgEl, result?.error || 'Download failed.', 'err');
+          el.innerHTML = '<span style="color:var(--text3)">○ MatLabXRK DLL not found — AIM XRK conversion unavailable.</span>';
         }
-      } catch (e) {
-        _setMsg(msgEl, String(e), 'err');
-      } finally {
-        btn.disabled = false;
-      }
+      }).catch(() => {});
+    }
+    _refreshAimStatus();
+
+    _unlistenFns.push(API.on('aim_dll_progress', detail => {
+      _setMsg($('aim-dll-msg'), detail.message || '', 'dim');
+    }));
+    _unlistenFns.push(API.on('aim_dll_done', detail => {
+      const ok = detail.ok !== false;
+      _setMsg($('aim-dll-msg'), detail.message || '', ok ? 'ok' : 'err');
+      $('aim-dll-btn').disabled = false;
+      if (ok) _refreshAimStatus();
+    }));
+
+    $('aim-dll-btn').addEventListener('click', () => {
+      $('aim-dll-btn').disabled = true;
+      _setMsg($('aim-dll-msg'), 'Downloading…', 'dim');
+      API.downloadAimDll();
     });
 
     // Populate about section
