@@ -16,7 +16,7 @@ from typing import Callable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-from utils import _run
+from utils import _run, _popen
 import cv2
 import numpy as np
 
@@ -145,8 +145,19 @@ class MultiCap:
 
 def mux_audio(raw_video: str, audio_source: str,
                output: str, encoder: str, crf: int = 18,
-               audio_start: float = 0.0) -> None:
-    """Re-encode raw opencv video with hardware encoder + trim audio."""
+               audio_start: float = 0.0,
+               total_s: float = 0.0,
+               prog_start: float = 87.0,
+               prog_end: float = 100.0,
+               progress_cb=None) -> None:
+    """Re-encode raw opencv video with hardware encoder + trim audio.
+
+    When *progress_cb* and *total_s* are provided the function parses ffmpeg's
+    machine-readable progress output and calls progress_cb(pct, msg) as the
+    mux advances, interpolating between prog_start and prog_end.
+    """
+    import threading, subprocess as _sp
+
     # Quality args — nvenc uses -cq (constant quality, like CRF) not -qp (fixed QP)
     if encoder == 'libx264':
         q_arg = ['-crf', str(crf)]
@@ -161,19 +172,52 @@ def mux_audio(raw_video: str, audio_source: str,
 
     # -profile:v main + -g 60: broad player compatibility + regular keyframes
     # -movflags +faststart: moov atom at file start, required for proper seeking
-    cmd = ['ffmpeg', '-y',
-           '-i', raw_video,
-           '-ss', f'{audio_start:.6f}', '-i', audio_source,
-           '-map', '0:v', '-map', '1:a?',
-           '-vf', vf,
-           '-c:v', encoder] + q_arg + [
-           '-profile:v', 'main', '-g', '60',
-           '-c:a', 'aac', '-shortest',
-           '-movflags', '+faststart',
-           output]
-    r = _run(cmd)
-    if r.returncode != 0:
-        raise VideoMuxError(r.stderr.decode(errors='replace')[-600:])
+    base_cmd = ['ffmpeg', '-y', '-hide_banner',
+                '-i', raw_video,
+                '-ss', f'{audio_start:.6f}', '-i', audio_source,
+                '-map', '0:v', '-map', '1:a?',
+                '-vf', vf,
+                '-c:v', encoder] + q_arg + [
+                '-profile:v', 'main', '-g', '60',
+                '-c:a', 'aac', '-shortest',
+                '-movflags', '+faststart']
+
+    if progress_cb and total_s > 0:
+        # Send machine-readable progress to stdout; suppress normal stats on stderr.
+        cmd = base_cmd + ['-progress', 'pipe:1', '-nostats', output]
+        proc = _popen(cmd,
+                      stdout=_sp.PIPE, stderr=_sp.PIPE)
+
+        # Drain stderr in a background thread so it never blocks the process.
+        stderr_buf: list[bytes] = []
+        def _drain():
+            stderr_buf.extend(proc.stderr)
+        t = threading.Thread(target=_drain, daemon=True)
+        t.start()
+
+        pct_range = prog_end - prog_start
+        for raw_line in proc.stdout:
+            line = raw_line.decode(errors='replace').strip()
+            if line.startswith('out_time_ms='):
+                try:
+                    us = int(line.split('=', 1)[1])   # value is microseconds despite the name
+                    elapsed = us / 1_000_000.0
+                    frac = min(1.0, elapsed / total_s)
+                    pct = prog_start + frac * pct_range
+                    progress_cb(pct, f"Muxing audio…  {elapsed:.1f} / {total_s:.1f}s")
+                except (ValueError, ZeroDivisionError):
+                    pass
+
+        proc.wait()
+        t.join()
+        if proc.returncode != 0:
+            err = b''.join(stderr_buf).decode(errors='replace')
+            raise VideoMuxError(err[-600:])
+    else:
+        cmd = base_cmd + [output]
+        r = _run(cmd)
+        if r.returncode != 0:
+            raise VideoMuxError(r.stderr.decode(errors='replace')[-600:])
 
 
 def video_duration(path: str) -> float:
@@ -227,8 +271,10 @@ def _setup_delta_time(reference_lap, job, session):
         cur_lap_profiles     = {}
     else:
         cur_lap_t, cur_lap_d = None, None
+        # Only build profiles for timed laps — outlap/inlap have meaningless
+        # distance profiles and using them corrupts delta for the real laps.
         cur_lap_profiles     = {lap.lap_num: compute_lap_profile(lap)
-                                 for lap in session.laps}
+                                 for lap in session.timed_laps}
 
     # Reference channel arrays (indexed by unique distance)
     ref_elapsed_full, ref_dist_full = compute_lap_profile(reference_lap)
@@ -467,6 +513,23 @@ def render_lap(
 
     map_lats, map_lons, _map_arr_np = _build_map_data(job, session, show_map)
 
+    # Reference lap GPS (downsampled) — used by the Zoomed map style
+    _ref_map_lats: list = []
+    _ref_map_lons: list = []
+    _ref_lap_duration: float = 0.0
+    if reference_lap and reference_lap.points:
+        step = max(1, len(reference_lap.points) // 600)
+        _ref_map_lats = [p.lat for p in reference_lap.points[::step]]
+        _ref_map_lons = [p.lon for p in reference_lap.points[::step]]
+        _ref_lap_duration = reference_lap.duration
+        # Smooth the reference GPS track to reduce dot jitter caused by GPS noise.
+        # A window of 9 samples over ~600 points gives gentle smoothing without
+        # distorting the track shape.
+        if len(_ref_map_lats) > 9:
+            _w = np.ones(9) / 9
+            _ref_map_lats = np.convolve(_ref_map_lats, _w, mode='same').tolist()
+            _ref_map_lons = np.convolve(_ref_map_lons, _w, mode='same').tolist()
+
     # ── Lap-scoreboard pre-computation ────────────────────────────────────────
     # For each lap number, store the best completed timed-lap duration seen
     # BEFORE that lap started (lap 1 → None, lap 2 → lap-1 time, etc.)
@@ -503,11 +566,18 @@ def render_lap(
                 vid_t     = frame_idx / fps
                 sess_t    = vid_t - sync_offset
                 raw_lap_t = sess_t - lap_t0
-                lap_t_display = (min(raw_lap_t, lap_dur)
-                                 if job.gpx_start is not None else raw_lap_t)
 
                 pt = session.interpolate_at(sess_t)
                 if pt:
+                    # For per-lap export: clamp to [0, lap_dur] so the timer
+                    # stays sane during padding.  For full-session export: use
+                    # pt.lap_elapsed directly — it resets to 0 at each lap
+                    # boundary as recorded in the telemetry.
+                    if job.gpx_start is not None:
+                        lap_t_display = min(raw_lap_t, lap_dur)
+                    else:
+                        lap_t_display = pt.lap_elapsed
+
                     # ── Delta time ─────────────────────────────────────────────
                     delta_val = 0.0
                     cur_d     = 0.0
@@ -583,7 +653,10 @@ def render_lap(
                  layout,
                  max_speed,
                  _sectors,
-                 _session_meta)
+                 _session_meta,
+                 _ref_map_lats,
+                 _ref_map_lons,
+                 _ref_lap_duration)
                 for frm, (hist, ref_hist, cur_map_idx) in zip(chunk_frames, chunk_meta)
             ]
 
@@ -606,9 +679,13 @@ def render_lap(
 
     prog(87, "Muxing audio…")
     log("  Muxing audio…")
+    mux_dur_s = n_frames / fps if fps else 0.0
     try:
         mux_audio(tmp_raw, video_path, out_path, encoder, crf,
-                  audio_start=audio_start)
+                  audio_start=audio_start,
+                  total_s=mux_dur_s,
+                  prog_start=87.0, prog_end=100.0,
+                  progress_cb=progress_cb)
         os.remove(tmp_raw)
         prog(100, "")
         log(f"  ✓ Saved: {out_path}")

@@ -76,6 +76,7 @@ hidden_imports = [
     'styles.gauge_splits',
     'styles.map_circuit',
     'styles.map_progress',
+    'styles.map_zoomed',
     # Data loaders
     'racebox_data',
     'aim_data',

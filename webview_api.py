@@ -7,8 +7,12 @@ Push-events (export progress, scan updates) are sent via window.evaluate_js().
 """
 from __future__ import annotations
 
+import http.server
+import logging
+import mimetypes
 import os
 import threading
+import urllib.parse
 from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
@@ -16,6 +20,67 @@ from typing import Optional
 import webview
 
 from app_config import AppConfig, overlay_from_dict, load_scan_cache, save_scan_cache
+
+logger = logging.getLogger(__name__)
+
+
+class _VideoFileHandler(http.server.BaseHTTPRequestHandler):
+    """Minimal HTTP handler that serves arbitrary local files with range support.
+
+    The URL path is the absolute file path with forward slashes, e.g.
+    /C:/Videos/race.mp4  → opens C:/Videos/race.mp4 on Windows.
+    """
+
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        params = urllib.parse.parse_qs(parsed.query)
+        if 'f' in params:
+            # Path delivered as ?f=<url-encoded Windows path> — no slash mangling
+            raw = params['f'][0]
+        else:
+            # Legacy fallback: path embedded in URL path (only works for local C:/ paths)
+            raw = urllib.parse.unquote(parsed.path)
+            if raw.startswith('/') and len(raw) > 2 and raw[2] == ':':
+                raw = raw[1:]
+        logger.debug('VideoServer GET %s → %s (exists=%s)', self.path, raw, os.path.isfile(raw))
+        if not os.path.isfile(raw):
+            logger.warning('VideoServer 404: %s', raw)
+            self.send_error(404, 'File not found')
+            return
+        size  = os.path.getsize(raw)
+        mime  = mimetypes.guess_type(raw)[0] or 'application/octet-stream'
+        rng   = self.headers.get('Range', '')
+        if rng:
+            parts = rng.replace('bytes=', '').split('-')
+            start = int(parts[0])
+            end   = int(parts[1]) if parts[1] else size - 1
+            end   = min(end, size - 1)
+            length = end - start + 1
+            self.send_response(206)
+            self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+        else:
+            start, end, length = 0, size - 1, size
+            self.send_response(200)
+        self.send_header('Content-Type', mime)
+        self.send_header('Content-Length', str(length))
+        self.send_header('Accept-Ranges', 'bytes')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        try:
+            with open(raw, 'rb') as f:
+                f.seek(start)
+                remaining = length
+                while remaining > 0:
+                    chunk = f.read(min(65536, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def log_message(self, *args):
+        pass  # suppress server logs
 
 
 class WebviewAPI:
@@ -30,6 +95,8 @@ class WebviewAPI:
         self._window: Optional[webview.Window] = None
         self._export_cancel = threading.Event()
         self._export_thread: Optional[threading.Thread] = None
+        self._rb_cancel  = threading.Event()
+        self._rb_thread:  Optional[threading.Thread] = None
 
     # ── Called by main.py once the window is ready ────────────────────────────
     def set_window(self, window: webview.Window) -> None:
@@ -47,6 +114,22 @@ class WebviewAPI:
             f"window.dispatchEvent(new CustomEvent('openlap', {{detail: JSON.parse('{detail_escaped}')}}));"
         )
 
+    # ── Video file server ─────────────────────────────────────────────────────
+    def get_video_server_port(self) -> int:
+        """Return the localhost port of the video file server, starting it if needed."""
+        if hasattr(self, '_video_port'):
+            return self._video_port
+        try:
+            server = http.server.HTTPServer(('127.0.0.1', 0), _VideoFileHandler)
+            self._video_port = server.server_address[1]
+            t = threading.Thread(target=server.serve_forever, daemon=True)
+            t.start()
+            logger.info('Video file server started on port %d', self._video_port)
+        except Exception:
+            logger.exception('Failed to start video file server')
+            self._video_port = 0
+        return self._video_port
+
     # ── Config ────────────────────────────────────────────────────────────────
     def get_config(self) -> dict:
         cfg = asdict(self._config)
@@ -63,6 +146,12 @@ class WebviewAPI:
         for f in simple_fields:
             if f in data:
                 setattr(self._config, f, data[f])
+        if 'encoder' in data:
+            self._config.encoder = str(data['encoder'])
+        if 'crf' in data:
+            self._config.crf = int(data['crf'])
+        if 'workers' in data:
+            self._config.workers = int(data['workers'])
         # Merge dict fields (JS may send partial updates)
         if 'offsets' in data and isinstance(data['offsets'], dict):
             self._config.offsets.update(data['offsets'])
@@ -135,13 +224,26 @@ class WebviewAPI:
                 'best':           None,
             })
 
-        # Save cache for next startup
-        try:
-            save_scan_cache(folder, video_folder, matches, {})
-        except Exception:
-            pass
-
+        logger.info('scan_sessions: %s → %d sessions', folder, len(result))
         return result
+
+    def save_sessions_cache(self, sessions: list) -> None:
+        """Persist the full merged session list (from all paths) for fast startup.
+
+        Called by JS after collecting results from all telemetry paths so the
+        cache always reflects the complete set, not just the last path scanned.
+        """
+        import json
+        from pathlib import Path as _Path
+        from app_config import SCAN_CACHE_FILE
+        try:
+            SCAN_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            data = {'sessions': sessions}
+            with open(SCAN_CACHE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=2)
+            logger.info('Saved %d sessions to scan cache', len(sessions))
+        except Exception:
+            logger.exception('Failed to save sessions cache')
 
     def _cached_sessions(self) -> list:
         """Return cached sessions from disk without rescanning."""
@@ -239,10 +341,13 @@ class WebviewAPI:
             result = []
             for i, lap in enumerate(session.laps):
                 result.append({
-                    'lap_idx':  i,
-                    'duration': lap.duration,
-                    'is_best':  (lap.duration is not None and best_dur is not None
-                                 and abs(lap.duration - best_dur) < 0.001),
+                    'lap_idx':      i,
+                    'duration':     lap.duration,
+                    'is_best':      (lap.duration is not None and best_dur is not None
+                                     and abs(lap.duration - best_dur) < 0.001),
+                    'elapsed_start': round(lap.elapsed_start, 3) if hasattr(lap, 'elapsed_start') and lap.elapsed_start is not None else 0.0,
+                    'is_outlap':    lap.is_outlap if hasattr(lap, 'is_outlap') else False,
+                    'is_inlap':     lap.is_inlap  if hasattr(lap, 'is_inlap')  else False,
                 })
             return result
         except Exception as e:
@@ -257,24 +362,23 @@ class WebviewAPI:
                 return []
             lap = session.laps[lap_idx]
             points = []
-            for p in lap.data_points:
+            for p in lap.points:
                 d = {
-                    't':           p.elapsed,
-                    'speed':       p.speed_kmh,
-                    'gx':          p.gforce_lon,
-                    'gy':          p.gforce_lat,
-                    'rpm':         p.rpm or 0,
+                    't':            p.lap_elapsed,   # lap-relative elapsed (0 → lap_duration)
+                    'speed':        p.speed,         # km/h
+                    'gx':           p.gforce_x,      # longitudinal G
+                    'gy':           p.gforce_y,      # lateral G
+                    'rpm':          p.rpm or 0,
                     'exhaust_temp': p.exhaust_temp or 0,
-                    'alt':         p.altitude or 0,
-                    'lat':         p.lat,
-                    'lon':         p.lon,
+                    'alt':          p.alt,
+                    'lat':          p.lat,
+                    'lon':          p.lon,
+                    'lean':         p.lean_angle,
                 }
-                # Add lean angle if available
-                if hasattr(p, 'lean'):
-                    d['lean'] = p.lean
                 points.append(d)
             return points
-        except Exception:
+        except Exception as e:
+            logger.exception('load_lap_history failed for %s lap %d: %s', csv_path, lap_idx, e)
             return []
 
     # ── File dialogs ──────────────────────────────────────────────────────────
@@ -368,18 +472,27 @@ class WebviewAPI:
 
     # ── RaceBox cloud ─────────────────────────────────────────────────────────
     def racebox_login(self, email: str, password: str) -> dict:
-        """Test RaceBox cloud credentials. Returns {ok: bool, error?: str}."""
+        """Check whether saved RaceBox auth is still valid (headless).
+        If no saved auth exists, returns a prompt to use Download Sessions instead.
+        email/password args are unused — auth is browser-based via Playwright."""
         try:
             from racebox_downloader import RaceBoxSource
-            src = RaceBoxSource(email=email, password=password)
-            src.test_login()
-            self._config.racebox_email = email
-            self._config.save()
-            return {'ok': True}
         except ImportError:
-            return {'ok': False, 'error': 'racebox_downloader not available'}
-        except Exception as e:
-            return {'ok': False, 'error': str(e)}
+            return {'ok': False, 'error': 'Playwright / racebox_downloader not available in this build.'}
+
+        src = RaceBoxSource()
+        if not src.is_authenticated():
+            return {
+                'ok': False,
+                'error': 'Not logged in yet. Click "Download Sessions" — a browser will open for first-time login.',
+            }
+
+        # Validate saved auth headlessly
+        logs: list[str] = []
+        ok = src.authenticate(log_cb=logs.append)
+        if ok:
+            return {'ok': True}
+        return {'ok': False, 'error': '\n'.join(logs) or 'Auth validation failed.'}
 
     # ── Encoder detection ──────────────────────────────────────────────────────
     def check_encoders(self) -> dict:
@@ -441,6 +554,139 @@ class WebviewAPI:
             'python': f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}',
             'config': str(CONFIG_FILE),
         }
+
+    # ── AIM DLL status ────────────────────────────────────────────────────────
+    def aim_dll_status(self) -> dict:
+        """Return whether the AIM MatLabXRK DLL is present."""
+        import glob as _glob
+        import sys, os
+        base = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+        dlls = _glob.glob(os.path.join(base, 'MatLabXRK*.dll'))
+        return {'found': bool(dlls), 'path': dlls[0] if dlls else ''}
+
+    # ── AIM XRK conversion ────────────────────────────────────────────────────
+    def convert_xrk_session(self, csv_path: str) -> dict:
+        """Convert a single AIM XRK file to CSV. csv_path is the expected CSV output path."""
+        import os
+        xrk_path = os.path.splitext(csv_path)[0]
+        # Try common XRK extensions
+        actual_xrk = None
+        for ext in ('.xrk', '.xrz', '.drk', '.XRK', '.XRZ', '.DRK'):
+            candidate = xrk_path + ext
+            if os.path.isfile(candidate):
+                actual_xrk = candidate
+                break
+        if not actual_xrk:
+            return {'ok': False, 'error': 'XRK source file not found'}
+        try:
+            import xrk_to_csv as _xrk
+            import glob as _glob
+            import sys
+            base = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
+            dlls = _glob.glob(os.path.join(base, 'MatLabXRK*.dll'))
+            dll_path = dlls[0] if dlls else None
+            _xrk.xrk_to_csv(actual_xrk, csv_path, dll_path)
+            return {'ok': True}
+        except Exception as e:
+            return {'ok': False, 'error': str(e)}
+
+    # ── Manual video assignment ───────────────────────────────────────────────
+    def assign_video(self, csv_path: str, video_path: str) -> None:
+        """Manually link a video file to a telemetry session."""
+        abs_csv = str(Path(csv_path).resolve())
+        if not hasattr(self._config, 'video_overrides') or not isinstance(getattr(self._config, 'video_overrides', None), dict):
+            # video_overrides not in config yet — use session_info as storage vehicle
+            pass
+        # Store in session_info under special key
+        si = self._config.session_info.setdefault(abs_csv, {})
+        si['_video_override'] = str(Path(video_path).resolve())
+        self._config.save()
+
+    # ── RaceBox session download ──────────────────────────────────────────────
+    def download_racebox_sessions(self) -> None:
+        """Start a background RaceBox download. Progress is pushed as events:
+            racebox_log      {message}
+            racebox_progress {value: 0-100, message}
+            racebox_done     {ok, message, n_downloaded}
+        """
+        if self._rb_thread and self._rb_thread.is_alive():
+            return   # already running
+        self._rb_cancel.clear()
+        self._rb_thread = threading.Thread(
+            target=self._run_racebox_bg, daemon=True)
+        self._rb_thread.start()
+
+    def cancel_racebox_download(self) -> None:
+        self._rb_cancel.set()
+
+    def _run_racebox_bg(self) -> None:
+        def log(msg: str) -> None:
+            self._push('racebox_log', message=msg)
+
+        def progress(pct: float, msg: str = '') -> None:
+            self._push('racebox_progress', value=pct, message=msg)
+
+        def done(ok: bool, msg: str = '', n: int = 0) -> None:
+            self._push('racebox_done', ok=ok, message=msg, n_downloaded=n)
+
+        try:
+            from racebox_downloader import RaceBoxSource
+        except ImportError:
+            done(False, 'Playwright / racebox_downloader not available in this build.')
+            return
+
+        dest = self._config.racebox_path or self._config.telemetry_path
+        if not dest:
+            done(False, 'No RaceBox folder configured — set it in Settings.')
+            return
+
+        try:
+            src = RaceBoxSource(data_dir=dest)
+
+            # Authenticate (opens browser on first run; headless thereafter)
+            log('Authenticating…')
+            ok = src.authenticate(log_cb=log)
+            if not ok:
+                done(False, 'Authentication failed.')
+                return
+            if self._rb_cancel.is_set():
+                done(False, 'Cancelled.')
+                return
+
+            # List sessions
+            log('Fetching session list from racebox.pro…')
+            sessions = src.list_sessions(log_cb=log)
+            if not sessions:
+                done(True, 'No sessions found on racebox.pro.', 0)
+                return
+
+            new = [s for s in sessions if not src.already_downloaded(s, dest)]
+            log(f'{len(sessions)} session(s) on server — {len(new)} new to download.')
+
+            if not new:
+                done(True, 'Already up to date.', 0)
+                return
+
+            # Download new sessions
+            downloaded = 0
+            for i, sess in enumerate(new):
+                if self._rb_cancel.is_set():
+                    done(False, f'Cancelled after {downloaded} download(s).',
+                         downloaded)
+                    return
+
+                progress((i / len(new)) * 100, f'{i+1}/{len(new)}: {sess.label()}')
+                path = src.download(sess, dest,
+                                    progress_cb=None, log_cb=log)
+                if path:
+                    downloaded += 1
+
+            progress(100, 'Done.')
+            done(True, f'{downloaded} of {len(new)} session(s) downloaded.', downloaded)
+
+        except Exception as exc:
+            logger.exception('RaceBox download error')
+            done(False, str(exc))
 
     # ── Internal helpers ──────────────────────────────────────────────────────
     @staticmethod

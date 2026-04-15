@@ -5,7 +5,11 @@ Rendering is delegated to style plugins in styles/.
 This module owns blend_rgba, default_layout, and the multiprocessing worker.
 """
 from __future__ import annotations
+import os
 from overlay_utils import blend_rgba, scale_factor   # re-export scale_factor for rb_render
+
+# Per-process image cache: (path, mtime) → RGBA ndarray
+_IMAGE_CACHE: dict = {}
 
 
 def default_layout() -> dict:
@@ -53,7 +57,10 @@ def render_frame_worker(args: tuple) -> bytes:
      max_speed,
      sectors,
      *_extra) = args
-    session_meta = _extra[0] if _extra else {}
+    session_meta  = _extra[0] if len(_extra) > 0 else {}
+    ref_lats      = _extra[1] if len(_extra) > 1 else []
+    ref_lons      = _extra[2] if len(_extra) > 2 else []
+    ref_duration  = _extra[3] if len(_extra) > 3 else 0.0
 
     from gauge_channels import gauge_data_lap_info
 
@@ -74,7 +81,11 @@ def render_frame_worker(args: tuple) -> bytes:
 
         if channel == 'info':
             gd = dict(session_meta)
-            gd['selected_fields'] = g.get('channels') or []
+            # Apply per-gauge text overrides (set in the overlay editor)
+            for k, v in (g.get('info_overrides') or {}).items():
+                if v:
+                    gd[f'info_{k}'] = v
+            gd['selected_fields'] = g.get('selected_fields') or g.get('channels') or []
             gd['_theme'] = theme
             try:
                 img = render_style('gauge', style, gd, gw, gh)
@@ -93,11 +104,53 @@ def render_frame_worker(args: tuple) -> bytes:
                 pass
             continue
 
+        if channel == 'image':
+            image_path = g.get('image_path', '')
+            if not image_path or not os.path.isfile(image_path):
+                continue
+            try:
+                import numpy as np
+                from PIL import Image as _PILImage
+                mtime = os.path.getmtime(image_path)
+                cache_key = (image_path, mtime, gw, gh)
+                rgba = _IMAGE_CACHE.get(cache_key)
+                if rgba is None:
+                    img = _PILImage.open(image_path).convert('RGBA')
+                    img = img.resize((gw, gh), _PILImage.LANCZOS)
+                    rgba = np.array(img)
+                    _IMAGE_CACHE[cache_key] = rgba
+                # Apply opacity from gauge config
+                opacity = float(g.get('opacity', 1.0))
+                if opacity < 1.0:
+                    rgba = rgba.copy()
+                    rgba[:, :, 3] = (rgba[:, :, 3] * opacity).astype(rgba.dtype)
+                blend_rgba(frame, rgba, gx, gy)
+            except Exception:
+                pass
+            continue
+
         if channel == 'map':
             if not (show_map and lap_lats):
                 continue
-            data = {'lats': lap_lats, 'lons': lap_lons, 'cur_idx': cur_pt_idx,
-                    '_theme': theme}
+            if ref_lats:
+                if ref_duration > 0 and history:
+                    cur_elapsed = history[-1].get('t', 0.0)
+                    ref_frac    = min(1.0, max(0.0, cur_elapsed / ref_duration))
+                    ref_cur_idx = int(ref_frac * max(0, len(ref_lats) - 1))
+                else:
+                    ref_cur_idx = int(cur_pt_idx / max(1, len(lap_lats) - 1)
+                                      * max(0, len(ref_lats) - 1))
+            else:
+                ref_cur_idx = 0
+            data = {
+                'lats': lap_lats, 'lons': lap_lons, 'cur_idx': cur_pt_idx,
+                '_theme': theme,
+                'zoom_radius_m': g.get('zoom_radius_m', 150),
+                'show_ref':      g.get('show_ref', True),
+                'ref_lats':      ref_lats,
+                'ref_lons':      ref_lons,
+                'ref_cur_idx':   ref_cur_idx,
+            }
             try:
                 mi = render_style('map', style, data, max(60, gw), max(60, gh))
                 blend_rgba(frame, mi, gx, gy)
@@ -105,7 +158,7 @@ def render_frame_worker(args: tuple) -> bytes:
                 pass
         elif show_telemetry and history:
             if channel == MULTI_CHANNEL:
-                sub_channels = g.get('channels', [])
+                sub_channels = g.get('multi_channels') or g.get('channels') or []
                 if not sub_channels:
                     continue
                 gd = build_multi_data(sub_channels, history,

@@ -41,9 +41,10 @@ def render(data: dict, w: int, h: int):
     elapsed    = float(data.get('lap_elapsed', 0.0))
     best       = data.get('best_so_far')   # float or None
 
-    # ── Delta ─────────────────────────────────────────────────────────────────
-    if best is not None and best > 0.0:
-        delta      = elapsed - best
+    # ── Delta — use live reference-lap delta when available ───────────────────
+    delta_raw = data.get('delta_time')
+    if delta_raw is not None:
+        delta      = float(delta_raw)
         delta_txt  = f"{delta:+.3f}"
         delta_col  = ok_col if delta < 0.0 else err_col
     else:

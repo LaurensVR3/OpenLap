@@ -6,7 +6,25 @@ All I/O callbacks are injected so this module has no GUI imports.
 """
 from __future__ import annotations
 import os
+import re
 from typing import Callable, List, Optional
+
+
+def _export_stem(sess, scope_label: str) -> str:
+    """Build a human-readable export filename stem: YYYY-MM-DD_HH-MM_Track_Scope."""
+    dt = sess.start_time
+    if dt is None and getattr(sess, 'date_utc', None):
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(sess.date_utc.replace('Z', '+00:00'))
+        except Exception:
+            dt = None
+    date_part = dt.strftime('%Y-%m-%d') if dt else 'unknown-date'
+    time_part = dt.strftime('%H-%M')    if dt else ''
+    track = re.sub(r'[^\w\s-]', '', sess.track or 'unknown').strip()
+    track = re.sub(r'\s+', '_', track) or 'unknown'
+    parts = [date_part, time_part, track, scope_label] if time_part else [date_part, track, scope_label]
+    return '_'.join(parts)
 
 
 def run_export(
@@ -35,7 +53,6 @@ def run_export(
     import gpx_data, aim_data, racebox_data, motec_data
     from video_renderer import render_lap, RenderJob, concat_videos
     from racebox_data import Lap
-    from page_export import _export_stem
     from utils import compute_lean_angle
 
     def load_session(path):
@@ -63,9 +80,12 @@ def run_export(
     errors = []
 
     for item in items:
-        csv_path = item.get('csv')
-        videos   = item.get('videos', [])
-        offset   = item.get('offset') or 0.0
+        # Accept both the webview field names (csv_path / video_paths / sync_offset)
+        # and the legacy Tkinter names (csv / videos / offset).
+        csv_path = item.get('csv_path') or item.get('csv')
+        videos   = item.get('video_paths') or item.get('videos') or []
+        offset   = item.get('sync_offset') if item.get('sync_offset') is not None \
+                   else (item.get('offset') or 0.0)
 
         if not csv_path or not os.path.exists(csv_path):
             log(f"Skipping: CSV not found: {csv_path}")
@@ -141,8 +161,32 @@ def run_export(
         def scaled_prog(pct, msg):
             sess_prog(done_jobs, join_share, pct, msg)
 
+        # Allow per-item scope override (set from the Overlay tab)
+        item_scope = item.get('scope') or scope
+
         try:
-            if scope == 'fastest':
+            if item_scope == 'selected_lap':
+                lap_idx = item.get('lap_idx', 0)
+                if lap_idx >= len(sess.laps):
+                    log(f"  ✗ Lap {lap_idx + 1} not found in session ({len(sess.laps)} laps)")
+                    done_jobs += 1
+                    continue
+                lap   = sess.laps[lap_idx]
+                label = f"Lap{lap_idx + 1:02d}"
+                out   = os.path.join(export_path, f"{_export_stem(sess, label)}.mp4")
+                log(f"  Lap {lap_idx + 1}: {lap.duration:.3f}s → {os.path.basename(out)}")
+                render_lap(
+                    video_path, out, sess, RenderJob(_export_stem(sess, label), lap),
+                    sync_offset=offset, encoder=encoder, crf=crf,
+                    n_workers=workers, show_map=show_map,
+                    show_telemetry=show_tel, padding=padding,
+                    is_bike=is_bike, overlay_layout=layout,
+                    progress_cb=scaled_prog, log_cb=log,
+                    reference_lap=reference_lap,
+                    info_overrides=info_overrides,
+                )
+
+            elif item_scope == 'fastest':
                 lap = sess.fastest_lap
                 if not lap:
                     log("  ✗ No timed lap found")
@@ -161,10 +205,10 @@ def run_export(
                     info_overrides=info_overrides,
                 )
 
-            elif scope == 'all_laps':
-                laps = sess.laps
+            elif item_scope == 'all_laps':
+                laps = sess.timed_laps   # skip outlap / inlap
                 if not laps:
-                    log("  ✗ No laps found")
+                    log("  ✗ No timed laps found")
                     done_jobs += 1
                     continue
                 for i, lap in enumerate(laps, 1):
@@ -182,7 +226,7 @@ def run_export(
                         info_overrides=info_overrides,
                     )
 
-            elif scope == 'full':
+            elif item_scope == 'full':
                 out = os.path.join(export_path, f"{_export_stem(sess, 'Full')}.mp4")
                 log(f"  Full session → {os.path.basename(out)}")
                 render_lap(
@@ -196,7 +240,7 @@ def run_export(
                     info_overrides=info_overrides,
                 )
 
-            elif scope == 'clip':
+            elif item_scope == 'clip':
                 pts = sess.all_points
                 if pts:
                     sess_end = pts[-1].elapsed

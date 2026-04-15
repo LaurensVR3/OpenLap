@@ -16,7 +16,6 @@
   let _sessions   = [];   // flat list, sorted newest-first
   let _meta       = {};   // csv_path → {track, laps, best}
   let _lapDetails = {};   // csv_path → [{lap_idx, duration, is_best}]
-  let _staged     = [];   // lap items staged for export
   let _selCsv     = null; // currently selected session csv_path
   let _config     = null;
   let _scanning   = false;
@@ -24,6 +23,7 @@
   let _container  = null;
   let _metaQueue  = [];   // sessions waiting for meta fetch
   let _metaBusy   = false;
+  let _videoPort  = 0;    // localhost port of the Python video file server
 
   // Best per day: csv_path → true if this session has the day's best lap
   let _dayBest = {};
@@ -61,7 +61,9 @@
     return (p||'').replace(/\\/g,'/').split('/').pop() || p;
   }
 
-  function fileUrl(winPath) {
+  function videoUrl(winPath) {
+    // Pass path as a query param so browser slash-normalization never mangles UNC paths
+    if (_videoPort) return `http://127.0.0.1:${_videoPort}/?f=${encodeURIComponent(winPath)}`;
     return 'file:///' + winPath.replace(/\\/g, '/');
   }
 
@@ -132,15 +134,15 @@
     const track   = m.track || baseName(s.csv_path);
     const lapStr  = m.laps  || '—';
     const bestStr = m.best  || (m.best_secs != null ? fmtTime(m.best_secs) : '—');
-    const icon    = s.needs_conversion ? '⟳'
-                  : (!s.matched)       ? '✗'
-                  : (s.sync_offset != null) ? '✓' : '≈';
-    const iconCls = s.needs_conversion ? 'di-pending'
-                  : (!s.matched)       ? 'di-novid'
-                  : (s.sync_offset != null) ? 'di-synced' : 'di-unsync';
+    const syncLabel = s.needs_conversion ? '↻ conv'
+                    : (!s.matched)       ? 'no vid'
+                    : (s.sync_offset != null) ? '✓ sync' : '≈ unset';
+    const iconCls   = s.needs_conversion ? 'di-pending'
+                    : (!s.matched)       ? 'di-novid'
+                    : (s.sync_offset != null) ? 'di-synced' : 'di-unsync';
 
     return `<div class="dl-row${isSel?' sel':''}${isDayB?' day-best':''}" data-csv="${esc(s.csv_path)}">
-      <span class="dl-icon ${iconCls}">${icon}</span>
+      <span class="dl-sync ${iconCls}">${syncLabel}</span>
       <span class="dl-time">${esc(time)}</span>
       <span class="dl-track" title="${esc(s.csv_path)}">${esc(track)}</span>
       <span class="dl-source">${esc(s.source||'RaceBox')}</span>
@@ -151,15 +153,26 @@
 
   function selectSession(csvPath) {
     _selCsv = csvPath;
-    // Update selection highlight
     _container?.querySelectorAll('.dl-row').forEach(r => {
       r.classList.toggle('sel', r.dataset.csv === csvPath);
     });
     renderRight();
 
-    // Load laps if not cached
     const s = _sessions.find(x => x.csv_path === csvPath);
-    if (s && !_lapDetails[csvPath]) loadLaps(s);
+    if (!s) return;
+
+    // Always keep previewSession in sync with the selected session
+    // so navigating to Overlay via the sidebar also works
+    State.set('previewSession', {
+      csv_path:    s.csv_path,
+      lap_idx:     0,
+      video_paths: s.video_paths || [],
+      sync_offset: s.sync_offset ?? 0,
+      source:      s.source || 'RaceBox',
+      csv_start:   s.csv_start  || null,
+    });
+
+    if (!_lapDetails[csvPath]) loadLaps(s);
   }
 
   // ── Right panel: session detail + sync ────────────────────────────────────────
@@ -174,9 +187,8 @@
       return;
     }
 
-    const m    = _meta[s.csv_path] || {};
-    const laps = _lapDetails[s.csv_path];
-    const off  = s.sync_offset;
+    const m   = _meta[s.csv_path] || {};
+    const off = s.sync_offset;
 
     // Session info
     const vidPaths = s.video_paths || [];
@@ -205,37 +217,36 @@
   </div>
 </div>
 
-<!-- Lap chips -->
-<div class="dr-card">
-  <div class="dr-card-title">EXPORT LAPS</div>
-  <div id="dr-laps">${renderLapChips(s)}</div>
-  <div class="dr-actions">
-    <button class="btn btn-sm" id="dr-sel-all">All</button>
-    <button class="btn btn-sm" id="dr-sel-best">Best</button>
-    <button class="btn btn-accent btn-sm" id="dr-add-export">+ Add to Export</button>
+<!-- AIM conversion -->
+${s.needs_conversion ? `
+<div class="dr-card" id="dr-conv-card">
+  <div class="dr-card-title">AIM XRK CONVERSION</div>
+  <div class="dr-hint">This session must be converted from XRK format before it can be used.</div>
+  <div class="dr-actions" style="margin-top:8px">
+    <button class="btn btn-secondary btn-sm" id="dr-conv-btn">Convert to CSV</button>
+    <span id="dr-conv-msg" class="status-msg"></span>
   </div>
-</div>
+</div>` : ''}
 
 <!-- Video align -->
-${hasVid ? renderAlignCard(s, vidPaths, off) : ''}
+${hasVid ? renderAlignCard(s, vidPaths, off) : `
+<div class="dr-card">
+  <div class="dr-card-title">VIDEO</div>
+  <div class="dr-hint" style="color:var(--warn)">No matching video found.</div>
+  <div class="dr-actions" style="margin-top:8px">
+    <button class="btn btn-secondary btn-sm" id="dr-assign-vid-btn">Browse for video…</button>
+    <span id="dr-assign-vid-msg" class="status-msg"></span>
+  </div>
+</div>`}
+
+<!-- Primary CTA: Open in Overlay -->
+<button class="btn btn-accent" id="dr-goto-overlay"
+        style="width:100%; padding:9px; font-size:11px; font-weight:600; border-radius:var(--radius); flex-shrink:0;">
+  Open in Overlay →
+</button>
 `;
 
     wirePropPanel(s, pane);
-  }
-
-  function renderLapChips(s) {
-    const laps = _lapDetails[s.csv_path];
-    if (!laps) return `<div class="dr-loading"><span class="spinner"></span> Loading…</div>`;
-    if (laps.length === 0) return `<div class="dr-hint">No laps found in this file.</div>`;
-    return `<div class="dr-chip-row">` + laps.map(l => {
-      const isSel = _staged.some(x => x.csv_path === s.csv_path && x.lap_idx === l.lap_idx);
-      return `<div class="dr-chip${isSel?' sel':''}${l.is_best?' best':''}"
-                   data-csv="${esc(s.csv_path)}" data-lap="${l.lap_idx}">
-                <span class="drc-n">L${l.lap_idx+1}</span>
-                <span class="drc-t">${fmtTime(l.duration)}</span>
-                ${l.is_best?'<span class="drc-b">★</span>':''}
-              </div>`;
-    }).join('') + `</div>`;
   }
 
   function renderAlignCard(s, vidPaths, off) {
@@ -244,7 +255,7 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : ''}
 <div class="dr-card dr-align-card">
   <div class="dr-card-title">ALIGN VIDEO</div>
   <video id="sync-video" class="sync-video" preload="metadata"
-         src="${esc(fileUrl(vidPaths[0]))}"></video>
+         src="${esc(videoUrl(vidPaths[0]))}"></video>
   <div class="sync-controls">
     <button class="btn btn-sm" id="sv-mm">◀◀ −1s</button>
     <button class="btn btn-sm" id="sv-m">◀ −1f</button>
@@ -255,77 +266,70 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : ''}
   <input type="range" id="sv-scrub" class="sync-scrub" min="0" max="1000" value="0" step="1">
   <div class="sync-mark-row">
     <button class="btn btn-ok btn-sm" id="sv-mark">🏁 Mark Lap 1 start</button>
-    <span class="sync-mark-val" id="sv-mark-val">${off!=null ? 'Marked — offset: '+off.toFixed(3)+'s' : ''}</span>
-  </div>
-  <div class="sync-offset-row">
-    <label style="font-size:9px;color:var(--text3)">Manual offset (s):</label>
     <input type="number" id="sv-off-input" class="input-field input-narrow sync-off-input"
-           step="0.001" value="${esc(offVal)}" placeholder="0.000">
-    <button class="btn btn-sm" id="sv-save">Save</button>
+           step="0.001" value="${esc(offVal)}" placeholder="0.000" title="Current offset (s) — follows video position">
+    <span class="sync-mark-val" id="sv-mark-val">${off!=null ? '✓ saved' : ''}</span>
   </div>
   ${vidPaths.length > 1 ? `<div style="font-size:9px;color:var(--text3);margin-top:4px">+ ${vidPaths.length-1} more clip(s)</div>` : ''}
 </div>`;
   }
 
   function wirePropPanel(s, pane) {
-    // Lap chips
-    pane.querySelectorAll('.dr-chip').forEach(chip => {
-      chip.addEventListener('click', () => {
-        toggleStage(s, parseInt(chip.dataset.lap));
-        const lapsEl = pane.querySelector('#dr-laps');
-        if (lapsEl) lapsEl.innerHTML = renderLapChips(s);
-        wireLapChips(s, pane);
-        refreshFooter();
-      });
-    });
-
-    // Select all / best
-    pane.querySelector('#dr-sel-all')?.addEventListener('click', () => {
+    // Open in Overlay
+    pane.querySelector('#dr-goto-overlay')?.addEventListener('click', () => {
       const laps = _lapDetails[s.csv_path] || [];
-      for (const l of laps) {
-        if (!_staged.some(x => x.csv_path === s.csv_path && x.lap_idx === l.lap_idx))
-          _staged.push(makeStagedItem(s, l));
-      }
-      const lapsEl = pane.querySelector('#dr-laps');
-      if (lapsEl) lapsEl.innerHTML = renderLapChips(s);
-      wireLapChips(s, pane);
-      refreshFooter();
+      const lap  = laps.find(l => l.is_best) || laps[0];
+      State.set('previewSession', {
+        csv_path:    s.csv_path,
+        lap_idx:     lap ? lap.lap_idx : 0,
+        video_paths: s.video_paths || [],
+        sync_offset: s.sync_offset ?? 0,
+        source:      s.source || 'RaceBox',
+        csv_start:   s.csv_start  || null,
+      });
+      Router.navigate('editor');
     });
 
-    pane.querySelector('#dr-sel-best')?.addEventListener('click', () => {
-      const laps  = _lapDetails[s.csv_path] || [];
-      const best  = laps.find(l => l.is_best) || laps[0];
-      if (best && !_staged.some(x => x.csv_path === s.csv_path && x.lap_idx === best.lap_idx))
-        _staged.push(makeStagedItem(s, best));
-      const lapsEl = pane.querySelector('#dr-laps');
-      if (lapsEl) lapsEl.innerHTML = renderLapChips(s);
-      wireLapChips(s, pane);
-      refreshFooter();
+    // AIM XRK conversion
+    pane.querySelector('#dr-conv-btn')?.addEventListener('click', async () => {
+      const btn = pane.querySelector('#dr-conv-btn');
+      const msg = pane.querySelector('#dr-conv-msg');
+      btn.disabled = true;
+      if (msg) { msg.textContent = 'Converting…'; msg.className = 'status-msg status-dim'; }
+      try {
+        const result = await API.convertXrkSession(s.csv_path);
+        if (result && result.ok) {
+          if (msg) { msg.textContent = 'Done — re-scanning…'; msg.className = 'status-msg status-ok'; }
+          s.needs_conversion = false;
+          await doScan(true);
+        } else {
+          if (msg) { msg.textContent = result?.error || 'Conversion failed.'; msg.className = 'status-msg status-err'; }
+          btn.disabled = false;
+        }
+      } catch (e) {
+        if (msg) { msg.textContent = String(e); msg.className = 'status-msg status-err'; }
+        btn.disabled = false;
+      }
     });
 
-    // Add to export
-    pane.querySelector('#dr-add-export')?.addEventListener('click', () => {
-      // If nothing staged for this session, auto-add best
-      let toAdd = _staged.filter(x => x.csv_path === s.csv_path);
-      if (toAdd.length === 0) {
-        const laps = _lapDetails[s.csv_path] || [];
-        const best = laps.find(l => l.is_best) || laps[0];
-        if (best) toAdd = [makeStagedItem(s, best)];
+    // Manual video assignment
+    pane.querySelector('#dr-assign-vid-btn')?.addEventListener('click', async () => {
+      const btn = pane.querySelector('#dr-assign-vid-btn');
+      const msg = pane.querySelector('#dr-assign-vid-msg');
+      btn.disabled = true;
+      const videoPath = await API.openFileDialog(['Video Files (*.mp4;*.mov;*.avi;*.mkv;*.MP4;*.MOV)']).catch(() => null);
+      if (!videoPath) { btn.disabled = false; return; }
+      try {
+        await API.assignVideo(s.csv_path, videoPath);
+        s.video_paths = [videoPath];
+        s.matched     = true;
+        await API.saveSessionsCache(_sessions).catch(() => {});
+        renderRight();
+        renderLeft();
+      } catch (e) {
+        if (msg) { msg.textContent = String(e); msg.className = 'status-msg status-err'; }
+        btn.disabled = false;
       }
-      if (!toAdd.length) return;
-      const existing = State.get('selectedItems') || [];
-      const merged   = [...existing];
-      for (const item of toAdd) {
-        if (!merged.some(e => e.csv_path === item.csv_path && e.lap_idx === item.lap_idx))
-          merged.push(item);
-      }
-      State.set('selectedItems', merged);
-      _staged = _staged.filter(x => x.csv_path !== s.csv_path);
-      const lapsEl = pane.querySelector('#dr-laps');
-      if (lapsEl) lapsEl.innerHTML = renderLapChips(s);
-      wireLapChips(s, pane);
-      refreshFooter();
-      flashFooter(`✓ ${toAdd.length} lap${toAdd.length!==1?'s':''} added to export queue`);
     });
 
     // Bike mode
@@ -341,18 +345,6 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : ''}
     wireVideoSync(s, pane);
   }
 
-  function wireLapChips(s, pane) {
-    pane.querySelectorAll('.dr-chip').forEach(chip => {
-      chip.addEventListener('click', () => {
-        toggleStage(s, parseInt(chip.dataset.lap));
-        const lapsEl = pane.querySelector('#dr-laps');
-        if (lapsEl) lapsEl.innerHTML = renderLapChips(s);
-        wireLapChips(s, pane);
-        refreshFooter();
-      });
-    });
-  }
-
   function wireVideoSync(s, pane) {
     const video  = pane.querySelector('#sync-video');
     const scrub  = pane.querySelector('#sv-scrub');
@@ -364,31 +356,52 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : ''}
 
     let fps = 30; // default; will be updated from metadata
 
+    // outlapDur: elapsed_start of the first timed lap (already cached from loadLaps).
+    // sync_offset = (video time at lap-1 mark) - outlapDur, matching video_renderer.py
+    // semantics where sync_offset = video time at session start.
+    function getOutlapDur() {
+      const laps = _lapDetails[s.csv_path] || [];
+      const firstTimed = laps.find(l => !l.is_outlap);
+      return (firstTimed?.elapsed_start) || 0;
+    }
+
     function fmtVTime(t) {
       const m = Math.floor(t / 60);
-      const s = (t % 60).toFixed(3).padStart(6, '0');
-      return `${m}:${s}`;
+      const sec = (t % 60).toFixed(3).padStart(6, '0');
+      return `${m}:${sec}`;
+    }
+
+    function seekToLap1() {
+      if (s.sync_offset == null || !video.duration) return;
+      const outlapDur = getOutlapDur();
+      const lap1Vid = Math.max(0, Math.min(video.duration, s.sync_offset + outlapDur));
+      video.currentTime = lap1Vid;
+      if (scrub) scrub.value = Math.round(lap1Vid * 1000);
+      if (timeEl) timeEl.textContent = fmtVTime(lap1Vid);
+      if (offInp) offInp.value = lap1Vid.toFixed(3);
     }
 
     video.addEventListener('loadedmetadata', () => {
       scrub.max = Math.round(video.duration * 1000);
-      fps = 30; // estimate; HTML video doesn't expose fps reliably
+      fps = 30;
+      seekToLap1();
     });
 
     video.addEventListener('timeupdate', () => {
       if (!video.seeking) {
         scrub.value = Math.round(video.currentTime * 1000);
         if (timeEl) timeEl.textContent = fmtVTime(video.currentTime);
+        if (offInp) offInp.value = video.currentTime.toFixed(3);
       }
     });
 
     scrub?.addEventListener('input', () => {
       video.currentTime = scrub.value / 1000;
       if (timeEl) timeEl.textContent = fmtVTime(video.currentTime);
+      if (offInp) offInp.value = (scrub.value / 1000).toFixed(3);
     });
 
     function step(frameDelta) {
-      // frameDelta in frames (positive/negative); if > 20 treat as seconds
       const dt = Math.abs(frameDelta) > 10 ? (frameDelta > 0 ? 1 : -1) : frameDelta / fps;
       video.currentTime = Math.max(0, Math.min(video.duration || 0, video.currentTime + dt));
     }
@@ -398,61 +411,34 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : ''}
     pane.querySelector('#sv-p')?.addEventListener ('click', () => step(1));
     pane.querySelector('#sv-pp')?.addEventListener('click', () => step(fps));
 
-    // Mark: save current video time as the lap-1-start moment
+    // Mark: save (video.currentTime - outlapDur) as sync_offset.
+    // vid_t = sync_offset + lap.elapsed_start works correctly for all laps.
     pane.querySelector('#sv-mark')?.addEventListener('click', async () => {
-      const markT  = video.currentTime;
-      // offset = video time at which lap 1 starts = we'll use it as is
-      // The export pipeline subtracts this from the video so it starts at the mark
-      const offset = markT;
+      const rawTime   = video.currentTime;
+      const outlapDur = getOutlapDur();
+      const offset    = rawTime - outlapDur;
+      console.log('[mark] rawTime:', rawTime, '| outlapDur:', outlapDur, '| saved sync_offset:', offset);
       s.sync_offset = offset;
-      if (offInp) offInp.value = offset.toFixed(3);
-      if (markEl) markEl.textContent = `Marked at ${fmtVTime(markT)} → offset ${offset.toFixed(3)}s`;
+      if (offInp) offInp.value = rawTime.toFixed(3);
+      if (markEl) markEl.textContent = '✓ saved';
       await saveOffset(s);
-      // Update display in left panel and info card
       renderLeft();
       const dispEl = pane.querySelector('#dr-off-display');
-      if (dispEl) { dispEl.textContent = offset.toFixed(3)+'s ✓'; dispEl.className = 'dr-val'; }
+      if (dispEl) { dispEl.textContent = rawTime.toFixed(3)+'s ✓'; dispEl.className = 'dr-val'; }
     });
 
-    // Manual offset save
-    pane.querySelector('#sv-save')?.addEventListener('click', async () => {
-      const val = parseFloat(offInp?.value ?? '') || 0;
-      s.sync_offset = val;
-      await saveOffset(s);
-      if (markEl) markEl.textContent = `Offset ${val.toFixed(3)}s saved ✓`;
-      renderLeft();
-      const dispEl = pane.querySelector('#dr-off-display');
-      if (dispEl) { dispEl.textContent = val.toFixed(3)+'s ✓'; dispEl.className = 'dr-val'; }
-    });
+    // If video is already loaded and we have lap data, seek to lap-1 position now.
+    if (video.readyState >= 1 && s.sync_offset != null) seekToLap1();
   }
 
   async function saveOffset(s) {
     const offsets = { ...(_config?.offsets || {}), [s.csv_path]: s.sync_offset };
     _config = { ..._config, offsets };
     await API.saveConfig({ offsets });
-  }
-
-  // ── Staging ───────────────────────────────────────────────────────────────────
-
-  function makeStagedItem(session, lap) {
-    return {
-      csv_path:    session.csv_path,
-      lap_idx:     lap.lap_idx,
-      source:      session.source,
-      video_paths: session.video_paths || [],
-      sync_offset: session.sync_offset,
-      duration:    lap.duration,
-      is_best:     lap.is_best,
-    };
-  }
-
-  function toggleStage(session, lapIdx) {
-    const idx = _staged.findIndex(x => x.csv_path === session.csv_path && x.lap_idx === lapIdx);
-    if (idx >= 0) {
-      _staged.splice(idx, 1);
-    } else {
-      const lap = (_lapDetails[session.csv_path]||[]).find(l => l.lap_idx === lapIdx);
-      if (lap) _staged.push(makeStagedItem(session, lap));
+    // Keep previewSession offset in sync
+    const prev = State.get('previewSession');
+    if (prev && prev.csv_path === s.csv_path) {
+      State.set('previewSession', { ...prev, sync_offset: s.sync_offset });
     }
   }
 
@@ -461,49 +447,7 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : ''}
   function refreshFooter() {
     const footer = _container?.querySelector('#data-footer');
     if (!footer) return;
-    const n      = _staged.length;
-    const queued = (State.get('selectedItems')||[]).length;
-    if (n === 0) {
-      footer.innerHTML = `
-        <span class="footer-hint">Select a session, pick laps, click <strong>+ Add to Export</strong></span>
-        ${queued>0 ? `<span class="badge badge-ok">${queued} in export queue</span>` : ''}`;
-    } else {
-      footer.innerHTML = `
-        <span class="footer-hint"><strong>${n}</strong> lap${n!==1?'s':''} staged</span>
-        <button class="btn btn-secondary btn-sm" id="ftr-clear">Clear</button>
-        <button class="btn btn-accent" id="ftr-add">+ Add to Export</button>
-        ${queued>0 ? `<span class="badge badge-ok">${queued} in queue</span>` : ''}`;
-      footer.querySelector('#ftr-clear')?.addEventListener('click', () => {
-        _staged = [];
-        refreshFooter();
-        const pane = _container?.querySelector('#data-right');
-        const s    = _sessions.find(x => x.csv_path === _selCsv);
-        if (s && pane) {
-          const lapsEl = pane.querySelector('#dr-laps');
-          if (lapsEl) lapsEl.innerHTML = renderLapChips(s);
-          wireLapChips(s, pane);
-        }
-      });
-      footer.querySelector('#ftr-add')?.addEventListener('click', () => {
-        const existing = State.get('selectedItems') || [];
-        const merged   = [...existing];
-        for (const item of _staged) {
-          if (!merged.some(e => e.csv_path === item.csv_path && e.lap_idx === item.lap_idx))
-            merged.push(item);
-        }
-        State.set('selectedItems', merged);
-        _staged = [];
-        refreshFooter();
-      });
-    }
-  }
-
-  function flashFooter(msg) {
-    const footer = _container?.querySelector('#data-footer');
-    if (!footer) return;
-    const prev = footer.innerHTML;
-    footer.innerHTML = `<span class="ok-flash">${esc(msg)}</span>`;
-    setTimeout(() => refreshFooter(), 1800);
+    footer.innerHTML = `<span class="footer-hint">${esc(_statusMsg || 'Select a session to get started.')}</span>`;
   }
 
   // ── Lap loading ───────────────────────────────────────────────────────────────
@@ -516,7 +460,16 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : ''}
     } catch (_) {
       _lapDetails[session.csv_path] = [];
     }
-    if (_selCsv === session.csv_path) renderRight();
+    if (_selCsv === session.csv_path) {
+      renderRight();
+      // Update previewSession with best lap index now that we know it
+      const laps  = _lapDetails[session.csv_path] || [];
+      const best  = laps.find(l => l.is_best) || laps[0];
+      const prev  = State.get('previewSession');
+      if (prev && prev.csv_path === session.csv_path && best) {
+        State.set('previewSession', { ...prev, lap_idx: best.lap_idx });
+      }
+    }
   }
 
   // ── Meta enrichment (track, laps, best) ──────────────────────────────────────
@@ -552,6 +505,7 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : ''}
     _statusMsg = msg;
     const el = _container?.querySelector('#scan-status');
     if (el) el.textContent = msg;
+    refreshFooter();
   }
 
   async function doScan(auto = false) {
@@ -583,12 +537,65 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : ''}
       renderLeft();
       setStatus(`${_sessions.length} session${_sessions.length!==1?'s':''} found.`);
       enrichMeta(_sessions);
+      // Persist the full merged list so next startup shows cached results immediately
+      API.saveSessionsCache(_sessions).catch(() => {});
     } catch (e) {
       setStatus('Scan failed: ' + e);
     }
 
     _scanning = false;
     _container?.querySelector('#scan-btn')?.removeAttribute('disabled');
+  }
+
+  // ── Drag resizer ──────────────────────────────────────────────────────────────
+
+  function initResizer(container) {
+    const split     = container.querySelector('#data-split');
+    const leftPanel = container.querySelector('#data-left-panel');
+    const resizer   = container.querySelector('#data-resizer');
+    if (!split || !leftPanel || !resizer) return;
+
+    // Restore saved ratio (default 50%)
+    const saved = parseFloat(localStorage.getItem('data-split-ratio') || '0.5');
+    leftPanel.style.flexBasis = (saved * 100).toFixed(2) + '%';
+
+    let dragging = false;
+
+    resizer.addEventListener('mousedown', e => {
+      dragging = true;
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+
+    const onMove = e => {
+      if (!dragging) return;
+      const rect  = split.getBoundingClientRect();
+      let   ratio = (e.clientX - rect.left) / rect.width;
+      ratio = Math.max(0.2, Math.min(0.8, ratio));
+      leftPanel.style.flexBasis = (ratio * 100).toFixed(2) + '%';
+    };
+
+    const onUp = () => {
+      if (!dragging) return;
+      dragging = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      // Persist
+      const rect      = split.getBoundingClientRect();
+      const leftRect  = leftPanel.getBoundingClientRect();
+      const ratio     = leftRect.width / rect.width;
+      localStorage.setItem('data-split-ratio', ratio.toFixed(4));
+    };
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+
+    // Clean up on unmount (store removers on the container element)
+    container._resizerCleanup = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    };
   }
 
   // ── Mount / Unmount ────────────────────────────────────────────────────────────
@@ -609,12 +616,12 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : ''}
   </div>
   <div class="page-divider"></div>
 
-  <div class="data-split">
+  <div class="data-split" id="data-split">
 
     <!-- Left: session list -->
-    <div class="data-left-panel">
+    <div class="data-left-panel" id="data-left-panel">
       <div class="dl-header">
-        <span class="dl-col dl-col-icon"></span>
+        <span class="dl-col dl-col-sync">Sync</span>
         <span class="dl-col dl-col-time">Time</span>
         <span class="dl-col dl-col-track">Track</span>
         <span class="dl-col dl-col-src">Source</span>
@@ -624,6 +631,9 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : ''}
       <div class="dl-scroll" id="data-left"></div>
     </div>
 
+    <!-- Drag resizer -->
+    <div class="data-resizer" id="data-resizer"></div>
+
     <!-- Right: detail + sync -->
     <div class="data-right-panel" id="data-right">
       <div class="dr-empty">Select a session to see details and align video.</div>
@@ -632,11 +642,17 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : ''}
   </div>
 
   <div class="data-footer" id="data-footer">
-    <span class="footer-hint">Select a session, pick laps, click <strong>+ Add to Export</strong></span>
+    <span class="footer-hint">Select a session to get started.</span>
   </div>
 </div>`;
 
     container.querySelector('#scan-btn').addEventListener('click', () => doScan(false));
+    initResizer(container);
+
+    // Await the video server port before rendering so videoUrl() is correct from the start
+    if (!_videoPort) {
+      _videoPort = await API.getVideoServerPort().catch(() => 0);
+    }
 
     // If we already have sessions from this session's scan, restore immediately
     if (_sessions.length > 0) {
@@ -678,6 +694,7 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : ''}
   }
 
   function unmount() {
+    if (_container?._resizerCleanup) _container._resizerCleanup();
     _container = null;
     // Module state preserved intentionally
   }

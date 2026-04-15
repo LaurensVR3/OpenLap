@@ -9,6 +9,7 @@ const State = (() => {
     selectedItems: [],        // items queued for export [{csv_path, lap_idx, video_paths, ...}]
     scanStatus:    'idle',    // 'idle' | 'scanning' | 'done' | 'error'
     scanMessage:   '',
+    previewSession: null,     // {csv_path, lap_idx, video_paths, sync_offset} for live overlay preview
   };
 
   const _listeners = {};

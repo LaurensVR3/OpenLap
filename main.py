@@ -1,23 +1,32 @@
 """
-main.py — OpenLap entry point (PyWebView build).
+main.py — OpenLap entry point.
 
 Run with:
     python main.py
-
-For the old Tkinter UI (while migrating), run:
-    python app_shell.py
 """
 from __future__ import annotations
 
 import logging
+import logging.handlers
 import os
 import sys
 from pathlib import Path
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(levelname)s %(name)s: %(message)s',
-)
+
+def _setup_logging() -> None:
+    log_dir = Path.home() / '.openlap' / 'logs'
+    log_dir.mkdir(parents=True, exist_ok=True)
+    fmt = logging.Formatter('%(asctime)s %(levelname)-8s %(name)s — %(message)s')
+    fh = logging.handlers.RotatingFileHandler(
+        str(log_dir / 'openlap.log'), maxBytes=2*1024*1024, backupCount=3, encoding='utf-8')
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(fmt)
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG)
+    root.addHandler(fh)
+
+
+_setup_logging()
 
 # ── Locate frontend assets ────────────────────────────────────────────────────
 # When running from source:  frontend/ is next to main.py
@@ -53,7 +62,7 @@ def main():
     api.set_window(window)
 
     # Use GUI thread blocking call — webview.start() must be on main thread.
-    webview.start(debug=('--debug' in sys.argv))
+    webview.start(debug=True)
 
 
 if __name__ == '__main__':

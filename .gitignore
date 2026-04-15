@@ -4,3 +4,17 @@ __pycache__/
 racebox_auth.json
 *.dll
 .claude/
+
+# Build / distribution
+build/
+dist/
+*.egg-info/
+
+# Node
+node_modules/
+
+# Auto-generated PyInstaller spec (not the real one)
+pyproject.spec
+
+# Logs
+*.log

@@ -27,34 +27,23 @@ class OverlayElement:
     h: float = 0.25  # height as fraction of video height
 
 
-@dataclass
-class GaugeConfig:
-    """One individual gauge element."""
-    channel:  str       = 'speed'
-    style:    str       = 'Dial'
-    visible:  bool      = True
-    x: float = 0.0
-    y: float = 0.0
-    w: float = 0.12
-    h: float = 0.20
-    channels: List[str] = field(default_factory=list)  # multi-line sub-channels
-
-
-def _default_gauges() -> List[GaugeConfig]:
+def _default_gauges() -> List[dict]:
+    """Return the built-in default gauge layout as plain dicts."""
     return [
-        GaugeConfig(channel='map',        style='Circuit', x=0.74, y=0.02, w=0.24, h=0.30),
-        GaugeConfig(channel='speed',      style='Dial',    x=0.01, y=0.74, w=0.13, h=0.23),
-        GaugeConfig(channel='gforce_lat', style='Bar',     x=0.15, y=0.74, w=0.10, h=0.23),
-        GaugeConfig(channel='gforce_lon', style='Bar',     x=0.26, y=0.74, w=0.10, h=0.23),
-        GaugeConfig(channel='lap_time',   style='Numeric', x=0.37, y=0.74, w=0.13, h=0.23),
+        {'channel': 'map',        'style': 'Circuit', 'visible': True, 'x': 0.74, 'y': 0.02, 'w': 0.24, 'h': 0.30},
+        {'channel': 'speed',      'style': 'Dial',    'visible': True, 'x': 0.01, 'y': 0.74, 'w': 0.13, 'h': 0.23},
+        {'channel': 'gforce_lat', 'style': 'Bar',     'visible': True, 'x': 0.15, 'y': 0.74, 'w': 0.10, 'h': 0.23},
+        {'channel': 'gforce_lon', 'style': 'Bar',     'visible': True, 'x': 0.26, 'y': 0.74, 'w': 0.10, 'h': 0.23},
+        {'channel': 'lap_time',   'style': 'Numeric', 'visible': True, 'x': 0.37, 'y': 0.74, 'w': 0.13, 'h': 0.23},
     ]
 
 
 @dataclass
 class OverlayLayout:
-    is_bike: bool              = False
-    theme:   str               = 'Dark'
-    gauges:  List[GaugeConfig] = field(default_factory=_default_gauges)
+    is_bike:  bool       = False
+    theme:    str        = 'Dark'
+    ref_mode: str        = 'none'   # 'none' | 'session_best'
+    gauges:   List[dict] = field(default_factory=_default_gauges)
 
 
 @dataclass
@@ -80,6 +69,9 @@ class AppConfig:
     # key = absolute CSV path, value = {track, vehicle, session_type} manual overrides
     racebox_email:  str = ""
     # Stored for convenience; password is never persisted
+    encoder: str   = 'libx264'
+    crf:     int   = 18
+    workers: int   = 4
 
     def all_telemetry_paths(self) -> List[str]:
         """Return all unique non-empty telemetry paths to scan.
@@ -204,15 +196,21 @@ def overlay_from_dict(overlay_data: dict) -> OverlayLayout:
         })
 
     if raw_gauges:
-        gauges = [GaugeConfig(**{k: g[k] for k in GaugeConfig.__dataclass_fields__ if k in g})
-                  for g in raw_gauges]
+        gauges = []
+        for g in raw_gauges:
+            gd = dict(g)
+            # Migrate old 'channels' field name to 'multi_channels'
+            if 'channels' in gd and 'multi_channels' not in gd and gd.get('channel') == 'multi':
+                gd['multi_channels'] = gd.pop('channels')
+            gauges.append(gd)
     else:
         gauges = _default_gauges()
 
     return OverlayLayout(
-        is_bike = overlay_data.get('is_bike', False),
-        theme   = overlay_data.get('theme',   'Dark'),
-        gauges  = gauges,
+        is_bike  = overlay_data.get('is_bike', False),
+        theme    = overlay_data.get('theme',   'Dark'),
+        ref_mode = overlay_data.get('ref_mode', 'none'),
+        gauges   = gauges,
     )
 
 
@@ -241,4 +239,8 @@ def _from_dict(data: dict) -> AppConfig:
         presets        = presets,
         active_preset  = active_preset,
         session_info   = data.get('session_info',   {}),
+        racebox_email  = data.get('racebox_email',  ''),
+        encoder        = data.get('encoder',        'libx264'),
+        crf            = int(data.get('crf',        18)),
+        workers        = int(data.get('workers',    4)),
     )

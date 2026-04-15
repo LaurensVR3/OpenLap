@@ -132,6 +132,7 @@ def gauge_data_lap_info(history: list) -> dict:
         'total_laps': last.get('li_total_laps', 1),
         'lap_elapsed': last.get('t',            0.0),
         'best_so_far': last.get('li_best_so_far'),   # float or None
+        'delta_time':  last.get('delta_time'),        # live delta vs reference lap, or None
     }
 
 
@@ -142,6 +143,7 @@ def dummy_lap_info_data() -> dict:
         'total_laps': 8,
         'lap_elapsed': 45.234,
         'best_so_far': 83.456,
+        'delta_time': -0.234,
     }
 
 

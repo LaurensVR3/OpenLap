@@ -42,3 +42,5 @@ include = ["styles*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
+
+# Frontend JS tests: npm run test:run  (Vitest + jsdom, see vitest.config.js)

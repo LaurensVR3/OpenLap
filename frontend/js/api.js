@@ -45,6 +45,13 @@ const API = (() => {
       ]}),
       get_about_info:    () => ({ python: '3.x.x', config: '~/.openlap/config.json' }),
       get_session_meta:  () => ({ track: '', laps: '', best: '', best_secs: null }),
+      get_video_server_port:    () => 0,
+      save_sessions_cache:      () => null,
+      convert_xrk_session:       () => ({ ok: false, error: 'mock' }),
+      assign_video:              () => null,
+      aim_dll_status:            () => ({ found: false, path: '' }),
+      download_racebox_sessions: () => null,
+      cancel_racebox_download:   () => null,
     };
     const fn = mocks[method];
     return fn ? fn() : null;
@@ -91,9 +98,17 @@ const API = (() => {
     editSessionInfo:   (path, overrides) => call('edit_session_info', path, overrides),
 
     getSessionMeta:    (csvPath)       => call('get_session_meta', csvPath),
+    getVideoServerPort:  ()             => call('get_video_server_port'),
+    saveSessionsCache:   (sessions)     => call('save_sessions_cache', sessions),
 
     raceboxLogin:      (email, password) => call('racebox_login', email, password),
     checkEncoders:     ()              => call('check_encoders'),
     getAboutInfo:      ()              => call('get_about_info'),
+
+    convertXrkSession:        (csvPath)            => call('convert_xrk_session', csvPath),
+    assignVideo:              (csvPath, videoPath) => call('assign_video', csvPath, videoPath),
+    aimDllStatus:             ()                   => call('aim_dll_status'),
+    downloadRaceboxSessions:  ()                   => call('download_racebox_sessions'),
+    cancelRaceboxDownload:    ()                   => call('cancel_racebox_download'),
   };
 })();
