@@ -616,7 +616,9 @@ class WebviewAPI:
         """Return diagnostic strings for the About section."""
         import sys
         from app_config import CONFIG_FILE
+        from _version import __version__
         return {
+            'version': __version__,
             'python': f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}',
             'config': str(CONFIG_FILE),
         }

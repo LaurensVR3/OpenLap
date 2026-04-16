@@ -43,7 +43,7 @@ const API = (() => {
       check_encoders:    () => ({ version: 'mock', encoders: [
         { name: 'libx264', label: 'H.264 software', available: true },
       ]}),
-      get_about_info:    () => ({ python: '3.x.x', config: '~/.openlap/config.json' }),
+      get_about_info:    () => ({ version: '0.0.0-mock', python: '3.x.x', config: '~/.openlap/config.json' }),
       get_session_meta:  () => ({ track: '', laps: '', best: '', best_secs: null }),
       get_video_server_port:    () => 0,
       save_sessions_cache:      () => null,

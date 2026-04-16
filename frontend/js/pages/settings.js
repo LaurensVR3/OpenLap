@@ -142,7 +142,7 @@
     <!-- About -->
     <section class="settings-section">
       <div class="section-title">About</div>
-      <div class="about-row"><span class="about-key">Version</span><span class="about-val">0.1.0</span></div>
+      <div class="about-row"><span class="about-key">Version</span><span class="about-val" id="about-version">—</span></div>
       <div class="about-row"><span class="about-key">Python</span><span class="about-val" id="about-python">—</span></div>
       <div class="about-row"><span class="about-key">Config</span>
         <span class="about-val" id="about-config" style="font-family:var(--mono); font-size:10px">—</span>
@@ -402,8 +402,10 @@
     // Populate about section
     API.getAboutInfo().then(info => {
       if (!info) return;
+      const verEl = $('about-version');
       const pyEl  = $('about-python');
       const cfgEl = $('about-config');
+      if (verEl && info.version) verEl.textContent = info.version;
       if (pyEl  && info.python)  pyEl.textContent  = info.python;
       if (cfgEl && info.config)  cfgEl.textContent = info.config;
     }).catch(() => {});

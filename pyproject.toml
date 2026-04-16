@@ -4,7 +4,7 @@ build-backend = "setuptools.backends.legacy:build"
 
 [project]
 name = "openlap"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Free, open-source motorsport telemetry overlay software for RaceBox, AIM MyChron, MoTeC, and GPX data. Renders professional gauge overlays on racing video."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -34,6 +34,9 @@ dev = [
 
 [project.scripts]
 openlap = "main:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "_version.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["."]
