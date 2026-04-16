@@ -48,6 +48,7 @@ def run_export(
     log_cb:         Callable[[str], None],
     progress_cb:    Callable[[float, str], None],
     done_cb:        Callable[[bool, str], None],
+    overlay_only:   bool = False,
 ) -> None:
     """Render one or more sessions.  Designed to be called from a background thread."""
     import gpx_data, aim_data, racebox_data, motec_data
@@ -114,10 +115,12 @@ def run_export(
                     pt.lean_angle = compute_lean_angle(
                         pt.speed, pt.gyro_z, pt.gforce_y)
 
-        if not videos and scope != 'full':
+        if not videos and (scope != 'full' or overlay_only):
             log("  ✗ No video file — skipping")
             done_jobs += 1
             continue
+
+        _ext = '.mov' if overlay_only else '.mp4'
 
         # ── Join phase ────────────────────────────────────────────────────────
         video_path = videos[0] if videos else None
@@ -173,7 +176,7 @@ def run_export(
                     continue
                 lap   = sess.laps[lap_idx]
                 label = f"Lap{lap_idx + 1:02d}"
-                out   = os.path.join(export_path, f"{_export_stem(sess, label)}.mp4")
+                out   = os.path.join(export_path, f"{_export_stem(sess, label)}{_ext}")
                 log(f"  Lap {lap_idx + 1}: {lap.duration:.3f}s → {os.path.basename(out)}")
                 render_lap(
                     video_path, out, sess, RenderJob(_export_stem(sess, label), lap),
@@ -184,6 +187,7 @@ def run_export(
                     progress_cb=scaled_prog, log_cb=log,
                     reference_lap=reference_lap,
                     info_overrides=info_overrides,
+                    overlay_only=overlay_only,
                 )
 
             elif item_scope == 'fastest':
@@ -192,7 +196,7 @@ def run_export(
                     log("  ✗ No timed lap found")
                     done_jobs += 1
                     continue
-                out = os.path.join(export_path, f"{_export_stem(sess, 'Fastest')}.mp4")
+                out = os.path.join(export_path, f"{_export_stem(sess, 'Fastest')}{_ext}")
                 log(f"  Fastest lap: {lap.duration:.3f}s → {os.path.basename(out)}")
                 render_lap(
                     video_path, out, sess, RenderJob(_export_stem(sess, 'Fastest'), lap),
@@ -203,6 +207,7 @@ def run_export(
                     progress_cb=scaled_prog, log_cb=log,
                     reference_lap=reference_lap,
                     info_overrides=info_overrides,
+                    overlay_only=overlay_only,
                 )
 
             elif item_scope == 'all_laps':
@@ -213,7 +218,7 @@ def run_export(
                     continue
                 for i, lap in enumerate(laps, 1):
                     label = f"Lap{i:02d}"
-                    out = os.path.join(export_path, f"{_export_stem(sess, label)}.mp4")
+                    out = os.path.join(export_path, f"{_export_stem(sess, label)}{_ext}")
                     log(f"  Lap {i}/{len(laps)}: {lap.duration:.3f}s")
                     render_lap(
                         video_path, out, sess, RenderJob(_export_stem(sess, label), lap),
@@ -224,10 +229,11 @@ def run_export(
                         progress_cb=scaled_prog, log_cb=log,
                         reference_lap=reference_lap,
                         info_overrides=info_overrides,
+                        overlay_only=overlay_only,
                     )
 
             elif item_scope == 'full':
-                out = os.path.join(export_path, f"{_export_stem(sess, 'Full')}.mp4")
+                out = os.path.join(export_path, f"{_export_stem(sess, 'Full')}{_ext}")
                 log(f"  Full session → {os.path.basename(out)}")
                 render_lap(
                     video_path or '', out, sess, RenderJob(_export_stem(sess, 'Full'), None),
@@ -238,6 +244,7 @@ def run_export(
                     progress_cb=scaled_prog, log_cb=log,
                     reference_lap=reference_lap,
                     info_overrides=info_overrides,
+                    overlay_only=overlay_only,
                 )
 
             elif item_scope == 'clip':
@@ -259,7 +266,7 @@ def run_export(
                     duration = c_end - c_start,
                 )
                 tag = f"Clip_{int(c_start)}s_{int(c_end)}s"
-                out = os.path.join(export_path, f"{_export_stem(sess, tag)}.mp4")
+                out = os.path.join(export_path, f"{_export_stem(sess, tag)}{_ext}")
                 log(f"  Clip {c_start:.1f}s–{c_end:.1f}s → {os.path.basename(out)}")
                 render_lap(
                     video_path or '', out, sess, RenderJob(_export_stem(sess, tag), clip_lap),
@@ -270,6 +277,7 @@ def run_export(
                     reference_lap=reference_lap,
                     progress_cb=scaled_prog, log_cb=log,
                     info_overrides=info_overrides,
+                    overlay_only=overlay_only,
                 )
 
         except Exception as e:

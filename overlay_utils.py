@@ -47,6 +47,28 @@ def blend_rgba(frame: np.ndarray, rgba: np.ndarray, x: int, y: int) -> None:
     frame[y1:y2, x1:x2] = (roi * (1 - alpha) + rgb * alpha).astype(np.uint8)
 
 
+def blend_rgba_onto_rgba(frame: np.ndarray, rgba: np.ndarray, x: int, y: int) -> None:
+    """Alpha-composite an RGBA image onto an RGBA frame in-place (source-over)."""
+    h, w = rgba.shape[:2]
+    fh, fw = frame.shape[:2]
+    x1, y1 = max(x, 0), max(y, 0)
+    x2, y2 = min(x + w, fw), min(y + h, fh)
+    if x2 <= x1 or y2 <= y1:
+        return
+    sx, sy = x1 - x, y1 - y
+    src     = rgba[sy:sy+(y2-y1), sx:sx+(x2-x1)]
+    src_a   = src[:, :, 3:4].astype(np.float32) / 255.0
+    src_rgb = src[:, :, :3].astype(np.float32)
+    dst     = frame[y1:y2, x1:x2]
+    dst_a   = dst[:, :, 3:4].astype(np.float32) / 255.0
+    dst_rgb = dst[:, :, :3].astype(np.float32)
+    out_a   = src_a + dst_a * (1.0 - src_a)
+    safe_a  = np.where(out_a > 0.0, out_a, 1.0)
+    out_rgb = (src_rgb * src_a + dst_rgb * dst_a * (1.0 - src_a)) / safe_a
+    frame[y1:y2, x1:x2, :3] = np.clip(out_rgb, 0, 255).astype(np.uint8)
+    frame[y1:y2, x1:x2, 3:4] = np.clip(out_a * 255, 0, 255).astype(np.uint8)
+
+
 # ── Dummy data for editor previews ────────────────────────────────────────────
 
 def dummy_telemetry_data(is_bike: bool = False) -> dict:

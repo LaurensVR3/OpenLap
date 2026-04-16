@@ -141,6 +141,10 @@
               <option value="full">Full Session</option>
             </select>
           </div>
+          <div class="form-row">
+            <label>Overlay only (.mov)</label>
+            <input type="checkbox" id="exp-overlay-only" class="input-checkbox" title="Export a transparent ProRes 4444 overlay — drop it over your source clip in DaVinci Resolve, Premiere or Final Cut.">
+          </div>
         </div>
       </div>
 
@@ -290,6 +294,7 @@
       show_map:     layout.show_map   ?? true,
       show_tel:     layout.show_tel   ?? true,
       export_path:  cfg.export_path   || '',
+      overlay_only: $('exp-overlay-only')?.checked || false,
       layout,
     };
 

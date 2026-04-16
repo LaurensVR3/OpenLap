@@ -467,6 +467,7 @@ class WebviewAPI:
                 log_cb        = log_cb,
                 progress_cb   = progress_cb,
                 done_cb       = done_cb,
+                overlay_only  = params.get('overlay_only', False),
             )
         except Exception as e:
             done_cb(False, str(e))

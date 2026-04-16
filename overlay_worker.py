@@ -6,7 +6,7 @@ This module owns blend_rgba, default_layout, and the multiprocessing worker.
 """
 from __future__ import annotations
 import os
-from overlay_utils import blend_rgba, scale_factor   # re-export scale_factor for rb_render
+from overlay_utils import blend_rgba, blend_rgba_onto_rgba, scale_factor   # re-export scale_factor for rb_render
 
 # Per-process image cache: (path, mtime) → RGBA ndarray
 _IMAGE_CACHE: dict = {}
@@ -61,10 +61,16 @@ def render_frame_worker(args: tuple) -> bytes:
     ref_lats      = _extra[1] if len(_extra) > 1 else []
     ref_lons      = _extra[2] if len(_extra) > 2 else []
     ref_duration  = _extra[3] if len(_extra) > 3 else 0.0
+    overlay_only  = _extra[4] if len(_extra) > 4 else False
 
     from gauge_channels import gauge_data_lap_info
 
-    frame  = np.frombuffer(frame_bytes, dtype=np.uint8).reshape(shape).copy()
+    if overlay_only:
+        frame  = np.zeros((vh, vw, 4), dtype=np.uint8)
+        _blend = blend_rgba_onto_rgba
+    else:
+        frame  = np.frombuffer(frame_bytes, dtype=np.uint8).reshape(shape).copy()
+        _blend = blend_rgba
     layout = overlay_layout or default_layout()
     theme  = layout.get('theme', 'Dark')
 
@@ -89,7 +95,7 @@ def render_frame_worker(args: tuple) -> bytes:
             gd['_theme'] = theme
             try:
                 img = render_style('gauge', style, gd, gw, gh)
-                blend_rgba(frame, img, gx, gy)
+                _blend(frame, img, gx, gy)
             except Exception:
                 pass
             continue
@@ -99,7 +105,7 @@ def render_frame_worker(args: tuple) -> bytes:
             gd['_theme'] = theme
             try:
                 img = render_style('gauge', style, gd, gw, gh)
-                blend_rgba(frame, img, gx, gy)
+                _blend(frame, img, gx, gy)
             except Exception:
                 pass
             continue
@@ -124,7 +130,7 @@ def render_frame_worker(args: tuple) -> bytes:
                 if opacity < 1.0:
                     rgba = rgba.copy()
                     rgba[:, :, 3] = (rgba[:, :, 3] * opacity).astype(rgba.dtype)
-                blend_rgba(frame, rgba, gx, gy)
+                _blend(frame, rgba, gx, gy)
             except Exception:
                 pass
             continue
@@ -153,7 +159,7 @@ def render_frame_worker(args: tuple) -> bytes:
             }
             try:
                 mi = render_style('map', style, data, max(60, gw), max(60, gh))
-                blend_rgba(frame, mi, gx, gy)
+                _blend(frame, mi, gx, gy)
             except Exception:
                 pass
         elif show_telemetry and history:
@@ -184,7 +190,7 @@ def render_frame_worker(args: tuple) -> bytes:
                     gd['value_gy']   = history[-1].get('gy', 0.0) if history else 0.0
             try:
                 img = render_style('gauge', style, gd, gw, gh)
-                blend_rgba(frame, img, gx, gy)
+                _blend(frame, img, gx, gy)
             except Exception:
                 pass
 

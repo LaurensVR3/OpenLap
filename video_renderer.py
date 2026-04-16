@@ -428,6 +428,7 @@ def render_lap(
     log_cb:         Optional[Callable[[str], None]] = None,
     reference_lap:  Optional[Lap] = None,    # lap to compare against for delta time
     info_overrides: Optional[dict] = None,  # manual session-info overrides {info_track, …}
+    overlay_only:   bool  = False,           # render transparent overlay .mov (ProRes 4444)
 ) -> None:
     """
     Render one video with telemetry overlay.
@@ -495,11 +496,40 @@ def render_lap(
             f"Set the sync offset in the Data tab (scrub to where lap 1 starts, then click Mark)."
         )
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, f_start)
+    if overlay_only:
+        import subprocess as _sp, threading as _th, queue as _q_mod
+        _ov_blank = np.zeros((vh, vw, 4), dtype=np.uint8)
+        _ov_proc  = _popen(
+            ['ffmpeg', '-y', '-hide_banner',
+             '-f', 'rawvideo', '-vcodec', 'rawvideo',
+             '-s', f'{vw}x{vh}', '-r', str(fps),
+             '-pix_fmt', 'rgba', '-i', 'pipe:0',
+             '-vcodec', 'prores_ks', '-profile:v', '4444',
+             '-pix_fmt', 'yuva444p10le',
+             out_path],
+            stdin=_sp.PIPE, stderr=_sp.PIPE,
+        )
+        _ov_stderr: list = []
+        _ov_queue: _q_mod.Queue = _q_mod.Queue(maxsize=n_workers * 4)
 
-    tmp_raw = out_path.replace('.mp4', '_raw.avi')
-    writer  = cv2.VideoWriter(
-        tmp_raw, cv2.VideoWriter_fourcc(*'MJPG'), fps, (vw, vh))
+        def _ov_write_loop():
+            while True:
+                item = _ov_queue.get()
+                if item is None:
+                    _ov_proc.stdin.close()
+                    break
+                _ov_proc.stdin.write(item)
+
+        _th.Thread(target=lambda: _ov_stderr.extend(_ov_proc.stderr), daemon=True).start()
+        _ov_writer = _th.Thread(target=_ov_write_loop, daemon=False)
+        _ov_writer.start()
+        writer  = None
+        tmp_raw = None
+    else:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, f_start)
+        tmp_raw = out_path.replace('.mp4', '_raw.avi')
+        writer  = cv2.VideoWriter(
+            tmp_raw, cv2.VideoWriter_fourcc(*'MJPG'), fps, (vw, vh))
 
     # ── Session metadata + max speed + map data ───────────────────────────────
     _session_meta = _build_session_meta(session, info_overrides)
@@ -559,9 +589,12 @@ def render_lap(
             for _ in range(chunk):
                 if frame_idx >= f_end:
                     break
-                ret, frm = cap.read()
-                if not ret:
-                    break
+                if overlay_only:
+                    frm = _ov_blank
+                else:
+                    ret, frm = cap.read()
+                    if not ret:
+                        break
 
                 vid_t     = frame_idx / fps
                 sess_t    = vid_t - sync_offset
@@ -644,7 +677,9 @@ def render_lap(
                 break
 
             args_list = [
-                (frm.tobytes(), frm.shape, cur_map_idx,
+                (b'' if overlay_only else frm.tobytes(),
+                 (vh, vw, 4) if overlay_only else frm.shape,
+                 cur_map_idx,
                  map_lats, map_lons,
                  hist, ref_hist, lap_dur,
                  vw, vh,
@@ -656,17 +691,23 @@ def render_lap(
                  _session_meta,
                  _ref_map_lats,
                  _ref_map_lons,
-                 _ref_lap_duration)
+                 _ref_lap_duration,
+                 overlay_only)
                 for frm, (hist, ref_hist, cur_map_idx) in zip(chunk_frames, chunk_meta)
             ]
 
             results = pool.map(render_frame_worker, args_list) if pool else \
                       [render_frame_worker(a) for a in args_list]
 
-            shape = chunk_frames[0].shape
-            for raw in results:
-                writer.write(np.frombuffer(raw, dtype=np.uint8).reshape(shape))
-                processed += 1
+            if overlay_only:
+                for raw in results:
+                    _ov_queue.put(raw)   # writer thread feeds ffmpeg; never blocks main loop
+                    processed += 1
+            else:
+                shape = chunk_frames[0].shape
+                for raw in results:
+                    writer.write(np.frombuffer(raw, dtype=np.uint8).reshape(shape))
+                    processed += 1
 
             prog(processed / n_frames * 85, f"Frame {processed}/{n_frames}")
     finally:
@@ -674,24 +715,35 @@ def render_lap(
             pool.terminate()
             pool.join()
 
-    cap.release()
-    writer.release()
-
-    prog(87, "Muxing audio…")
-    log("  Muxing audio…")
-    mux_dur_s = n_frames / fps if fps else 0.0
-    try:
-        mux_audio(tmp_raw, video_path, out_path, encoder, crf,
-                  audio_start=audio_start,
-                  total_s=mux_dur_s,
-                  prog_start=87.0, prog_end=100.0,
-                  progress_cb=progress_cb)
-        os.remove(tmp_raw)
+    if overlay_only:
+        cap.release()
+        _ov_queue.put(None)   # signal writer thread to close stdin and exit
+        _ov_writer.join()
+        _ov_proc.wait()
+        if _ov_proc.returncode != 0:
+            err = b''.join(_ov_stderr).decode(errors='replace')
+            raise VideoMuxError(err[-600:])
         prog(100, "")
         log(f"  ✓ Saved: {out_path}")
-    except Exception as e:
-        log(f"  ✗ Mux failed: {e}")
-        fallback = out_path.replace('.mp4', '_raw.avi')
-        if os.path.exists(tmp_raw):
-            os.rename(tmp_raw, fallback)
-        log(f"  Raw saved: {fallback}")
+    else:
+        cap.release()
+        writer.release()
+
+        prog(87, "Muxing audio…")
+        log("  Muxing audio…")
+        mux_dur_s = n_frames / fps if fps else 0.0
+        try:
+            mux_audio(tmp_raw, video_path, out_path, encoder, crf,
+                      audio_start=audio_start,
+                      total_s=mux_dur_s,
+                      prog_start=87.0, prog_end=100.0,
+                      progress_cb=progress_cb)
+            os.remove(tmp_raw)
+            prog(100, "")
+            log(f"  ✓ Saved: {out_path}")
+        except Exception as e:
+            log(f"  ✗ Mux failed: {e}")
+            fallback = out_path.replace('.mp4', '_raw.avi')
+            if os.path.exists(tmp_raw):
+                os.rename(tmp_raw, fallback)
+            log(f"  Raw saved: {fallback}")
