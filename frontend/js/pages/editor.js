@@ -1398,7 +1398,9 @@
     try {
       _presets = await API.listPresets();
       rebuildPresetSelector();
-    } catch (_) {}
+    } catch (err) {
+      console.warn('Failed to load preset list:', err);
+    }
   }
 
   function rebuildPresetSelector() {
@@ -1432,7 +1434,9 @@
   async function saveLayout() {
     try {
       await API.saveOverlay(_layout);
-    } catch (_) {}
+    } catch (err) {
+      console.error('saveLayout failed:', err);
+    }
   }
 
   // ── Mount ────────────────────────────────────────────────────────────────────

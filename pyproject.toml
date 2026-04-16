@@ -5,7 +5,7 @@ build-backend = "setuptools.backends.legacy:build"
 [project]
 name = "openlap"
 version = "0.1.0"
-description = "Motorsport telemetry overlay renderer"
+description = "Free, open-source motorsport telemetry overlay software for RaceBox, AIM MyChron, MoTeC, and GPX data. Renders professional gauge overlays on racing video."
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}

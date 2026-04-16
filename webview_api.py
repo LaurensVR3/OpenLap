@@ -326,7 +326,7 @@ class WebviewAPI:
                         'best': best_str, 'best_secs': best_secs}
 
         except Exception:
-            pass
+            logger.exception('get_session_meta failed for %s', csv_path)
         return {'track': '', 'laps': '', 'best': '', 'best_secs': None}
 
     # ── Lap loading ───────────────────────────────────────────────────────────
@@ -350,7 +350,8 @@ class WebviewAPI:
                     'is_inlap':     lap.is_inlap  if hasattr(lap, 'is_inlap')  else False,
                 })
             return result
-        except Exception as e:
+        except Exception:
+            logger.exception('get_laps failed for %s', csv_path)
             return []
 
     def load_lap_history(self, csv_path: str, lap_idx: int) -> list:

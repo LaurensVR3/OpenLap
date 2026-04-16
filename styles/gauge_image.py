@@ -13,6 +13,10 @@ ELEMENT_TYPE = 'gauge'
 
 import numpy as np
 
+# Cache rendered arrays keyed by (path, w, h, fit, opacity) so that each
+# worker process only loads and resizes the image once per unique combination.
+_render_cache: dict = {}
+
 
 def render(data: dict, w: int, h: int) -> np.ndarray:
     from PIL import Image as PILImage
@@ -25,6 +29,10 @@ def render(data: dict, w: int, h: int) -> np.ndarray:
 
     if not path:
         return _placeholder(out, w, h)
+
+    cache_key = (path, w, h, fit, opacity)
+    if cache_key in _render_cache:
+        return _render_cache[cache_key].copy()
 
     try:
         img = PILImage.open(path).convert('RGBA')
@@ -69,7 +77,8 @@ def render(data: dict, w: int, h: int) -> np.ndarray:
     if ex > sx and ey > sy:
         out[cy:cy + (ey - sy), cx:cx + (ex - sx)] = arr[sy:ey, sx:ex]
 
-    return out
+    _render_cache[cache_key] = out
+    return out.copy()
 
 
 def _placeholder(out: np.ndarray, w: int, h: int) -> np.ndarray:

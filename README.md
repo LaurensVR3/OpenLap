@@ -1,6 +1,10 @@
-# OpenLap
+# OpenLap — Free Motorsport Telemetry Overlay Software
 
-**OpenLap** is an open-source desktop application that overlays telemetry data on racing video footage. Point it at your telemetry files and a folder of videos, and it matches sessions, syncs timing, and renders professional-looking gauge overlays — all from a single window.
+**OpenLap** is a free, open-source desktop application that overlays telemetry data on racing video footage. It supports **RaceBox**, **AIM MyChron**, **MoTeC**, and **GPX** data sources and runs entirely on your PC — no subscription, no cloud, no fees.
+
+> A free alternative to RaceRender, Video VBOX, and TrackAddict for Windows.
+
+Point it at your telemetry files and a folder of race videos, and it matches sessions, syncs timing, and renders professional gauge overlays — all from a single window.
 
 > Licensed under the **GNU General Public License v3**. Free forever. Forks must stay open source.
 
@@ -26,7 +30,7 @@
 
 **Sample output video** — Karting Haute Picardie Arvillers:
 
-[![OpenLap sample output](https://img.youtube.com/vi/0XuByCyL_mA/maxresdefault.jpg)](https://www.youtube.com/watch?v=0XuByCyL_mA)
+[![OpenLap telemetry overlay on karting video — speed, RPM, G-force, circuit map gauges](https://img.youtube.com/vi/0XuByCyL_mA/maxresdefault.jpg)](https://www.youtube.com/watch?v=0XuByCyL_mA)
 
 ---
 
@@ -68,12 +72,12 @@
 
 ## Supported Data Sources
 
-| Source | File types | Notes |
+| Source | Devices / File types | Notes |
 |---|---|---|
-| **RaceBox** | `.csv` (RaceBox format) | Car and bike mode |
-| **AIM Mychron** | `.xrk` · `.xrz` · `.drk` | Auto-converted to CSV on scan |
-| **MoTeC** | `.ld` | Binary i2 format; full session lap timing |
-| **GPX** | `.gpx` | GPS track files; speed derived from position + timestamp |
+| **RaceBox** | RaceBox Mini, Mini S, Pro, Bike (`.csv`) | Car and bike mode; cloud download built-in |
+| **AIM MyChron** | MyChron 5, MyChron 5S, Solo 2 (`.xrk` · `.xrz` · `.drk`) | Auto-converted to CSV on scan |
+| **MoTeC** | Any MoTeC logger exporting `.ld` | Binary i2 format; full session lap timing |
+| **GPX** | Any GPS device or phone app (`.gpx`) | Speed derived from position + timestamp |
 
 ### Telemetry channels
 
@@ -88,6 +92,20 @@
 | `altitude` | Altitude | m |
 | `lap_time` | Lap Time | s |
 | `delta_time` | Delta | s |
+
+---
+
+## Why OpenLap?
+
+Most telemetry overlay tools are expensive, subscription-based, or locked to a single data source. OpenLap is:
+
+- **Free** — no licence fees, no watermarks, no export limits
+- **Open source** — GPL v3; inspect, modify, and contribute
+- **Multi-source** — RaceBox, AIM MyChron, MoTeC, and GPX in one app
+- **GPU-accelerated** — NVIDIA NVENC, AMD AMF, Intel QSV; renders fast on any modern PC
+- **Offline** — no internet required after initial setup; your data stays on your machine
+
+Common use cases: karting, circuit racing, track days, hillclimb, motorcycle track riding, autocross / autosolo.
 
 ---
 
@@ -128,7 +146,7 @@ Configuration is stored at `~/.openlap/config.json`.
 Configure folders for each telemetry source, your **Video Folder**, and **Export Folder**.
 
 - **RaceBox** — set the folder where CSVs are stored; log in to download new sessions from the cloud
-- **AIM Mychron** — point at the folder containing `.xrk` files; conversion to CSV happens automatically
+- **AIM MyChron** — point at the folder containing `.xrk` files; conversion to CSV happens automatically
 - **MoTeC** — point at the folder containing `.ld` files
 - **GPX** — point at the folder containing `.gpx` files
 

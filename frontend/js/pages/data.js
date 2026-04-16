@@ -457,7 +457,8 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
     try {
       const laps = await API.getLaps(session.csv_path);
       _lapDetails[session.csv_path] = laps;
-    } catch (_) {
+    } catch (err) {
+      console.warn('getLaps failed for', session.csv_path, err);
       _lapDetails[session.csv_path] = [];
     }
     if (_selCsv === session.csv_path) {
@@ -491,7 +492,9 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
           // Also mirror sync_offset from config
           if (_config?.offsets?.[s.csv_path] != null)
             s.sync_offset = _config.offsets[s.csv_path];
-        } catch (_) {}
+        } catch (err) {
+          console.warn('getSessionMeta failed for', s.csv_path, err);
+        }
       }));
       recomputeDayBest();
       renderLeft();
@@ -686,7 +689,9 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
         setTimeout(() => doScan(true), 200);
         return;
       }
-    } catch (_) {}
+    } catch (err) {
+      console.warn('Failed to load session cache:', err);
+    }
 
     // No cache: auto-scan immediately
     setStatus('Scanning…');
