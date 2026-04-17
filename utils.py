@@ -43,7 +43,9 @@ def compute_lean_angle(speed_kmh: float, gyro_z_deg_s: float,
     if abs(gyro_z_deg_s) > 1e-6:
         v = speed_kmh / 3.6                   # km/h → m/s
         w = gyro_z_deg_s * math.pi / 180.0    # °/s  → rad/s
-        return math.degrees(math.atan2(v * w, 9.81))
+        # Negate: gyro-based formula gives positive=left; we return positive=right.
+        return -math.degrees(math.atan2(v * w, 9.81))
     if abs(gforce_y) > 1e-6:
-        return math.degrees(math.atan(gforce_y))
+        # Negate: lateral G positive=left; we return positive=right.
+        return -math.degrees(math.atan(gforce_y))
     return 0.0

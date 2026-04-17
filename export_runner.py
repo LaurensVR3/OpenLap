@@ -53,7 +53,7 @@ def run_export(
     """Render one or more sessions.  Designed to be called from a background thread."""
     import gpx_data, aim_data, racebox_data, motec_data
     from video_renderer import render_lap, RenderJob, concat_videos
-    from racebox_data import Lap
+    from data_model import Lap
     from utils import compute_lean_angle
 
     def load_session(path):
@@ -169,9 +169,9 @@ def run_export(
 
         try:
             if item_scope == 'selected_lap':
-                lap_idx = item.get('lap_idx', 0)
-                if lap_idx >= len(sess.laps):
-                    log(f"  ✗ Lap {lap_idx + 1} not found in session ({len(sess.laps)} laps)")
+                lap_idx = int(item.get('lap_idx', 0))
+                if lap_idx < 0 or lap_idx >= len(sess.laps):
+                    log(f"  ✗ Invalid lap index {lap_idx} (session has {len(sess.laps)} laps)")
                     done_jobs += 1
                     continue
                 lap   = sess.laps[lap_idx]

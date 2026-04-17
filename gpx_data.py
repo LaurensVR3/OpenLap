@@ -25,7 +25,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from racebox_data import DataPoint, Lap, Session
+from data_model import DataPoint, Lap, Session
 from exceptions import NoDataRowsError, MissingHeaderError
 
 logger = logging.getLogger(__name__)

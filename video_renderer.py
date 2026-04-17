@@ -20,10 +20,11 @@ from utils import _run, _popen
 import cv2
 import numpy as np
 
-from racebox_data import Session, Lap
+from data_model import Session, Lap
 from overlay_worker import render_frame_worker, scale_factor, default_layout
 from exceptions import VideoConcatError, VideoMuxError, LapOutOfRangeError
 
+_N_SECTORS = 3  # number of track sectors used for delta-time display
 
 # ── FFmpeg helpers ─────────────────────────────────────────────────────────────
 
@@ -64,7 +65,9 @@ def concat_videos(input_files: List[str], output: str) -> None:
                     '-c:v', 'libx264', '-crf', '18', '-c:a', 'aac', output]
             r2 = _run(cmd2)
             if r2.returncode != 0:
-                raise VideoConcatError(r2.stderr.decode(errors='replace')[-600:])
+                err = r2.stderr.decode(errors='replace')
+                logger.error('FFmpeg concat failed:\n%s', err)
+                raise VideoConcatError(err[-600:])
     finally:
         os.unlink(concat_file)
 
@@ -212,12 +215,15 @@ def mux_audio(raw_video: str, audio_source: str,
         t.join()
         if proc.returncode != 0:
             err = b''.join(stderr_buf).decode(errors='replace')
+            logger.error('FFmpeg mux failed:\n%s', err)
             raise VideoMuxError(err[-600:])
     else:
         cmd = base_cmd + [output]
         r = _run(cmd)
         if r.returncode != 0:
-            raise VideoMuxError(r.stderr.decode(errors='replace')[-600:])
+            err = r.stderr.decode(errors='replace')
+            logger.error('FFmpeg mux failed:\n%s', err)
+            raise VideoMuxError(err[-600:])
 
 
 def video_duration(path: str) -> float:
@@ -298,7 +304,7 @@ def _setup_delta_time(reference_lap, job, session):
     # Sector splits
     sectors = []
     if job.lap is not None and cur_lap_t is not None and len(ref_dist_u) > 1:
-        N_SECTORS  = 3
+        N_SECTORS  = _N_SECTORS
         total_dist = float(ref_dist_u[-1])
         if total_dist > 50.0:
             ref_elapsed_u = ref_elapsed_full[ref_u_idx]
@@ -619,11 +625,15 @@ def render_lap(
                             if _cur_lap_t is not None:
                                 cur_d = float(np.interp(
                                     pt.lap_elapsed, _cur_lap_t, _cur_lap_d))
+                                if not math.isfinite(cur_d):
+                                    cur_d = 0.0
                             else:
                                 profile = _cur_lap_profiles.get(pt.lap)
                                 if profile is not None:
                                     cur_d = float(np.interp(
                                         pt.lap_elapsed, profile[0], profile[1]))
+                                    if not math.isfinite(cur_d):
+                                        cur_d = 0.0
                             delta_val = _delta_fn(pt.lap_elapsed, cur_d)
                         except Exception:
                             delta_val = 0.0
@@ -722,6 +732,7 @@ def render_lap(
         _ov_proc.wait()
         if _ov_proc.returncode != 0:
             err = b''.join(_ov_stderr).decode(errors='replace')
+            logger.error('FFmpeg ProRes export failed:\n%s', err)
             raise VideoMuxError(err[-600:])
         prog(100, "")
         log(f"  ✓ Saved: {out_path}")

@@ -5,8 +5,12 @@ Rendering is delegated to style plugins in styles/.
 This module owns blend_rgba, default_layout, and the multiprocessing worker.
 """
 from __future__ import annotations
+import logging
 import os
+from typing import Tuple
 from overlay_utils import blend_rgba, blend_rgba_onto_rgba, scale_factor   # re-export scale_factor for rb_render
+
+logger = logging.getLogger(__name__)
 
 # Per-process image cache: (path, mtime) → RGBA ndarray
 _IMAGE_CACHE: dict = {}
@@ -27,7 +31,7 @@ def default_layout() -> dict:
     }
 
 
-def render_frame_worker(args: tuple) -> bytes:
+def render_frame_worker(args: Tuple) -> bytes:
     """
     Multiprocessing worker: renders overlay onto one video frame.
 
@@ -96,8 +100,8 @@ def render_frame_worker(args: tuple) -> bytes:
             try:
                 img = render_style('gauge', style, gd, gw, gh)
                 _blend(frame, img, gx, gy)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug('Failed to render info gauge %s: %s', style, e)
             continue
 
         if channel == 'lap_info':
@@ -106,13 +110,16 @@ def render_frame_worker(args: tuple) -> bytes:
             try:
                 img = render_style('gauge', style, gd, gw, gh)
                 _blend(frame, img, gx, gy)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug('Failed to render lap_info gauge %s: %s', style, e)
             continue
 
         if channel == 'image':
             image_path = g.get('image_path', '')
             if not image_path or not os.path.isfile(image_path):
+                continue
+            if os.path.getsize(image_path) > 50 * 1024 * 1024:
+                logger.debug('Skipping oversized image (>50 MB): %s', image_path)
                 continue
             try:
                 import numpy as np
@@ -131,8 +138,8 @@ def render_frame_worker(args: tuple) -> bytes:
                     rgba = rgba.copy()
                     rgba[:, :, 3] = (rgba[:, :, 3] * opacity).astype(rgba.dtype)
                 _blend(frame, rgba, gx, gy)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug('Failed to render image gauge %s: %s', image_path, e)
             continue
 
         if channel == 'map':
@@ -160,8 +167,8 @@ def render_frame_worker(args: tuple) -> bytes:
             try:
                 mi = render_style('map', style, data, max(60, gw), max(60, gh))
                 _blend(frame, mi, gx, gy)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug('Failed to render map gauge %s: %s', style, e)
         elif show_telemetry and history:
             if channel == MULTI_CHANNEL:
                 sub_channels = g.get('multi_channels') or g.get('channels') or []
@@ -191,7 +198,7 @@ def render_frame_worker(args: tuple) -> bytes:
             try:
                 img = render_style('gauge', style, gd, gw, gh)
                 _blend(frame, img, gx, gy)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug('Failed to render gauge %s/%s: %s', channel, style, e)
 
     return frame.tobytes()

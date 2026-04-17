@@ -99,7 +99,7 @@ class AppConfig:
     def save(self) -> None:
         CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(asdict(self), f, indent=2)
+            json.dump(asdict(self), f, indent=2, default=str)
 
     def schedule_save(self, delay: float = 0.5) -> None:
         """Debounced save — flushes to disk at most once per *delay* seconds.

@@ -43,7 +43,7 @@ def test_load_csv_bike_is_bike(racebox_bike_csv_path):
 def test_load_csv_bike_lean_angle(racebox_bike_csv_path):
     session = load_csv(racebox_bike_csv_path)
     leans = [p.lean_angle for p in session.all_points]
-    assert max(leans) > 0.0  # fixture has non-zero lean angles
+    assert any(l != 0.0 for l in leans)  # fixture has non-zero lean angles
 
 
 # ── elapsed is monotonically non-decreasing ────────────────────────────────────

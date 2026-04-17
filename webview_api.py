@@ -23,6 +23,11 @@ from app_config import AppConfig, overlay_from_dict, load_scan_cache, save_scan_
 
 logger = logging.getLogger(__name__)
 
+_ALLOWED_VIDEO_EXTENSIONS = frozenset({
+    '.mp4', '.mov', '.avi', '.mkv', '.m4v',
+    '.MP4', '.MOV', '.AVI', '.MKV', '.M4V',
+})
+
 
 class _VideoFileHandler(http.server.BaseHTTPRequestHandler):
     """Minimal HTTP handler that serves arbitrary local files with range support.
@@ -42,6 +47,14 @@ class _VideoFileHandler(http.server.BaseHTTPRequestHandler):
             raw = urllib.parse.unquote(parsed.path)
             if raw.startswith('/') and len(raw) > 2 and raw[2] == ':':
                 raw = raw[1:]
+
+        # Security: only serve recognised video extensions to prevent path traversal
+        ext = os.path.splitext(raw)[1]
+        if ext not in _ALLOWED_VIDEO_EXTENSIONS:
+            logger.warning('VideoServer 403: disallowed extension %s for %s', ext, raw)
+            self.send_error(403, 'Forbidden')
+            return
+
         logger.debug('VideoServer GET %s → %s (exists=%s)', self.path, raw, os.path.isfile(raw))
         if not os.path.isfile(raw):
             logger.warning('VideoServer 404: %s', raw)
@@ -51,10 +64,17 @@ class _VideoFileHandler(http.server.BaseHTTPRequestHandler):
         mime  = mimetypes.guess_type(raw)[0] or 'application/octet-stream'
         rng   = self.headers.get('Range', '')
         if rng:
-            parts = rng.replace('bytes=', '').split('-')
-            start = int(parts[0])
-            end   = int(parts[1]) if parts[1] else size - 1
-            end   = min(end, size - 1)
+            try:
+                parts = rng.replace('bytes=', '').split('-')
+                start = int(parts[0]) if parts[0] else 0
+                end   = int(parts[1]) if parts[1] else size - 1
+            except (ValueError, IndexError):
+                self.send_error(400, 'Invalid Range header')
+                return
+            end = min(end, size - 1)
+            if start < 0 or start > end or start >= size:
+                self.send_error(416, 'Range Not Satisfiable')
+                return
             length = end - start + 1
             self.send_response(206)
             self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
@@ -97,6 +117,7 @@ class WebviewAPI:
         self._export_thread: Optional[threading.Thread] = None
         self._rb_cancel  = threading.Event()
         self._rb_thread:  Optional[threading.Thread] = None
+        self._thread_lock = threading.Lock()
 
     # ── Called by main.py once the window is ready ────────────────────────────
     def set_window(self, window: webview.Window) -> None:
@@ -357,7 +378,6 @@ class WebviewAPI:
     def load_lap_history(self, csv_path: str, lap_idx: int) -> list:
         """Return telemetry data points for one lap as a list of dicts."""
         try:
-            from utils import compute_lean_angle
             session = self._load_session(csv_path)
             if not session or lap_idx >= len(session.laps):
                 return []
@@ -420,15 +440,16 @@ class WebviewAPI:
 
     # ── Export ────────────────────────────────────────────────────────────────
     def start_export(self, params: dict) -> None:
-        if self._export_thread and self._export_thread.is_alive():
-            return
-        self._export_cancel.clear()
-        self._export_thread = threading.Thread(
-            target=self._run_export_bg,
-            args=(params,),
-            daemon=True,
-        )
-        self._export_thread.start()
+        with self._thread_lock:
+            if self._export_thread and self._export_thread.is_alive():
+                return
+            self._export_cancel.clear()
+            self._export_thread = threading.Thread(
+                target=self._run_export_bg,
+                args=(params,),
+                daemon=True,
+            )
+            self._export_thread.start()
 
     def cancel_export(self) -> None:
         self._export_cancel.set()
@@ -445,14 +466,16 @@ class WebviewAPI:
         def done_cb(ok, msg=''):
             self._push('export_done', ok=ok, message=msg)
 
+        _workers = max(1, min(int(params.get('workers', 4)), os.cpu_count() or 4))
+        _crf     = max(0, min(int(params.get('crf', 18)), 51))
         try:
             run_export(
                 items         = params.get('items', []),
                 scope         = params.get('scope', 'fastest'),
                 export_path   = params.get('export_path', ''),
                 encoder       = params.get('encoder', 'libx264'),
-                crf           = params.get('crf', 18),
-                workers       = params.get('workers', 4),
+                crf           = _crf,
+                workers       = _workers,
                 padding       = params.get('padding', 5.0),
                 is_bike       = params.get('is_bike', False),
                 show_map      = params.get('show_map', True),
@@ -569,7 +592,7 @@ class WebviewAPI:
         """
         import subprocess, shutil, os, sys
 
-        ffmpeg_bin = shutil.which('ffmpeg')
+        ffmpeg_bin = os.environ.get('FFMPEG_BIN') or shutil.which('ffmpeg')
         if not ffmpeg_bin:
             base = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
             candidate = os.path.join(base, 'ffmpeg.exe')
@@ -735,12 +758,13 @@ class WebviewAPI:
             racebox_progress {value: 0-100, message}
             racebox_done     {ok, message, n_downloaded}
         """
-        if self._rb_thread and self._rb_thread.is_alive():
-            return   # already running
-        self._rb_cancel.clear()
-        self._rb_thread = threading.Thread(
-            target=self._run_racebox_bg, daemon=True)
-        self._rb_thread.start()
+        with self._thread_lock:
+            if self._rb_thread and self._rb_thread.is_alive():
+                return   # already running
+            self._rb_cancel.clear()
+            self._rb_thread = threading.Thread(
+                target=self._run_racebox_bg, daemon=True)
+            self._rb_thread.start()
 
     def cancel_racebox_download(self) -> None:
         self._rb_cancel.set()

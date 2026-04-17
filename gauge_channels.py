@@ -74,11 +74,6 @@ def gauge_data(channel: str, history: list) -> dict:
     hk   = meta['hist_key']
     vals = [p.get(hk, 0.0) for p in history] if history else [0.0]
     raw_value = vals[-1] if vals else 0.0
-    # Lean sensor reports positive = left lean; negate so positive = right lean,
-    # which is the convention all gauges expect (bar fills right, needle points right).
-    if channel == 'lean':
-        raw_value = -raw_value
-        vals = [-v for v in vals]
     return {
         'value':            raw_value,
         'history_vals':     vals,

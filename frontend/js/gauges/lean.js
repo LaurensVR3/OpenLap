@@ -47,7 +47,7 @@ const GaugeLean = {
     ctx.stroke();
 
     // Rotate canvas for bike silhouette
-    const leanRad = -value * Math.PI / 180;  // negative: Python uses -value
+    const leanRad = value * Math.PI / 180;  // positive=right lean (normalized in data loaders)
 
     ctx.save();
     ctx.translate(cx, cy);

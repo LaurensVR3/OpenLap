@@ -49,6 +49,8 @@ def main():
 
     api = WebviewAPI()
 
+    _icon = str(_BASE / 'frontend' / 'icon.ico')
+
     window = webview.create_window(
         title      = 'OpenLap',
         url        = str(FRONTEND_HTML),
@@ -63,7 +65,8 @@ def main():
 
     # Use GUI thread blocking call — webview.start() must be on main thread.
     # Disable DevTools in packaged builds; keep enabled when running from source.
-    webview.start(debug=not getattr(sys, 'frozen', False))
+    webview.start(debug=not getattr(sys, 'frozen', False),
+                  icon=_icon if os.path.isfile(_icon) else None)
 
 
 if __name__ == '__main__':

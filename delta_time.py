@@ -29,7 +29,7 @@ from typing import Callable, Tuple
 
 import numpy as np
 
-from racebox_data import Lap
+from data_model import Lap
 
 logger = logging.getLogger(__name__)
 

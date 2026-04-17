@@ -28,7 +28,7 @@ from utils import _run
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List, Optional, Dict, Tuple  # noqa: F401 – Tuple used in scan_pending_xrk
+from typing import Callable, List, Optional, Dict, Tuple  # noqa: F401 – Tuple used in scan_pending_xrk
 
 VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.MP4', '.MOV', '.AVI', '.MKV'}
 CSV_EXTENSIONS   = {'.csv', '.CSV'}
@@ -81,7 +81,7 @@ def _ffprobe_creation_time(path: str) -> Optional[datetime]:
         return None, 0.0
 
 
-def scan_videos(folder: str, progress_cb=None) -> List[VideoFile]:
+def scan_videos(folder: str, progress_cb: Optional[Callable[[str], None]] = None) -> List[VideoFile]:
     """Recursively scan a folder for video files."""
     all_paths = [
         os.path.join(root, fname)
@@ -155,7 +155,7 @@ def _make_group(files: List[VideoFile]) -> VideoGroup:
 XRK_EXTENSIONS = {'.xrk', '.xrz', '.drk', '.XRK', '.XRZ', '.DRK'}
 
 
-def convert_xrk_files(folder: str, progress_cb=None) -> List[str]:
+def convert_xrk_files(folder: str, progress_cb: Optional[Callable[[str], None]] = None) -> List[str]:
     """
     Walk *folder* for AIM XRK/XRZ/DRK files.  Any file that does not yet have
     a matching .csv alongside it is converted using xrk_to_csv.py.
@@ -189,8 +189,8 @@ def convert_xrk_files(folder: str, progress_cb=None) -> List[str]:
                     if ',Lap,' not in header and not header.rstrip('\n').endswith(',Lap'):
                         os.remove(csv_path)
                         pending.append((xrk_path, csv_path))
-                except OSError:
-                    pass
+                except OSError as e:
+                    logger.warning('Could not process stale CSV %s: %s', csv_path, e)
 
     if not pending:
         return []

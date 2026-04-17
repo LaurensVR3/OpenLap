@@ -54,7 +54,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
-from racebox_data import DataPoint, Lap, Session
+from data_model import DataPoint, Lap, Session
 from exceptions import NoDataRowsError
 
 logger = logging.getLogger(__name__)
@@ -330,8 +330,8 @@ def load_ld(path: str) -> Session:
 
         # Derive lean angle from lateral G (valid for both bikes and cars,
         # but only meaningful as a lean proxy on two-wheelers).
-        # Formula: tan(lean) = lat_G  →  lean = atan(lat_G)
-        lean = math.degrees(math.atan(gy))
+        # Negate: lateral G positive=left gives lean positive=left; we store positive=right.
+        lean = -math.degrees(math.atan(gy))
 
         pt = DataPoint(
             record      = i,

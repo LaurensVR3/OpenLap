@@ -23,7 +23,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from racebox_data import DataPoint, Lap, Session
+from data_model import DataPoint, Lap, Session
 from exceptions import NoDataRowsError
 
 logger = logging.getLogger(__name__)

@@ -161,7 +161,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # icon='frontend/icon.ico',   # uncomment when icon is added
+    icon=str(HERE / 'frontend' / 'icon.ico'),
 )
 
 coll = COLLECT(
