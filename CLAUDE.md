@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Run the app
 python main.py
 
-# Python tests (169 passing)
+# Python tests (209 passing)
 python -m pytest tests/ -q
 python -m pytest tests/test_racebox_data.py -q          # single file
 python -m pytest tests/ -k "test_delta" -q              # single test by name
@@ -63,6 +63,12 @@ All four loaders (racebox, aim, gpx, motec) return the same types from `racebox_
 ### Config
 
 `AppConfig` dataclass persisted to `~/.openlap/config.json`. Overlay layout is nested as `OverlayLayout` (with `gauges: List[dict]`). Named presets live in `AppConfig.presets` (name → serialized `OverlayLayout` dict). On load, if `active_preset` is set the overlay is always rebuilt from the preset — unsaved edits to the live layout are discarded on restart.
+
+Sync offsets are stored in three fields: `offsets` (csv_path → float), `offset_sources` (csv_path → `'user'`|`'auto'`), and `auto_sync_failed` (list of csv_paths where auto-sync was tried but confidence was too low).
+
+### Auto-sync pipeline
+
+`auto_sync.py` detects the video-telemetry sync offset automatically using cross-correlation of video motion signal vs telemetry G-force magnitude. Runs as a background thread in `WebviewAPI._run_auto_sync_bg()` after each scan (opt-in via `auto_sync_enabled`). Key parameters: 5 fps decode, 320px wide frames, ±120s search window, confidence threshold 6× (need ≥3× to write). Uses `CREATE_NO_WINDOW` on Windows so no terminal flashes appear. Export cancels any running auto-sync via `_auto_sync_cancel` event. Auto results (`source='auto'`) are never written over a user-confirmed offset (`source='user'`).
 
 ### Video export pipeline
 

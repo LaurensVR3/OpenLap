@@ -16,7 +16,7 @@ FFmpeg must be on your PATH. On Windows: `winget install Gyan.FFmpeg`.
 ## Running tests
 
 ```bash
-# Python (169 tests)
+# Python (209 tests)
 python -m pytest tests/ -q
 
 # JavaScript (39 tests, requires Node)
@@ -31,6 +31,8 @@ All tests must pass before opening a PR. If you're adding a feature, add a test.
 ```
 main.py               entry point, freeze_support for multiprocessing
 webview_api.py        every public method here is callable from JS
+auto_sync.py          background video-telemetry sync detection (cross-correlation)
+app_config.py         AppConfig dataclass — persisted to ~/.openlap/config.json
 frontend/             vanilla JS + HTML, no build step
   js/pages/           one file per tab (data, editor, export, settings)
   js/gauges/          JS canvas renderers — one per gauge style

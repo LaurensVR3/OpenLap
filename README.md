@@ -42,7 +42,8 @@ Point it at your telemetry files and a folder of race videos, and it matches ses
 - Sessions grouped by date with lap list, best time, and video match status
 - Manual video reassignment for sessions where auto-matching doesn't find the right clip
 - Multi-clip support — multiple video segments per session are joined automatically before rendering
-- Frame-accurate sync tool: scrub the video preview to where the lap timer starts, press **Mark** — offset is saved per file and never needs re-entering
+- **Auto-sync** (opt-in): cross-correlates video motion against G-force to detect the sync offset automatically after each scan — results appear as `~ auto` and can be confirmed or fine-tuned in the Data tab
+- Frame-accurate manual sync: scrub the video preview to where the lap timer starts, press **Mark** — saves as a `✓ user` offset that auto-sync will never overwrite
 - RaceBox cloud download directly from the app (requires a RaceBox account)
 - AIM `.xrk` / `.xrz` / `.drk` files are converted to CSV on first scan using the AIM MatLabXRK DLL
 
@@ -149,15 +150,21 @@ Configure folders for each telemetry source, your **Video Folder**, and **Export
 - **AIM MyChron** — point at the folder containing `.xrk` files; conversion to CSV happens automatically
 - **MoTeC** — point at the folder containing `.ld` files
 - **GPX** — point at the folder containing `.gpx` files
+- **Auto Sync** — enable to automatically detect sync offsets after each scan (~20–60s per session using G-force cross-correlation); off by default
 
 ### 2. Data tab
 
 Sessions are scanned automatically on startup. Click **Scan** to refresh.
 
-- Sessions appear grouped by date; click a row to expand the lap list
-- Click **▶** on a session to open it in the Overlay editor
-- Use the **Sync** panel to align video with telemetry: scrub to where the lap timer starts, press **Mark**
-- Use **Reassign Video** to manually link a session to a video file
+- Sessions appear grouped by date; click a row to see its detail and sync panel
+- The **Sync** column shows the status of each session:
+  - `≈ unset` — no offset set yet
+  - `~ auto` — offset detected automatically (blue); scrub to verify, click **Confirm** to lock it in
+  - `✓ user` — offset manually confirmed (green)
+  - `no vid` — no matching video found
+- Use the **Align Video** panel to sync manually: scrub to where the lap timer starts, press **Mark**
+- Use **Browse for video…** to manually link a session to a video file
+- Click **Open in Overlay →** to jump to the editor with this session loaded
 
 ### 3. Overlay tab
 

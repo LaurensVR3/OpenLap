@@ -18,12 +18,14 @@
   let _lapDetails = {};   // csv_path → [{lap_idx, duration, is_best}]
   let _selCsv     = null; // currently selected session csv_path
   let _config     = null;
-  let _scanning   = false;
-  let _statusMsg  = '';
-  let _container  = null;
-  let _metaQueue  = [];   // sessions waiting for meta fetch
-  let _metaBusy   = false;
-  let _videoPort  = 0;    // localhost port of the Python video file server
+  let _scanning    = false;
+  let _autoSyncing = false;
+  let _statusMsg   = '';
+  let _container   = null;
+  let _metaQueue   = [];   // sessions waiting for meta fetch
+  let _metaBusy    = false;
+  let _videoPort   = 0;    // localhost port of the Python video file server
+  let _unlistenFns = [];   // push-event unlisten callbacks
 
   // Best per day: csv_path → true if this session has the day's best lap
   let _dayBest = {};
@@ -134,12 +136,16 @@
     const track   = m.track || baseName(s.csv_path);
     const lapStr  = m.laps  || '—';
     const bestStr = m.best  || (m.best_secs != null ? fmtTime(m.best_secs) : '—');
-    const syncLabel = s.needs_conversion ? '↻ conv'
-                    : (!s.matched)       ? 'no vid'
-                    : (s.sync_offset != null) ? '✓ sync' : '≈ unset';
-    const iconCls   = s.needs_conversion ? 'di-pending'
-                    : (!s.matched)       ? 'di-novid'
-                    : (s.sync_offset != null) ? 'di-synced' : 'di-unsync';
+    const syncLabel = s.needs_conversion           ? '↻ conv'
+                    : (!s.matched)                  ? 'no vid'
+                    : s.sync_offset != null && s.sync_source === 'auto' ? '~ auto'
+                    : s.sync_offset != null         ? '✓ user'
+                    : '≈ unset';
+    const iconCls   = s.needs_conversion           ? 'di-pending'
+                    : (!s.matched)                  ? 'di-novid'
+                    : s.sync_offset != null && s.sync_source === 'auto' ? 'di-auto'
+                    : s.sync_offset != null         ? 'di-user'
+                    : 'di-unsync';
 
     return `<div class="dl-row${isSel?' sel':''}${isDayB?' day-best':''}" data-csv="${esc(s.csv_path)}">
       <span class="dl-sync ${iconCls}">${syncLabel}</span>
@@ -205,7 +211,13 @@
     <div class="dr-row"><span class="dr-lbl">Laps</span><span class="dr-val">${esc(m.laps||'—')}</span></div>
     <div class="dr-row"><span class="dr-lbl">Best</span><span class="dr-val" style="color:var(--ok)">${esc(m.best||'—')}</span></div>
     <div class="dr-row"><span class="dr-lbl">Video</span><span class="dr-val ${hasVid?'':'dr-warn'}">${hasVid ? `✓ ${vidPaths.length} clip(s)` : '✗ No match'}</span></div>
-    <div class="dr-row"><span class="dr-lbl">Offset</span><span class="dr-val ${off!=null?'':'dr-warn'}" id="dr-off-display">${off!=null ? off.toFixed(3)+'s ✓' : 'not set'}</span></div>
+    <div class="dr-row"><span class="dr-lbl">Offset</span><span class="dr-val ${off!=null?'':'dr-warn'}" id="dr-off-display">${
+      off!=null
+        ? (s.sync_source === 'auto'
+            ? `${off.toFixed(3)}s ~ auto`
+            : `${off.toFixed(3)}s ✓`)
+        : 'not set'
+    }</span></div>
   </div>
   <div class="dr-actions">
     <label class="dr-mode-label">Mode:
@@ -250,10 +262,18 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
   }
 
   function renderAlignCard(s, vidPaths, off) {
-    const offVal = off != null ? off.toFixed(3) : '';
+    const offVal   = off != null ? off.toFixed(3) : '';
+    const isAuto   = s.sync_source === 'auto';
+    const autoNote = isAuto
+      ? `<div style="font-size:9px;color:#64b5f6;margin-bottom:6px;padding:5px 6px;
+                     background:rgba(100,181,246,0.08);border-radius:4px;border-left:2px solid #64b5f6">
+           Auto-detected: ${off != null ? off.toFixed(3)+'s' : '—'} — scrub to verify, then click Mark to confirm
+         </div>`
+      : '';
     return `
 <div class="dr-card dr-align-card">
   <div class="dr-card-title">ALIGN VIDEO</div>
+  ${autoNote}
   <video id="sync-video" class="sync-video" preload="metadata"
          src="${esc(videoUrl(vidPaths[0]))}"></video>
   <div class="sync-controls">
@@ -265,10 +285,10 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
   </div>
   <input type="range" id="sv-scrub" class="sync-scrub" min="0" max="1000" value="0" step="1">
   <div class="sync-mark-row">
-    <button class="btn btn-ok btn-sm" id="sv-mark">🏁 Mark Lap 1 start</button>
+    <button class="btn btn-ok btn-sm" id="sv-mark">${isAuto ? '✓ Confirm Lap 1 start' : '🏁 Mark Lap 1 start'}</button>
     <input type="number" id="sv-off-input" class="input-field input-narrow sync-off-input"
            step="0.001" value="${esc(offVal)}" placeholder="0.000" title="Current offset (s) — follows video position">
-    <span class="sync-mark-val" id="sv-mark-val">${off!=null ? '✓ saved' : ''}</span>
+    <span class="sync-mark-val" id="sv-mark-val">${off!=null && !isAuto ? '✓ saved' : ''}</span>
   </div>
   ${vidPaths.length > 1 ? `<div style="font-size:9px;color:var(--text3);margin-top:4px">+ ${vidPaths.length-1} more clip(s)</div>` : ''}
 </div>`;
@@ -419,12 +439,10 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
       const offset    = rawTime - outlapDur;
       console.log('[mark] rawTime:', rawTime, '| outlapDur:', outlapDur, '| saved sync_offset:', offset);
       s.sync_offset = offset;
-      if (offInp) offInp.value = rawTime.toFixed(3);
-      if (markEl) markEl.textContent = '✓ saved';
+      s.sync_source = 'user';
       await saveOffset(s);
       renderLeft();
-      const dispEl = pane.querySelector('#dr-off-display');
-      if (dispEl) { dispEl.textContent = rawTime.toFixed(3)+'s ✓'; dispEl.className = 'dr-val'; }
+      renderRight(); // re-renders the panel so the auto banner and button label update
     });
 
     // If video is already loaded and we have lap data, seek to lap-1 position now.
@@ -432,9 +450,10 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
   }
 
   async function saveOffset(s) {
-    const offsets = { ...(_config?.offsets || {}), [s.csv_path]: s.sync_offset };
-    _config = { ..._config, offsets };
-    await API.saveConfig({ offsets });
+    const offsets        = { ...(_config?.offsets || {}),         [s.csv_path]: s.sync_offset };
+    const offset_sources = { ...(_config?.offset_sources || {}),  [s.csv_path]: 'user' };
+    _config = { ..._config, offsets, offset_sources };
+    await API.saveConfig({ offsets, offset_sources });
     // Keep previewSession offset in sync
     const prev = State.get('previewSession');
     if (prev && prev.csv_path === s.csv_path) {
@@ -489,9 +508,11 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
         try {
           const m = await API.getSessionMeta(s.csv_path);
           _meta[s.csv_path] = m;
-          // Also mirror sync_offset from config
-          if (_config?.offsets?.[s.csv_path] != null)
+          // Mirror sync fields from config in case they updated since last scan
+          if (_config?.offsets?.[s.csv_path] != null) {
             s.sync_offset = _config.offsets[s.csv_path];
+            s.sync_source = _config.offset_sources?.[s.csv_path] ?? s.sync_source;
+          }
         } catch (err) {
           console.warn('getSessionMeta failed for', s.csv_path, err);
         }
@@ -531,10 +552,12 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
         all.push(...r);
       }
       _sessions = all;
-      // Apply stored offsets
+      // Apply stored offsets and sources
       for (const s of _sessions) {
-        if (_config?.offsets?.[s.csv_path] != null)
+        if (_config?.offsets?.[s.csv_path] != null) {
           s.sync_offset = _config.offsets[s.csv_path];
+          s.sync_source = _config.offset_sources?.[s.csv_path] ?? s.sync_source;
+        }
       }
       _metaQueue = []; // reset queue so new sessions get fetched
       renderLeft();
@@ -542,6 +565,16 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
       enrichMeta(_sessions);
       // Persist the full merged list so next startup shows cached results immediately
       API.saveSessionsCache(_sessions).catch(() => {});
+      // Trigger background auto-sync if enabled
+      if (_config?.auto_sync_enabled && !_autoSyncing) {
+        const candidates = _sessions.filter(s => s.matched && s.video_paths?.length);
+        API.startAutoSync(candidates).then(r => {
+          if (r?.queued > 0) {
+            _autoSyncing = true;
+            setStatus(`${_sessions.length} sessions found — auto-syncing ${r.queued} session(s)…`);
+          }
+        }).catch(() => {});
+      }
     } catch (e) {
       setStatus('Scan failed: ' + e);
     }
@@ -652,6 +685,44 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
     container.querySelector('#scan-btn').addEventListener('click', () => doScan(false));
     initResizer(container);
 
+    // Listen to auto-sync push events to update session status in real-time
+    let _asIdx = 0, _asTotal = 0, _asDone = 0, _asFailed = 0;
+    _unlistenFns.push(API.on('auto_sync_progress', detail => {
+      const s = _sessions.find(x => x.csv_path === detail.csv_path);
+      if (!s) return;
+      if (detail.status === 'processing') {
+        _asIdx = detail.current; _asTotal = detail.total;
+        setStatus(`Auto-syncing session ${_asIdx} of ${_asTotal}…`);
+      } else if (detail.status === 'checking') {
+        const conf = detail.confidence?.toFixed(2);
+        const secs = detail.vid_t?.toFixed(0);
+        setStatus(`Auto-syncing session ${_asIdx} of ${_asTotal} — ${secs}s of video decoded, confidence ${conf}× (need 6×)`);
+      } else if (detail.status === 'done') {
+        _asDone++;
+        // Don't overwrite if the user already confirmed this session while we were processing
+        if (s.sync_source !== 'user') {
+          s.sync_offset = detail.offset;
+          s.sync_source = 'auto';
+          renderLeft();
+          if (_selCsv === s.csv_path) renderRight();
+        }
+        const off = detail.offset >= 0 ? `+${detail.offset.toFixed(3)}s` : `${detail.offset.toFixed(3)}s`;
+        setStatus(`Auto-syncing session ${_asIdx} of ${_asTotal} — offset detected: ${off} at ${detail.confidence?.toFixed(2)}× confidence`);
+      } else if (detail.status === 'failed') {
+        _asFailed++;
+        s.auto_sync_failed = true;
+        setStatus(`Auto-syncing session ${_asIdx} of ${_asTotal} — no confident match found (${detail.confidence?.toFixed(2)}× confidence)`);
+        renderLeft();
+      }
+    }));
+    _unlistenFns.push(API.on('auto_sync_done', () => {
+      _autoSyncing = false;
+      const summary = _asDone > 0 || _asFailed > 0
+        ? ` — ${_asDone} matched, ${_asFailed} skipped`
+        : '';
+      setStatus(`${_sessions.length} session${_sessions.length !== 1 ? 's' : ''} found. Auto-sync complete${summary}.`);
+    }));
+
     // Await the video server port before rendering so videoUrl() is correct from the start
     if (!_videoPort) {
       _videoPort = await API.getVideoServerPort().catch(() => 0);
@@ -700,8 +771,10 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
 
   function unmount() {
     if (_container?._resizerCleanup) _container._resizerCleanup();
+    _unlistenFns.forEach(fn => fn());
+    _unlistenFns = [];
     _container = null;
-    // Module state preserved intentionally
+    // Module state (_sessions, _meta, etc.) preserved intentionally across navigations
   }
 
   Router.register('data', { mount, unmount });

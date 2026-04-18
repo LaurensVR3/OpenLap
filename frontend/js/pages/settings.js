@@ -139,6 +139,23 @@
       <div id="enc-results" class="enc-results hidden"></div>
     </section>
 
+    <!-- Auto Sync -->
+    <section class="settings-section">
+      <div class="section-title">Auto Sync</div>
+      <p class="section-hint">Automatically detect video-telemetry sync offset after each scan.
+        Uses cross-correlation of G-force vs video motion (~20–60s per session).
+        Only runs on sessions with no existing offset. Results are shown as "auto"
+        in the Data tab — click Mark to confirm and promote to a user offset.</p>
+      <div class="form-row">
+        <label>Enable auto-sync on scan</label>
+        <label class="toggle-switch">
+          <input type="checkbox" data-config-key="auto_sync_enabled"
+                 ${cfg.auto_sync_enabled ? 'checked' : ''}>
+          <span class="toggle-thumb"></span>
+        </label>
+      </div>
+    </section>
+
     <!-- About -->
     <section class="settings-section">
       <div class="section-title">About</div>
@@ -415,10 +432,15 @@
 
   async function _save(container) {
     const updated = { ..._config };
-    const _intKeys = new Set(['crf', 'workers']);
+    const _intKeys  = new Set(['crf', 'workers']);
+    const _boolKeys = new Set(['auto_sync_enabled']);
     container.querySelectorAll('[data-config-key]').forEach(el => {
       const key = el.dataset.configKey;
-      updated[key] = _intKeys.has(key) ? (parseInt(el.value, 10) || 0) : el.value.trim();
+      if (_boolKeys.has(key) || el.type === 'checkbox') {
+        updated[key] = el.checked;
+      } else {
+        updated[key] = _intKeys.has(key) ? (parseInt(el.value, 10) || 0) : el.value.trim();
+      }
     });
     // Persist email (never password — that goes through the login flow only)
     const emailEl = container.querySelector('#rb-email');

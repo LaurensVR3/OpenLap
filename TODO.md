@@ -1,5 +1,13 @@
 # OpenLap — Todo
 
+## v0.1.3 — Auto Sync
+- [x] Cross-correlation auto-sync engine (`auto_sync.py`) — streams ffmpeg frames at 5 fps, checks confidence every 20s, stops early when threshold is reached
+- [x] Sync status system: `no_video` / `unset` / `~ auto` (blue) / `✓ user` (green)
+- [x] Auto-sync runs as opt-in background thread after every scan; progress shown in status bar
+- [x] Export cancels any running auto-sync; auto results never overwrite user-confirmed offsets
+- [x] Settings toggle: **Enable auto-sync on scan** (off by default)
+- [x] Align Video card shows confirmation banner for auto-detected offsets; Mark promotes to user
+
 ## Build & distribution
 - [x] Add `frontend/icon.ico` and uncomment the icon line in `OpenLap.spec`
 

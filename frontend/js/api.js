@@ -55,6 +55,8 @@ const API = (() => {
       cancel_racebox_download:       () => null,
       racebox_playwright_status:     () => ({ playwright: false, chromium: false }),
       install_playwright_chromium:   () => null,
+      start_auto_sync:               () => ({ queued: 0 }),
+      cancel_auto_sync:              () => null,
     };
     const fn = mocks[method];
     return fn ? fn() : null;
@@ -116,5 +118,8 @@ const API = (() => {
     cancelRaceboxDownload:      ()                   => call('cancel_racebox_download'),
     raceboxPlaywrightStatus:    ()                   => call('racebox_playwright_status'),
     installPlaywrightChromium:  ()                   => call('install_playwright_chromium'),
+
+    startAutoSync:              (sessions)           => call('start_auto_sync', sessions),
+    cancelAutoSync:             ()                   => call('cancel_auto_sync'),
   };
 })();

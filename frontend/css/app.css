@@ -305,6 +305,8 @@ body {
 .di-unsync  { color: var(--warn); }
 .di-novid   { color: var(--text3); }
 .di-pending { color: var(--acc); }
+.di-user    { color: var(--ok); }
+.di-auto    { color: #64b5f6; }
 
 .dl-time  { width: 52px; flex-shrink: 0; color: var(--text2); font-size: 10px; font-variant-numeric: tabular-nums; }
 .dl-track { flex: 1; padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
@@ -863,6 +865,37 @@ input[type="checkbox"] { accent-color: var(--acc); cursor: pointer; }
   font-size: 10px;
   font-weight: 500;
 }
+
+/* Toggle switch (used in settings) */
+.toggle-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 36px;
+  height: 20px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+.toggle-thumb {
+  position: absolute;
+  inset: 0;
+  background: var(--bg2);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 20px;
+  transition: background 0.18s;
+}
+.toggle-thumb::after {
+  content: '';
+  position: absolute;
+  left: 2px; top: 2px;
+  width: 14px; height: 14px;
+  background: var(--text2);
+  border-radius: 50%;
+  transition: transform 0.18s, background 0.18s;
+}
+.toggle-switch input:checked + .toggle-thumb { background: var(--acc); border-color: var(--acc); }
+.toggle-switch input:checked + .toggle-thumb::after { transform: translateX(16px); background: #fff; }
 
 .status-msg { font-size: 10px; font-weight: 500; }
 .status-ok   { color: var(--ok); }

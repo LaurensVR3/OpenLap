@@ -113,11 +113,13 @@ class WebviewAPI:
     def __init__(self):
         self._config: AppConfig = AppConfig.load()
         self._window: Optional[webview.Window] = None
-        self._export_cancel = threading.Event()
-        self._export_thread: Optional[threading.Thread] = None
-        self._rb_cancel  = threading.Event()
-        self._rb_thread:  Optional[threading.Thread] = None
-        self._thread_lock = threading.Lock()
+        self._export_cancel    = threading.Event()
+        self._export_thread:   Optional[threading.Thread] = None
+        self._rb_cancel        = threading.Event()
+        self._rb_thread:       Optional[threading.Thread] = None
+        self._auto_sync_cancel = threading.Event()
+        self._auto_sync_thread: Optional[threading.Thread] = None
+        self._thread_lock      = threading.Lock()
 
     # ── Called by main.py once the window is ready ────────────────────────────
     def set_window(self, window: webview.Window) -> None:
@@ -176,8 +178,12 @@ class WebviewAPI:
         # Merge dict fields (JS may send partial updates)
         if 'offsets' in data and isinstance(data['offsets'], dict):
             self._config.offsets.update(data['offsets'])
+        if 'offset_sources' in data and isinstance(data['offset_sources'], dict):
+            self._config.offset_sources.update(data['offset_sources'])
         if 'bike_overrides' in data and isinstance(data['bike_overrides'], dict):
             self._config.bike_overrides.update(data['bike_overrides'])
+        if 'auto_sync_enabled' in data:
+            self._config.auto_sync_enabled = bool(data['auto_sync_enabled'])
         self._config.save()
 
     # ── Overlay ───────────────────────────────────────────────────────────────
@@ -227,22 +233,27 @@ class WebviewAPI:
         matches = match_sessions(csv_paths, groups)
 
         # Load cached offsets
-        offsets = self._config.offsets
+        offsets        = self._config.offsets
+        offset_sources = self._config.offset_sources
+        auto_failed    = set(self._config.auto_sync_failed)
 
         result = []
         for m in matches:
+            csv = m.csv_path
             result.append({
-                'csv_path':       m.csv_path,
-                'source':         m.source,
-                'csv_start':      m.csv_start.isoformat() if m.csv_start else None,
-                'matched':        m.matched,
+                'csv_path':         csv,
+                'source':           m.source,
+                'csv_start':        m.csv_start.isoformat() if m.csv_start else None,
+                'matched':          m.matched,
                 'needs_conversion': m.needs_conversion,
-                'xrk_path':       m.xrk_path,
-                'video_paths':    m.video_group.paths if m.video_group else [],
-                'sync_offset':    offsets.get(m.csv_path),
-                'track':          '',
-                'laps':           '',
-                'best':           None,
+                'xrk_path':        m.xrk_path,
+                'video_paths':     m.video_group.paths if m.video_group else [],
+                'sync_offset':     offsets.get(csv),
+                'sync_source':     offset_sources.get(csv),
+                'auto_sync_failed': csv in auto_failed,
+                'track':           '',
+                'laps':            '',
+                'best':            None,
             })
 
         logger.info('scan_sessions: %s → %d sessions', folder, len(result))
@@ -268,23 +279,28 @@ class WebviewAPI:
 
     def _cached_sessions(self) -> list:
         """Return cached sessions from disk without rescanning."""
-        cache = load_scan_cache()
-        sessions = cache.get('sessions', [])
-        offsets  = self._config.offsets
+        cache          = load_scan_cache()
+        sessions       = cache.get('sessions', [])
+        offsets        = self._config.offsets
+        offset_sources = self._config.offset_sources
+        auto_failed    = set(self._config.auto_sync_failed)
         result = []
         for s in sessions:
+            csv = s.get('csv_path', '')
             result.append({
-                'csv_path':       s.get('csv_path', ''),
-                'source':         s.get('source', 'RaceBox'),
-                'csv_start':      s.get('csv_start'),
-                'matched':        s.get('matched', False),
+                'csv_path':         csv,
+                'source':           s.get('source', 'RaceBox'),
+                'csv_start':        s.get('csv_start'),
+                'matched':          s.get('matched', False),
                 'needs_conversion': s.get('needs_conversion', False),
-                'xrk_path':       s.get('xrk_path'),
-                'video_paths':    s.get('video_paths', []),
-                'sync_offset':    offsets.get(s.get('csv_path', '')),
-                'track':          s.get('track', ''),
-                'laps':           s.get('laps', ''),
-                'best':           s.get('best') or None,
+                'xrk_path':        s.get('xrk_path'),
+                'video_paths':     s.get('video_paths', []),
+                'sync_offset':     offsets.get(csv),
+                'sync_source':     offset_sources.get(csv),
+                'auto_sync_failed': csv in auto_failed,
+                'track':           s.get('track', ''),
+                'laps':            s.get('laps', ''),
+                'best':            s.get('best') or None,
             })
         return result
 
@@ -440,6 +456,8 @@ class WebviewAPI:
 
     # ── Export ────────────────────────────────────────────────────────────────
     def start_export(self, params: dict) -> None:
+        # Stop any running auto-sync before beginning export
+        self._auto_sync_cancel.set()
         with self._thread_lock:
             if self._export_thread and self._export_thread.is_alive():
                 return
@@ -453,6 +471,98 @@ class WebviewAPI:
 
     def cancel_export(self) -> None:
         self._export_cancel.set()
+
+    # ── Auto sync ─────────────────────────────────────────────────────────────
+    def start_auto_sync(self, sessions: list) -> dict:
+        """Start background auto-sync for sessions that need it.
+
+        Only runs if auto_sync_enabled is True. Skips sessions that already
+        have any offset or are in the auto_sync_failed list. Does not start
+        during an active export.
+
+        Returns {'queued': N}.
+        """
+        if not self._config.auto_sync_enabled:
+            return {'queued': 0}
+
+        with self._thread_lock:
+            if self._export_thread and self._export_thread.is_alive():
+                return {'queued': 0}
+            if self._auto_sync_thread and self._auto_sync_thread.is_alive():
+                return {'queued': 0}
+
+        failed_set = set(self._config.auto_sync_failed)
+        eligible = [
+            s for s in sessions
+            if s.get('matched')
+            and s.get('video_paths')
+            and self._config.offsets.get(s['csv_path']) is None
+            and s['csv_path'] not in failed_set
+        ]
+        if not eligible:
+            return {'queued': 0}
+
+        self._auto_sync_cancel.clear()
+        self._auto_sync_thread = threading.Thread(
+            target=self._run_auto_sync_bg,
+            args=(eligible,),
+            daemon=True,
+        )
+        self._auto_sync_thread.start()
+        return {'queued': len(eligible)}
+
+    def cancel_auto_sync(self) -> None:
+        self._auto_sync_cancel.set()
+
+    def _run_auto_sync_bg(self, sessions: list) -> None:
+        from auto_sync import run_auto_sync
+
+        total = len(sessions)
+        for i, s in enumerate(sessions):
+            if self._auto_sync_cancel.is_set():
+                break
+            if self._export_thread and self._export_thread.is_alive():
+                break
+
+            csv_path = s['csv_path']
+            self._push('auto_sync_progress',
+                       status='processing', csv_path=csv_path,
+                       current=i + 1, total=total)
+
+            def _progress(vid_t, offset, conf, _csv=csv_path):
+                self._push('auto_sync_progress',
+                           status='checking', csv_path=_csv,
+                           vid_t=vid_t, offset=offset, confidence=conf)
+
+            offset, confidence = run_auto_sync(
+                csv_path    = csv_path,
+                video_paths = s.get('video_paths', []),
+                source      = s.get('source', 'RaceBox'),
+                cancel_event = self._auto_sync_cancel,
+                progress_cb  = _progress,
+            )
+
+            if self._auto_sync_cancel.is_set():
+                break
+
+            if offset is not None:
+                # Don't overwrite a user-confirmed offset that was set while we were processing
+                if self._config.offset_sources.get(csv_path) != 'user':
+                    self._config.offsets[csv_path]        = offset
+                    self._config.offset_sources[csv_path] = 'auto'
+                    self._config.save()
+                    self._push('auto_sync_progress',
+                               status='done', csv_path=csv_path,
+                               offset=offset, confidence=confidence)
+            else:
+                if csv_path not in self._config.auto_sync_failed:
+                    self._config.auto_sync_failed.append(csv_path)
+                self._config.save()
+                self._push('auto_sync_progress',
+                           status='failed', csv_path=csv_path,
+                           confidence=confidence)
+
+        self._push('auto_sync_done')
 
     def _run_export_bg(self, params: dict) -> None:
         from export_runner import run_export

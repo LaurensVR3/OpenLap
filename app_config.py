@@ -72,6 +72,11 @@ class AppConfig:
     encoder: str   = 'libx264'
     crf:     int   = 18
     workers: int   = 4
+    offset_sources:    Dict[str, str]  = field(default_factory=dict)
+    # 'user' = manually confirmed, 'auto' = auto-detected (unconfirmed)
+    auto_sync_failed:  List[str]       = field(default_factory=list)
+    # csv_paths where auto-sync was tried but confidence was too low
+    auto_sync_enabled: bool            = False
 
     def all_telemetry_paths(self) -> List[str]:
         """Return all unique non-empty telemetry paths to scan.
@@ -240,7 +245,10 @@ def _from_dict(data: dict) -> AppConfig:
         active_preset  = active_preset,
         session_info   = data.get('session_info',   {}),
         racebox_email  = data.get('racebox_email',  ''),
-        encoder        = data.get('encoder',        'libx264'),
-        crf            = int(data.get('crf',        18)),
-        workers        = int(data.get('workers',    4)),
+        encoder           = data.get('encoder',           'libx264'),
+        crf               = int(data.get('crf',           18)),
+        workers           = int(data.get('workers',       4)),
+        offset_sources    = data.get('offset_sources',    {}),
+        auto_sync_failed  = data.get('auto_sync_failed',  []),
+        auto_sync_enabled = bool(data.get('auto_sync_enabled', False)),
     )
