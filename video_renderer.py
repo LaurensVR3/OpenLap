@@ -669,7 +669,7 @@ def render_lap(
                         # Lap-scoreboard fields
                         'li_lap_num':     pt.lap,
                         'li_total_laps':  _total_timed,
-                        'li_best_so_far': _best_by_lap.get(pt.lap, _best_fallback),
+                        'li_best_so_far': reference_lap.duration if reference_lap else _best_by_lap.get(pt.lap, _best_fallback),
                     })
 
                 # ── Map nearest-point (vectorised numpy, one call per frame) ───

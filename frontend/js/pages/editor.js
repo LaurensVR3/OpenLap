@@ -112,6 +112,8 @@
   let _liveFrameIdx    = 0;
   let _livePort        = 0;
   let _liveRafId       = null;
+  let _mountGen        = 0;     // incremented on unmount; guards stale async continuations
+  let _resizeObserver  = null;
 
   // Constants (normalised)
   const MIN_NORM        = 0.04;
@@ -141,6 +143,7 @@
       case 'lap_info': return {
         ...base, lap_num: 3, total_laps: 8,
         lap_elapsed: 45.234, best_so_far: 83.456, delta_time: -0.234,
+        selected_fields: gauge?.selected_fields || ['lap','best','current','delta'],
       };
       case 'image': return {
         ...base,
@@ -306,6 +309,7 @@
         lap_elapsed: p2?.t ?? 0,
         best_so_far: best,
         delta_time:  p2?.delta_time ?? null,
+        selected_fields: gauge?.selected_fields || ['lap','best','current','delta'],
       };
     }
     if (channel === 'image') {
@@ -437,16 +441,25 @@
     const playBtn = _container?.querySelector('#live-play');
 
     if (vid) {
+      // Apply the actual video aspect ratio to the preview area and persist it in
+      // State so the next mount can use it immediately (avoiding the 16/9 flash).
+      function _applyAspect() {
+        if (!vid.videoWidth || !vid.videoHeight) return;
+        const area = getPreviewEl();
+        if (area) {
+          area.style.aspectRatio = `${vid.videoWidth} / ${vid.videoHeight}`;
+          requestAnimationFrame(() => rebuildGaugeCanvases());
+        }
+        // Persist so mount() can render the correct ratio before loadedmetadata fires.
+        const ps = State.get('previewSession');
+        if (ps && (ps.video_w !== vid.videoWidth || ps.video_h !== vid.videoHeight)) {
+          State.set('previewSession', { ...ps, video_w: vid.videoWidth, video_h: vid.videoHeight });
+        }
+      }
+
       vid.addEventListener('loadedmetadata', () => {
         if (scrub) scrub.max = Math.round(vid.duration * 1000);
-        if (vid.videoWidth && vid.videoHeight) {
-          const area = getPreviewEl();
-          if (area) {
-            area.style.aspectRatio = `${vid.videoWidth} / ${vid.videoHeight}`;
-            // Gauge canvases are sized in pixels; rebuild after aspect-ratio change
-            requestAnimationFrame(() => rebuildGaugeCanvases());
-          }
-        }
+        _applyAspect();
         // Seek to the currently selected lap's start position.
         // (vid_t = sync_offset + lap.elapsed_start)
         if (_liveLaps?.[_selLapIdx] != null) {
@@ -456,6 +469,10 @@
           if (scrub) scrub.value = Math.round(vid.currentTime * 1000);
         }
       });
+
+      // Metadata may already be available if the browser cached it from a previous
+      // load — in that case loadedmetadata won't fire again, so apply immediately.
+      if (vid.readyState >= 1) _applyAspect();
       vid.addEventListener('timeupdate', () => {
         if (scrub && !vid.seeking) scrub.value = Math.round(vid.currentTime * 1000);
         if (timeEl) timeEl.textContent = _fmtVTime(vid.currentTime);
@@ -486,7 +503,7 @@
   }
 
   // ── Load telemetry data for one lap ────────────────────────────────────────
-  async function _loadLapData(lapIdx) {
+  async function _loadLapData(lapIdx, mountGen) {
     if (!_liveSession) return;
     const labelEl = _container?.querySelector('#live-label');
     const scrub   = _container?.querySelector('#live-scrub');
@@ -499,6 +516,8 @@
 
     try {
       const pts = await API.loadLapHistory(_liveSession.csv_path, lapIdx);
+      if (mountGen !== undefined && _mountGen !== mountGen) return;  // stale
+
       _livePoints = pts;
       _liveLats   = pts.map(p => p.lat);
       _liveLons   = pts.map(p => p.lon);
@@ -592,6 +611,7 @@
 
   // ── Load full session (metadata + laps + first lap telemetry) ──────────────
   async function loadLiveSession(session) {
+    const myGen  = _mountGen;  // bail out if unmounted before we finish
     _liveSession = session;
     _liveOffset  = session.sync_offset ?? 0;
 
@@ -600,6 +620,8 @@
       API.getSessionMeta(session.csv_path).catch(() => ({})),
       API.getLaps(session.csv_path).catch(() => []),
     ]);
+    if (_mountGen !== myGen) return;  // navigated away while awaiting
+
     _liveSessionMeta = meta;
     _liveLaps        = laps;
     console.log('[loadLiveSession] _liveOffset:', _liveOffset, '| laps:', JSON.stringify(laps.map(l => ({idx: l.lap_idx, es: l.elapsed_start, outlap: l.is_outlap, inlap: l.is_inlap, dur: l.duration}))));
@@ -624,7 +646,8 @@
     }
 
     _updateLapSelector();
-    await _loadLapData(_selLapIdx);
+    await _loadLapData(_selLapIdx, myGen);
+    if (_mountGen !== myGen) return;
     _startLiveRaf();
   }
 
@@ -986,6 +1009,29 @@
         </div>`;
     }
 
+    if (g.channel === 'lap_info') {
+      const LAP_INFO_ROWS = [
+        { key: 'lap',     label: 'Lap #' },
+        { key: 'best',    label: 'Best' },
+        { key: 'current', label: 'Current' },
+        { key: 'delta',   label: 'Delta' },
+      ];
+      const sel = g.selected_fields || ['lap','best','current','delta'];
+      return `
+        <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px;">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:6px;
+                      text-transform:uppercase;letter-spacing:0.04em;">Rows to show</div>
+          ${LAP_INFO_ROWS.map(f => `
+            <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;">
+              <input type="checkbox" class="lapinfo-field-chk" data-field="${f.key}"
+                     ${sel.includes(f.key) ? 'checked' : ''}
+                     style="flex-shrink:0;margin:0;">
+              <span style="font-size:10px;color:var(--text2);">${f.label}</span>
+            </div>
+          `).join('')}
+        </div>`;
+    }
+
     if (g.channel === 'image') {
       const path    = g.image_path || '';
       const opacity = Math.round((g.opacity ?? 1.0) * 100);
@@ -1125,6 +1171,18 @@
         g.show_ref = e.target.checked;
         rebuildGaugeCanvases();
         saveLayout();
+      });
+    }
+
+    if (g.channel === 'lap_info') {
+      panel.querySelectorAll('.lapinfo-field-chk').forEach(chk => {
+        chk.addEventListener('change', () => {
+          const checked = [...panel.querySelectorAll('.lapinfo-field-chk')]
+            .filter(c => c.checked).map(c => c.dataset.field);
+          g.selected_fields = checked;
+          rebuildGaugeCanvases();
+          saveLayout();
+        });
       });
     }
 
@@ -1423,7 +1481,7 @@
   function rebuildThemeSelector() {
     const sel = _container?.querySelector('#theme-select');
     if (!sel || !_layout) return;
-    ['Dark', 'Light', 'Colorful', 'Monochrome'].forEach(t => {
+    ['Dark', 'Light', 'Colorful', 'Monochrome', 'Minimal'].forEach(t => {
       sel.querySelector(`option[value="${t}"]`)?.setAttribute(
         'selected', t === _layout.theme ? '' : null);
     });
@@ -1441,6 +1499,7 @@
 
   // ── Mount ────────────────────────────────────────────────────────────────────
   async function mount(container) {
+    const myGen = _mountGen;  // capture generation — if unmount runs before we finish, myGen !== _mountGen
     _container = container;
     _selected  = null;
 
@@ -1449,6 +1508,7 @@
     // Only fetch port once — the server never changes address, and re-calling on fast
     // re-navigation can fail/reject and zero out _livePort, hiding the video element.
     if (!_livePort) _livePort = await API.getVideoServerPort().catch(() => 0);
+    if (_mountGen !== myGen) return;  // navigated away while awaiting port
     _liveOffset = prevSession?.sync_offset ?? 0;
 
     const vp = prevSession?.video_paths?.[0] ?? null;
@@ -1459,6 +1519,12 @@
     const hasVideo   = !!videoSrc;
     const hintText   = hasVideo ? '' : 'Select a session on the Data page, then click Open in Overlay →';
     const videoStyle = `position:absolute;inset:0;width:100%;height:100%;object-fit:contain;z-index:0;opacity:${hasVideo ? '0.9' : '0'}`;
+
+    // Use persisted video dimensions for the initial aspect-ratio so there is no
+    // 16/9 flash on re-mount even when the browser returns metadata from cache.
+    const initAspect = (prevSession?.video_w && prevSession?.video_h)
+      ? `${prevSession.video_w} / ${prevSession.video_h}`
+      : '16 / 9';
 
     container.innerHTML = `
       <div style="display:flex; flex-direction:column; height:100vh; overflow:hidden;">
@@ -1498,6 +1564,7 @@
             <option value="Light">Light</option>
             <option value="Colorful">Colorful</option>
             <option value="Monochrome">Monochrome</option>
+            <option value="Minimal">Minimal</option>
           </select>
           <select id="preset-select" style="font-size:10px; max-width:120px">
             <option value="">— No Preset —</option>
@@ -1515,7 +1582,7 @@
             <div style="flex:1; display:flex; align-items:center; justify-content:center;
                         padding:16px; overflow:hidden;">
               <div id="preview-area"
-                   style="position:relative; aspect-ratio:16/9; width:100%; max-width:100%; max-height:100%;
+                   style="position:relative; aspect-ratio:${initAspect}; width:100%; max-width:100%; max-height:100%;
                           background:#111827; border:1px solid var(--border);
                           border-radius:4px; overflow:hidden;">
                 <video id="preview-video" preload="auto"
@@ -1578,8 +1645,10 @@
     } catch (_) {
       _layout = { is_bike: false, theme: 'Dark', gauges: [] };
     }
+    if (_mountGen !== myGen) return;
 
     await loadPresetList();
+    if (_mountGen !== myGen) return;
     rebuildThemeSelector();
     rebuildGaugeList();
     rebuildGaugeCanvases();
@@ -1651,9 +1720,9 @@
     // Stage for export
     container.querySelector('#stage-export-btn')?.addEventListener('click', _stageLapForExport);
 
-    const resizeObserver = new ResizeObserver(() => rebuildGaugeCanvases());
+    _resizeObserver = new ResizeObserver(() => rebuildGaugeCanvases());
     const area = container.querySelector('#preview-area');
-    if (area) resizeObserver.observe(area);
+    if (area) _resizeObserver.observe(area);
 
     // Wire video/scrub controls once, then load session data
     _wireVideoControls();
@@ -1661,8 +1730,10 @@
   }
 
   function unmount() {
+    _mountGen++;   // invalidate all in-flight async ops from the current mount
     if (_animFrame) { cancelAnimationFrame(_animFrame); _animFrame = null; }
     _stopLiveRaf();
+    if (_resizeObserver) { _resizeObserver.disconnect(); _resizeObserver = null; }
     _livePoints      = null;
     _liveLats        = null;
     _liveLons        = null;

@@ -18,11 +18,15 @@ const GaugeScoreboard = {
     const elapsed   = data.lap_elapsed ?? 0;
     const best      = data.best_so_far;   // number or null/undefined
 
-    // Delta against best
+    // Delta — use live reference-lap delta when available, else elapsed vs best
     let deltaTxt, deltaCol;
-    if (best != null && best > 0) {
+    const liveDelta = data.delta_time;
+    if (liveDelta != null) {
+      deltaTxt = liveDelta >= 0 ? `+${Math.abs(liveDelta).toFixed(3)}` : `-${Math.abs(liveDelta).toFixed(3)}`;
+      deltaCol = liveDelta < 0 ? theme.fillLo : theme.fillHi;
+    } else if (best != null && best > 0) {
       const delta = elapsed - best;
-      deltaTxt = (delta >= 0 ? '+' : '') + delta.toFixed(3);
+      deltaTxt = (delta >= 0 ? '+' : '') + Math.abs(delta).toFixed(3);
       deltaCol = delta < 0 ? theme.fillLo : theme.fillHi;
     } else {
       deltaTxt = '—';
@@ -33,12 +37,15 @@ const GaugeScoreboard = {
     const lapLabel = isOutlap ? 'OUT LAP' : 'LAP';
     const lapVal   = isOutlap ? '—' : `${lapNum} / ${totalLaps}`;
 
-    const rows = [
-      [lapLabel, lapVal,                          theme.text],
-      ['BEST',   best != null ? GaugeBase.fmtTime(best) : '—', theme.label],
-      ['CURRENT', GaugeBase.fmtTime(elapsed),    theme.text],
-      ['DELTA',   deltaTxt,                       deltaCol],
-    ];
+    const allRows = {
+      lap:     [lapLabel, lapVal,                                    theme.text],
+      best:    ['BEST',   best != null ? GaugeBase.fmtTime(best) : '—', theme.label],
+      current: ['CURRENT', GaugeBase.fmtTime(elapsed),              theme.text],
+      delta:   ['DELTA',   deltaTxt,                                 deltaCol],
+    };
+    const sel  = data.selected_fields || ['lap','best','current','delta'];
+    const rows = sel.filter(k => allRows[k]).map(k => allRows[k]);
+    if (rows.length === 0) rows.push(['—', '—', theme.label]);
 
     const n       = rows.length;
     const yTop    = h * 0.94;

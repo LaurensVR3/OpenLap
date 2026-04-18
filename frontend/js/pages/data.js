@@ -559,6 +559,8 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
           s.sync_source = _config.offset_sources?.[s.csv_path] ?? s.sync_source;
         }
       }
+      // Publish to global State so other pages (e.g. export) can access the list
+      State.set('sessions', _sessions);
       _metaQueue = []; // reset queue so new sessions get fetched
       renderLeft();
       setStatus(`${_sessions.length} session${_sessions.length!==1?'s':''} found.`);
@@ -753,6 +755,7 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
       if (cached && cached.length > 0) {
         _sessions = cached;
         applyOffsets();
+        State.set('sessions', _sessions);
         renderLeft();
         setStatus(`${_sessions.length} cached sessions — rescanning in background…`);
         enrichMeta(_sessions);

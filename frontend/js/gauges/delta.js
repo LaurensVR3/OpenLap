@@ -26,7 +26,7 @@ const GaugeDelta = {
     const sc = Math.sqrt((w / 120) * (h / 160));
 
     const fsLabel = Math.max(8, Math.min(Math.round(10 * sc), Math.round(w * 0.12)));
-    const fsValue = Math.max(12, Math.min(Math.round(28 * sc), Math.round(w * 0.30)));
+    const fsValue = Math.max(12, Math.min(Math.round(28 * sc), Math.round(w * 0.16)));
 
     const colour = this._colour(value);
 

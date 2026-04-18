@@ -9,9 +9,11 @@
   let _container   = null;
   let _exporting   = false;
   let _logLines    = [];
-  let _unlistenFns = [];
+  let _unlistenFns = [];   // DOM-lifetime listeners only (State subscriptions)
   let _progressPct = 0;
   let _progressMsg = '';
+  let _badgeText   = 'Idle';
+  let _badgeCls    = 'badge-dim';
 
   // ── Mount / Unmount ──────────────────────────────────────────────────────────
 
@@ -46,36 +48,27 @@
     _refreshItemList(items);
     _updateStartBtn(items);
 
-    // Restore persistent log and export state across navigation
+    // Restore persistent state accumulated while the tab was not visible
     const logEl = container.querySelector('#exp-log');
     if (logEl && _logLines.length) {
       logEl.value = _logLines.join('\n');
       logEl.scrollTop = logEl.scrollHeight;
     }
-    if (_exporting) {
-      _setExporting(true);
-      _setBadge('Running', 'badge-run');
-    }
-    // Restore progress bar position
-    if (_progressPct > 0 || _progressMsg) {
-      _setProgress(_progressPct, _progressMsg);
-    }
+    _setExporting(_exporting);   // re-applies button/cancel visibility
+    _setProgress(_progressPct, _progressMsg);
+    _setBadge(_badgeText, _badgeCls);
 
-    // Re-render if items change while on this page
+    // State subscriptions — torn down on unmount (DOM lifetime only)
     _unlistenFns.push(State.on('selectedItems', newItems => {
       _refreshItemList(newItems);
       _updateStartBtn(newItems);
     }));
-
-    // Keep selectedItems in sync when previewSession changes while on this page
     _unlistenFns.push(State.on('previewSession', ps => {
       if (ps) State.set('selectedItems', [_itemFromPreview(ps)]);
     }));
-
-    // Listen for push events from Python
-    _unlistenFns.push(API.on('export_progress', _onProgress));
-    _unlistenFns.push(API.on('export_log',      _onLog));
-    _unlistenFns.push(API.on('export_done',      _onDone));
+    // NOTE: export_progress / export_log / export_done are registered once at
+    // module level (see bottom of file) and are never unregistered, so events
+    // are captured regardless of which tab is active.
   }
 
   function unmount() {
@@ -318,11 +311,11 @@
   }
 
   function _onLog(detail) {
-    if (!_container) return;
     const msg = detail.message || '';
+    // Always accumulate — even when the Export tab is not visible
     _logLines.push(msg);
-    // Keep last 500 lines to avoid textarea bloat
     if (_logLines.length > 500) _logLines.shift();
+    if (!_container) return;
     const ta = _container.querySelector('#exp-log');
     if (ta) {
       ta.value = _logLines.join('\n');
@@ -337,6 +330,11 @@
     _setProgress(ok ? 100 : 0, msg);
     _setExporting(false);
     _setBadge(ok ? 'Done' : 'Error', ok ? 'badge-ok' : 'badge-err');
+    // Export finished — offer auto-sync the chance to run now.
+    // Python's start_auto_sync skips sessions already synced or failed, so
+    // it is safe to call with all matched sessions (it filters internally).
+    const sessions = (State.get('sessions') || []).filter(s => s.matched && s.video_paths?.length);
+    if (sessions.length) API.startAutoSync(sessions).catch(() => {});
   }
 
   // ── UI state helpers ──────────────────────────────────────────────────────────
@@ -368,11 +366,13 @@
   }
 
   function _setBadge(text, cls) {
+    _badgeText = text;
+    _badgeCls  = cls || 'badge-dim';
     if (!_container) return;
     const badge = _container.querySelector('#exp-status-badge');
     if (!badge) return;
-    badge.textContent = text;
-    badge.className   = 'badge ' + (cls || 'badge-dim');
+    badge.textContent = _badgeText;
+    badge.className   = 'badge ' + _badgeCls;
   }
 
   // ── Tiny utilities ────────────────────────────────────────────────────────────
@@ -398,4 +398,12 @@
   }
 
   Router.register('export', { mount, unmount });
+
+  // ── Persistent export event listeners ────────────────────────────────────────
+  // Registered once when the module loads — NOT tied to the Export tab being
+  // visible. This ensures progress, log lines, and done state are captured even
+  // when the user is on the Data, Overlay, or Settings tab during an export.
+  API.on('export_progress', _onProgress);
+  API.on('export_log',      _onLog);
+  API.on('export_done',     _onDone);
 })();

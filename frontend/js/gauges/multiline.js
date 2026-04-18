@@ -43,7 +43,7 @@ const GaugeMultiline = {
 
     // Legend width
     const maxLabel  = Math.max(...entries.map(e => (e.label || '').length));
-    const legendFrac = Math.min(0.38, Math.max(0.22, 0.05 + maxLabel * 0.022));
+    const legendFrac = Math.min(0.38, Math.max(0.30, 0.05 + maxLabel * 0.022));
     const legendW   = w * legendFrac;
 
     // Chart area (pixels)

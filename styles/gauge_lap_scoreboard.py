@@ -56,12 +56,16 @@ def render(data: dict, w: int, h: int):
     lap_label = "OUT LAP" if is_outlap else "LAP"
     lap_val   = "—" if is_outlap else f"{lap_num} / {total_laps}"
 
-    rows = [
-        (lap_label, lap_val,                     text_col),
-        ("BEST",    _fmt_time(best) if best else "—", label_col),
-        ("CURRENT", _fmt_time(elapsed),           text_col),
-        ("DELTA",   delta_txt,                    delta_col),
-    ]
+    all_rows = {
+        'lap':     (lap_label, lap_val,                        text_col),
+        'best':    ("BEST",    _fmt_time(best) if best else "—", label_col),
+        'current': ("CURRENT", _fmt_time(elapsed),             text_col),
+        'delta':   ("DELTA",   delta_txt,                      delta_col),
+    }
+    selected = data.get('selected_fields') or ['lap', 'best', 'current', 'delta']
+    rows = [all_rows[k] for k in selected if k in all_rows]
+    if not rows:
+        rows = [("—", "—", label_col)]
 
     # ── Figure ────────────────────────────────────────────────────────────────
     dpi = 100

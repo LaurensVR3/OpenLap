@@ -74,13 +74,13 @@ def render(data: dict, w: int, h: int):
         txt = f'\u2212{abs(value):.3f}'    # Unicode minus sign for aesthetics
 
     fs_label = max(5,  min(int(10 * sc), int(w * 0.12)))
-    fs_value = max(9,  min(int(28 * sc), int(w * 0.30)))
+    fs_value = max(9,  min(int(28 * sc), int(w * 0.16)))
 
     ax.text(0.50, 0.80, label.upper(),
             ha='center', va='center', color=label_col,
             fontsize=fs_label, fontfamily='sans-serif')
 
-    ax.text(0.50, 0.54, txt,
+    ax.text(0.50, 0.46, txt,
             ha='center', va='center', color=colour,
             fontsize=fs_value, fontweight='bold', fontfamily='sans-serif')
 

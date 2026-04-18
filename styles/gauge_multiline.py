@@ -80,7 +80,7 @@ def render(data: dict, w: int, h: int):
 
     # Legend column width: proportional to number of channels + label length
     max_label = max((len(e['label']) for e in entries), default=5)
-    legend_w  = min(0.38, max(0.22, 0.05 + max_label * 0.022))
+    legend_w  = min(0.38, max(0.30, 0.05 + max_label * 0.022))
 
     # Chart axes (left portion)
     chart_l = 0.05

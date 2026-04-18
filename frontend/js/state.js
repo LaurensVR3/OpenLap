@@ -4,11 +4,11 @@
  */
 const State = (() => {
   const _data = {
-    config:        null,      // AppConfig dict from Python
-    sessions:      [],        // list of session dicts from last scan
-    selectedItems: [],        // items queued for export [{csv_path, lap_idx, video_paths, ...}]
-    scanStatus:    'idle',    // 'idle' | 'scanning' | 'done' | 'error'
-    scanMessage:   '',
+    config:         null,     // AppConfig dict from Python
+    sessions:       [],       // flat session list from last scan — shared across pages
+    selectedItems:  [],       // items queued for export [{csv_path, lap_idx, video_paths, ...}]
+    scanStatus:     'idle',   // 'idle' | 'scanning' | 'done' | 'error'
+    scanMessage:    '',
     previewSession: null,     // {csv_path, lap_idx, video_paths, sync_offset} for live overlay preview
   };
 

@@ -106,6 +106,7 @@ def render_frame_worker(args: Tuple) -> bytes:
 
         if channel == 'lap_info':
             gd = gauge_data_lap_info(history)
+            gd['selected_fields'] = g.get('selected_fields') or ['lap', 'best', 'current', 'delta']
             gd['_theme'] = theme
             try:
                 img = render_style('gauge', style, gd, gw, gh)
