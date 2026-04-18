@@ -30,7 +30,7 @@ Point it at your telemetry files and a folder of race videos, and it matches ses
 
 **Sample output video** — Karting Haute Picardie Arvillers:
 
-[![OpenLap telemetry overlay on karting video — speed, RPM, G-force, circuit map gauges](https://img.youtube.com/vi/0XuByCyL_mA/maxresdefault.jpg)](https://www.youtube.com/watch?v=0XuByCyL_mA)
+[![OpenLap telemetry overlay on karting video — speed, RPM, G-force, circuit map gauges](https://img.youtube.com/vi/0XuByCyL_mA/maxresdefault.jpg)](https://youtu.be/gsKdIWs6FvM)
 
 ---
 
