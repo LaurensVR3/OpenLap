@@ -432,9 +432,11 @@ def render_lap(
     overlay_layout: Optional[dict] = None,   # normalized positions/sizes
     progress_cb:    Optional[Callable[[float, str], None]] = None,
     log_cb:         Optional[Callable[[str], None]] = None,
-    reference_lap:  Optional[Lap] = None,    # lap to compare against for delta time
-    info_overrides: Optional[dict] = None,  # manual session-info overrides {info_track, …}
-    overlay_only:   bool  = False,           # render transparent overlay .mov (ProRes 4444)
+    reference_lap:      Optional[Lap] = None,   # lap to compare against for delta time
+    info_overrides:     Optional[dict] = None, # manual session-info overrides {info_track, …}
+    overlay_only:       bool  = False,         # render transparent overlay .mov (ProRes 4444)
+    track_map_geometry: Optional[list] = None, # [{lat,lon}] OSM circuit outline, or None
+    track_map_areas:    Optional[list] = None, # [{lats,lons}] OSM area polygons, or None
 ) -> None:
     """
     Render one video with telemetry overlay.
@@ -548,6 +550,14 @@ def render_lap(
         max_speed = 300.0
 
     map_lats, map_lons, _map_arr_np = _build_map_data(job, session, show_map)
+
+    # OSM circuit outline geometry (constant across all frames)
+    _track_map_lats:  list = []
+    _track_map_lons:  list = []
+    _track_map_areas: list = track_map_areas or []
+    if track_map_geometry:
+        _track_map_lats = [g['lat'] for g in track_map_geometry]
+        _track_map_lons = [g['lon'] for g in track_map_geometry]
 
     # Reference lap GPS (downsampled) — used by the Zoomed map style
     _ref_map_lats: list = []
@@ -702,7 +712,10 @@ def render_lap(
                  _ref_map_lats,
                  _ref_map_lons,
                  _ref_lap_duration,
-                 overlay_only)
+                 overlay_only,
+                 _track_map_lats,
+                 _track_map_lons,
+                 _track_map_areas)
                 for frm, (hist, ref_hist, cur_map_idx) in zip(chunk_frames, chunk_meta)
             ]
 

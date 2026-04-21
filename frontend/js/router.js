@@ -5,6 +5,7 @@
 const Router = (() => {
   const _pages = {};
   let _current = null;
+  let _navSeq  = 0;  // incremented on each navigate; guards stale async mounts
 
   function register(name, page) {
     _pages[name] = page;
@@ -13,6 +14,8 @@ const Router = (() => {
   async function navigate(name) {
     const view = document.getElementById('view');
     if (!view) return;
+
+    const mySeq = ++_navSeq;
 
     // Unmount current
     if (_current && _pages[_current] && _pages[_current].unmount) {
@@ -39,7 +42,8 @@ const Router = (() => {
       </div>`;
     }
 
-    window.location.hash = name;
+    // Only update the hash if no newer navigation superseded this one
+    if (_navSeq === mySeq) window.location.hash = name;
   }
 
   function init() {

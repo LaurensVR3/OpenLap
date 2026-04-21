@@ -61,11 +61,14 @@ def render_frame_worker(args: Tuple) -> bytes:
      max_speed,
      sectors,
      *_extra) = args
-    session_meta  = _extra[0] if len(_extra) > 0 else {}
-    ref_lats      = _extra[1] if len(_extra) > 1 else []
-    ref_lons      = _extra[2] if len(_extra) > 2 else []
-    ref_duration  = _extra[3] if len(_extra) > 3 else 0.0
-    overlay_only  = _extra[4] if len(_extra) > 4 else False
+    session_meta      = _extra[0] if len(_extra) > 0 else {}
+    ref_lats          = _extra[1] if len(_extra) > 1 else []
+    ref_lons          = _extra[2] if len(_extra) > 2 else []
+    ref_duration      = _extra[3] if len(_extra) > 3 else 0.0
+    overlay_only      = _extra[4] if len(_extra) > 4 else False
+    track_map_lats    = _extra[5] if len(_extra) > 5 else []
+    track_map_lons    = _extra[6] if len(_extra) > 6 else []
+    track_map_areas   = _extra[7] if len(_extra) > 7 else []
 
     from gauge_channels import gauge_data_lap_info
 
@@ -91,9 +94,10 @@ def render_frame_worker(args: Tuple) -> bytes:
 
         if channel == 'info':
             gd = dict(session_meta)
-            # Apply per-gauge text overrides (set in the overlay editor)
+            # Per-gauge overrides only fill fields that the session doesn't provide,
+            # so actual session data always wins over stale overlay-editor text.
             for k, v in (g.get('info_overrides') or {}).items():
-                if v:
+                if v and not gd.get(f'info_{k}'):
                     gd[f'info_{k}'] = v
             gd['selected_fields'] = g.get('selected_fields') or g.get('channels') or []
             gd['_theme'] = theme
@@ -156,14 +160,18 @@ def render_frame_worker(args: Tuple) -> bytes:
                                       * max(0, len(ref_lats) - 1))
             else:
                 ref_cur_idx = 0
+            osm_on = g.get('track_map_enabled', True)
             data = {
                 'lats': lap_lats, 'lons': lap_lons, 'cur_idx': cur_pt_idx,
                 '_theme': theme,
-                'zoom_radius_m': g.get('zoom_radius_m', 150),
-                'show_ref':      g.get('show_ref', True),
-                'ref_lats':      ref_lats,
-                'ref_lons':      ref_lons,
-                'ref_cur_idx':   ref_cur_idx,
+                'zoom_radius_m':  g.get('zoom_radius_m', 150),
+                'show_ref':       g.get('show_ref', True),
+                'ref_lats':       ref_lats,
+                'ref_lons':       ref_lons,
+                'ref_cur_idx':    ref_cur_idx,
+                'track_map_lats':  track_map_lats  if osm_on else [],
+                'track_map_lons':  track_map_lons  if osm_on else [],
+                'track_map_areas': track_map_areas if osm_on else [],
             }
             try:
                 mi = render_style('map', style, data, max(60, gw), max(60, gh))

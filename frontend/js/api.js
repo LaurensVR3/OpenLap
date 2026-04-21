@@ -38,7 +38,12 @@ const API = (() => {
       start_export:      () => null,
       cancel_export:     () => null,
       get_weather:       () => ({ weather: '—', wind: '—' }),
-      edit_session_info: () => null,
+      edit_session_info:       () => null,
+      bulk_rename_track:       () => ({ updated: 0 }),
+      get_laps_for_ref_picker:    () => [],
+      get_track_map_candidates:   () => ({ candidates: [], selected_osm_id: '', auto_osm_id: '', track_key: '' }),
+      set_track_map_selection:    () => null,
+      get_track_map_geometry:     () => ({ lats: [], lons: [], areas: [] }),
       racebox_login:     () => ({ ok: false, error: 'mock' }),
       check_encoders:    () => ({ version: 'mock', encoders: [
         { name: 'libx264', label: 'H.264 software', available: true },
@@ -100,7 +105,12 @@ const API = (() => {
     cancelExport:      ()              => call('cancel_export'),
 
     getWeather:        (lat, lon, dt)  => call('get_weather', lat, lon, dt),
-    editSessionInfo:   (path, overrides) => call('edit_session_info', path, overrides),
+    editSessionInfo:      (path, overrides)    => call('edit_session_info', path, overrides),
+    bulkRenameTrack:      (oldName, newName)   => call('bulk_rename_track', oldName, newName),
+    getLapsForRefPicker:  (csvPath)            => call('get_laps_for_ref_picker', csvPath),
+    getTrackMapCandidates: (csvPath)           => call('get_track_map_candidates', csvPath),
+    setTrackMapSelection:  (trackKey, osmId)   => call('set_track_map_selection', trackKey, osmId),
+    getTrackMapGeometry:   (csvPath, cLat, cLon) => call('get_track_map_geometry', csvPath, cLat, cLon),
 
     getSessionMeta:    (csvPath)       => call('get_session_meta', csvPath),
     getVideoServerPort:  ()             => call('get_video_server_port'),

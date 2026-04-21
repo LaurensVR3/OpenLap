@@ -330,6 +330,14 @@ def xrk_to_csv(xrk_path: str, csv_path: str, dll_path: str) -> None:
 
     dll = _load_dll(dll_path)
 
+    # The MatLabXRK DLL writes options-converter.txt and similar files to the
+    # current working directory.  Run from a temp dir so those files don't
+    # appear next to the EXE or in the project root.
+    import tempfile
+    _orig_cwd = os.getcwd()
+    _tmp_dir  = tempfile.mkdtemp(prefix='openlap_xrk_')
+    os.chdir(_tmp_dir)
+
     abs_path = os.path.abspath(xrk_path).encode()
     idxf = dll.open_file(c_char_p(abs_path))
     if idxf <= 0:
@@ -419,6 +427,12 @@ def xrk_to_csv(xrk_path: str, csv_path: str, dll_path: str) -> None:
 
     finally:
         dll.close_file_i(idxf)
+        os.chdir(_orig_cwd)
+        try:
+            import shutil
+            shutil.rmtree(_tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
 
     if not series_list:
         sys.exit("ERROR: No channel data found in the file.")

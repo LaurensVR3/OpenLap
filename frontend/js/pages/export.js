@@ -15,6 +15,11 @@
   let _badgeText   = 'Idle';
   let _badgeCls    = 'badge-dim';
 
+  // Lap range picker state
+  let _rangePickerStart = null;  // selected start lap_num
+  let _rangePickerEnd   = null;  // selected end lap_num
+  let _rangePickerLaps  = [];    // [{lap_num, duration, is_best}] from loaded session
+
   // ── Mount / Unmount ──────────────────────────────────────────────────────────
 
   function _itemFromPreview(ps) {
@@ -62,6 +67,16 @@
     _unlistenFns.push(State.on('selectedItems', newItems => {
       _refreshItemList(newItems);
       _updateStartBtn(newItems);
+      // Reload lap list when session changes (reset picker state for new session)
+      const newCsv = newItems[0]?.csv_path;
+      const oldCsv = (State.get('selectedItems') || [])[0]?.csv_path;
+      if (newCsv !== oldCsv) {
+        _rangePickerStart = null;
+        _rangePickerEnd   = null;
+        _rangePickerLaps  = [];
+      }
+      const scope = _container?.querySelector('#exp-scope')?.value;
+      if (scope === 'lap_range') _loadLapRange();
     }));
     _unlistenFns.push(State.on('previewSession', ps => {
       if (ps) State.set('selectedItems', [_itemFromPreview(ps)]);
@@ -125,10 +140,26 @@
             <label>Clip end (s)</label>
             <input type="number" id="exp-clip-end" class="input-field input-narrow" value="0" min="0" step="0.1">
           </div>
+          <div class="exp-range-row hidden" style="flex-direction:column;gap:4px;padding:2px 0 4px">
+            <div id="exp-range-header"
+                 style="font-size:10px;color:var(--text3);font-style:italic">
+              Click a lap to set start, click another to set end
+            </div>
+            <div id="exp-lap-list"
+                 style="max-height:170px;overflow-y:auto;border:1px solid var(--border);
+                        border-radius:3px;background:var(--bg)">
+              <div style="padding:8px;font-size:10px;color:var(--text3)">
+                Select a session to see laps.
+              </div>
+            </div>
+            <input type="hidden" id="exp-range-start" value="1">
+            <input type="hidden" id="exp-range-end" value="">
+          </div>
           <div class="form-row">
             <label>Scope</label>
             <select id="exp-scope" class="input-field">
               <option value="selected_lap">Selected Lap</option>
+              <option value="lap_range">Lap Range (1 video)</option>
               <option value="fastest_lap">Fastest Lap</option>
               <option value="all_laps">All Laps</option>
               <option value="full">Full Session</option>
@@ -172,15 +203,125 @@
   function _bindEvents(cfg, items) {
     const $ = id => _container.querySelector('#' + id);
 
-    // Show clip rows only when scope=clip
-    const _syncClipRows = () => {
+    // ── Lap range picker ──────────────────────────────────────────────────────
+
+    function _renderLapList() {
+      const listEl  = $('exp-lap-list');
+      const hdrEl   = $('exp-range-header');
+      if (!listEl) return;
+
+      if (!_rangePickerLaps.length) {
+        listEl.innerHTML = '<div style="padding:8px;font-size:10px;color:var(--text3)">No timed laps found.</div>';
+        if (hdrEl) hdrEl.textContent = 'No timed laps found.';
+        return;
+      }
+
+      const s = _rangePickerStart, e = _rangePickerEnd;
+
+      if (hdrEl) {
+        if (s == null) {
+          hdrEl.textContent = 'Click a lap to set range start.';
+        } else if (e == null) {
+          hdrEl.textContent = `From: Lap ${s} — click another lap to set end.`;
+        } else {
+          hdrEl.textContent = `Range: Lap ${s} → Lap ${e}`;
+        }
+      }
+
+      listEl.innerHTML = _rangePickerLaps.map(lap => {
+        const inRange  = s != null && e != null && lap.lap_num >= s && lap.lap_num <= e;
+        const isStart  = lap.lap_num === s;
+        const isEnd    = lap.lap_num === e;
+        const dur      = _fmtTime(lap.duration);
+
+        let bg    = 'transparent';
+        let color = 'inherit';
+        let badge = '';
+        if (isStart && isEnd) { bg = 'var(--acc)';   color = '#fff'; badge = '<span style="font-size:8px;opacity:.8;margin-left:4px">FROM·TO</span>'; }
+        else if (isStart)     { bg = 'var(--acc)';   color = '#fff'; badge = '<span style="font-size:8px;opacity:.8;margin-left:4px">FROM</span>'; }
+        else if (isEnd)       { bg = 'var(--acc)';   color = '#fff'; badge = '<span style="font-size:8px;opacity:.8;margin-left:4px">TO</span>'; }
+        else if (inRange)     { bg = 'rgba(var(--acc-rgb,99,102,241),0.15)'; }
+
+        return `<div class="exp-lap-item" data-num="${lap.lap_num}"
+                     style="display:flex;justify-content:space-between;align-items:center;
+                            padding:4px 8px;cursor:pointer;user-select:none;
+                            background:${bg};color:${color};font-size:10px;
+                            border-bottom:1px solid var(--border)">
+                  <span>Lap ${lap.lap_num}${lap.is_best ? ' ★' : ''}${badge}</span>
+                  <span style="font-variant-numeric:tabular-nums;color:${color === '#fff' ? '#fff' : 'var(--acc2)'}">${dur}</span>
+                </div>`;
+      }).join('');
+
+      // Update hidden inputs
+      const startInp = $('exp-range-start');
+      const endInp   = $('exp-range-end');
+      if (startInp) startInp.value = s ?? 1;
+      if (endInp)   endInp.value   = e ?? '';
+
+      // Wire clicks
+      listEl.querySelectorAll('.exp-lap-item').forEach(row => {
+        row.addEventListener('click', () => {
+          const num = parseInt(row.dataset.num);
+          if (_rangePickerStart == null || (_rangePickerStart != null && _rangePickerEnd != null)) {
+            // No selection or complete selection: start fresh
+            _rangePickerStart = num;
+            _rangePickerEnd   = null;
+          } else if (num > _rangePickerStart) {
+            // Extend to end
+            _rangePickerEnd = num;
+          } else if (num === _rangePickerStart) {
+            // Click same lap: make it a single-lap range
+            _rangePickerEnd = num;
+          } else {
+            // Click before start: reset start
+            _rangePickerStart = num;
+            _rangePickerEnd   = null;
+          }
+          _renderLapList();
+        });
+      });
+    }
+
+    async function _loadLapRange() {
+      const listEl = $('exp-lap-list');
+      if (!listEl) return;
+      const items = State.get('selectedItems') || [];
+      const csvPath = items[0]?.csv_path;
+      if (!csvPath) {
+        _rangePickerLaps = [];
+        _renderLapList();
+        return;
+      }
+      listEl.innerHTML = '<div style="padding:8px;font-size:10px;color:var(--text3)">Loading…</div>';
+      try {
+        const all = await API.getLaps(csvPath);
+        // Only timed laps (not outlap/inlap)
+        _rangePickerLaps = (all || []).filter(l => !l.is_outlap && !l.is_inlap)
+          .map(l => ({ lap_num: l.lap_num, duration: l.duration, is_best: l.is_best }));
+        // Auto-select full range on first load
+        if (_rangePickerLaps.length && _rangePickerStart == null) {
+          _rangePickerStart = _rangePickerLaps[0].lap_num;
+          _rangePickerEnd   = _rangePickerLaps[_rangePickerLaps.length - 1].lap_num;
+        }
+      } catch (e) {
+        _rangePickerLaps = [];
+      }
+      _renderLapList();
+    }
+
+    // Show/hide scope-specific rows
+    const _syncScopeRows = () => {
       const scope = $('exp-scope')?.value || 'selected_lap';
       _container.querySelectorAll('.exp-clip-row').forEach(r => {
         r.classList.toggle('hidden', scope !== 'clip');
       });
+      _container.querySelectorAll('.exp-range-row').forEach(r => {
+        r.classList.toggle('hidden', scope !== 'lap_range');
+      });
+      if (scope === 'lap_range') _loadLapRange();
     };
-    _syncClipRows();
-    $('exp-scope').addEventListener('change', _syncClipRows);
+    _syncScopeRows();
+    $('exp-scope').addEventListener('change', _syncScopeRows);
 
     // Start
     $('exp-start-btn').addEventListener('click', () => _startExport());
@@ -273,23 +414,39 @@
       API.getOverlay().catch(() => ({})),
     ]);
 
+    const _rangeStart = parseInt($('exp-range-start')?.value) || 1;
+    const _rangeEndRaw = $('exp-range-end')?.value?.trim();
+    const _rangeEnd   = _rangeEndRaw ? parseInt(_rangeEndRaw) : null;
+
     const params = {
-      items:        items,
-      scope:        $('exp-scope')?.value    || 'selected_lap',
-      clip_start_s: parseFloat($('exp-clip-start')?.value) || 0,
-      clip_end_s:   parseFloat($('exp-clip-end')?.value)   || 0,
-      padding:      parseFloat($('exp-padding').value)    || 5.0,
-      ref_mode:     layout.ref_mode   || 'none',
-      encoder:      cfg.encoder       || 'libx264',
-      crf:          cfg.crf           ?? 18,
-      workers:      cfg.workers       ?? 4,
-      is_bike:      layout.is_bike    ?? false,
-      show_map:     layout.show_map   ?? true,
-      show_tel:     layout.show_tel   ?? true,
-      export_path:  cfg.export_path   || '',
-      overlay_only: $('exp-overlay-only')?.checked || false,
+      items:            items,
+      scope:            $('exp-scope')?.value    || 'selected_lap',
+      clip_start_s:     parseFloat($('exp-clip-start')?.value) || 0,
+      clip_end_s:       parseFloat($('exp-clip-end')?.value)   || 0,
+      padding:          parseFloat($('exp-padding').value)    || 5.0,
+      ref_mode:         layout.ref_mode          || 'none',
+      ref_lap_csv_path: layout.ref_lap_csv_path  || '',
+      ref_lap_num:      layout.ref_lap_num        || 0,
+      encoder:          cfg.encoder              || 'libx264',
+      crf:              cfg.crf                  ?? 18,
+      workers:          cfg.workers              ?? 4,
+      is_bike:          layout.is_bike           ?? false,
+      show_map:         layout.show_map          ?? true,
+      show_tel:         layout.show_tel          ?? true,
+      export_path:      cfg.export_path          || '',
+      overlay_only:     $('exp-overlay-only')?.checked || false,
       layout,
     };
+
+    // For lap_range scope, embed range on every item
+    if (params.scope === 'lap_range') {
+      params.items = params.items.map(item => ({
+        ...item,
+        scope:           'lap_range',
+        lap_range_start: _rangeStart,
+        lap_range_end:   _rangeEnd,
+      }));
+    }
 
     _logLines    = [];
     _progressPct = 0;

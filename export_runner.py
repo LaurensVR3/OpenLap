@@ -10,6 +10,18 @@ import re
 from typing import Callable, List, Optional
 
 
+def load_any_session(path: str):
+    """Load a session from any supported format (RaceBox, AIM, GPX, MoTeC)."""
+    import gpx_data, aim_data, racebox_data, motec_data
+    if motec_data.is_motec_ld(path):
+        return motec_data.load_ld(path)
+    if gpx_data.is_gpx(path):
+        return gpx_data.load_gpx(path)
+    if aim_data.is_aim_csv(path):
+        return aim_data.load_csv(path)
+    return racebox_data.load_csv(path)
+
+
 def _export_stem(sess, scope_label: str) -> str:
     """Build a human-readable export filename stem: YYYY-MM-DD_HH-MM_Track_Scope."""
     dt = sess.start_time
@@ -28,42 +40,39 @@ def _export_stem(sess, scope_label: str) -> str:
 
 
 def run_export(
-    items:          List[dict],
-    scope:          str,
-    export_path:    str,
-    encoder:        str,
-    crf:            int,
-    workers:        int,
-    padding:        float,
-    is_bike:        bool,
-    show_map:       bool,
-    show_tel:       bool,
-    layout:         dict,
-    clip_start_s:   float,
-    clip_end_s:     float,
-    ref_mode:       str,
+    items:            List[dict],
+    scope:            str,
+    export_path:      str,
+    encoder:          str,
+    crf:              int,
+    workers:          int,
+    padding:          float,
+    is_bike:          bool,
+    show_map:         bool,
+    show_tel:         bool,
+    layout:           dict,
+    clip_start_s:     float,
+    clip_end_s:       float,
+    ref_mode:         str,
     ref_lap_obj,
-    bike_overrides: dict,
-    session_info:   dict,
-    log_cb:         Callable[[str], None],
-    progress_cb:    Callable[[float, str], None],
-    done_cb:        Callable[[bool, str], None],
-    overlay_only:   bool = False,
+    bike_overrides:   dict,
+    session_info:     dict,
+    log_cb:               Callable[[str], None],
+    progress_cb:          Callable[[float, str], None],
+    done_cb:              Callable[[bool, str], None],
+    overlay_only:         bool = False,
+    ref_lap_csv_path:     str  = '',
+    ref_lap_num:          int  = 0,
+    track_map_selections: dict = None,
 ) -> None:
     """Render one or more sessions.  Designed to be called from a background thread."""
-    import gpx_data, aim_data, racebox_data, motec_data
     from video_renderer import render_lap, RenderJob, concat_videos
     from data_model import Lap
     from utils import compute_lean_angle
+    from reference_resolver import resolve_reference_lap
+    from app_config import load_scan_cache
 
-    def load_session(path):
-        if motec_data.is_motec_ld(path):
-            return motec_data.load_ld(path)
-        if gpx_data.is_gpx(path):
-            return gpx_data.load_gpx(path)
-        if aim_data.is_aim_csv(path):
-            return aim_data.load_csv(path)
-        return racebox_data.load_csv(path)
+    scan_cache = load_scan_cache()
 
     total_jobs = len(items)
     done_jobs  = 0
@@ -96,7 +105,7 @@ def run_export(
         log(f"\n── {os.path.basename(csv_path)}")
 
         try:
-            sess = load_session(csv_path)
+            sess = load_any_session(csv_path)
         except Exception as e:
             log(f"  ✗ Load failed: {e}")
             errors.append(str(e))
@@ -127,9 +136,11 @@ def run_export(
         tmp_joined = None
         join_share = 0.0
         if len(videos) > 1:
+            from pathlib import Path as _Path
+            _vcache = _Path.home() / '.openlap' / 'video_cache'
+            _vcache.mkdir(parents=True, exist_ok=True)
             join_share = 0.10
-            tmp_joined = os.path.join(export_path,
-                f"_tmp_joined_{os.path.basename(csv_path)}.mp4")
+            tmp_joined = str(_vcache / f"joined_{os.path.basename(csv_path)}.mp4")
             newest_src = max(os.path.getmtime(v) for v in videos)
             if (os.path.exists(tmp_joined) and
                     os.path.getmtime(tmp_joined) >= newest_src):
@@ -151,21 +162,69 @@ def run_export(
         # ── Per-session info overrides (manual metadata) ─────────────────────
         info_overrides = session_info.get(abs_csv, {})
 
+        # ── Track map geometry (OSM circuit outline + area polygons) ─────────
+        _track_map_geometry = []
+        _track_map_areas    = []
+        if track_map_selections:
+            from track_map_cache import load_geometry as _load_osm, load_areas as _load_areas
+            track_name = (info_overrides.get('info_track') or
+                          getattr(sess, 'track', '') or '').lower().strip()
+            osm_id = track_map_selections.get(track_name, '')
+            if osm_id:
+                try:
+                    _track_map_geometry = _load_osm(osm_id)
+                except Exception:
+                    pass
+            # Load area polygons — derive centroid from geometry or session GPS
+            if _track_map_geometry:
+                try:
+                    clat = sum(g['lat'] for g in _track_map_geometry) / len(_track_map_geometry)
+                    clon = sum(g['lon'] for g in _track_map_geometry) / len(_track_map_geometry)
+                    _track_map_areas = _load_areas(clat, clon)
+                except Exception:
+                    pass
+
         # ── Resolve reference lap ─────────────────────────────────────────────
-        reference_lap = None
-        if ref_mode == 'session_best':
-            reference_lap = sess.fastest_lap
-            if reference_lap:
-                log(f"  Delta vs: session fastest ({reference_lap.duration:.3f}s)")
-        elif ref_mode in ('custom', 'track_library') and ref_lap_obj is not None:
-            reference_lap = ref_lap_obj
-            log(f"  Delta vs: {reference_lap.duration:.3f}s")
+        static_ref_lap = None
+        if ref_mode in ('custom', 'track_library') and ref_lap_obj is not None:
+            static_ref_lap = ref_lap_obj
+            log(f"  Delta vs: {static_ref_lap.duration:.3f}s (custom)")
+        elif ref_mode not in ('session_best_so_far', 'none', 'custom', 'track_library'):
+            static_ref_lap, _ref_desc = resolve_reference_lap(
+                ref_mode         = ref_mode,
+                sess             = sess,
+                session_info     = session_info,
+                scan_cache       = scan_cache,
+                ref_lap_csv_path = ref_lap_csv_path,
+                ref_lap_num      = ref_lap_num,
+                load_session_fn  = load_any_session,
+            )
+            if static_ref_lap:
+                log(f"  Delta vs: {_ref_desc}")
+            else:
+                log(f"  Delta vs: {_ref_desc} — no reference lap")
 
         def scaled_prog(pct, msg):
             sess_prog(done_jobs, join_share, pct, msg)
 
         # Allow per-item scope override (set from the Overlay tab)
         item_scope = item.get('scope') or scope
+
+        def _ref_for_lap(lap_num: Optional[int] = None):
+            """Return the reference lap for a given lap number (handles session_best_so_far)."""
+            if ref_mode == 'session_best_so_far':
+                ref, desc = resolve_reference_lap(
+                    ref_mode        = 'session_best_so_far',
+                    sess            = sess,
+                    session_info    = session_info,
+                    scan_cache      = scan_cache,
+                    current_lap_num = lap_num,
+                    load_session_fn = load_any_session,
+                )
+                if ref:
+                    log(f"  Delta vs: {desc}")
+                return ref
+            return static_ref_lap
 
         try:
             if item_scope == 'selected_lap':
@@ -185,9 +244,11 @@ def run_export(
                     show_telemetry=show_tel, padding=padding,
                     is_bike=is_bike, overlay_layout=layout,
                     progress_cb=scaled_prog, log_cb=log,
-                    reference_lap=reference_lap,
+                    reference_lap=_ref_for_lap(lap.lap_num),
                     info_overrides=info_overrides,
                     overlay_only=overlay_only,
+                    track_map_geometry=_track_map_geometry,
+                    track_map_areas=_track_map_areas,
                 )
 
             elif item_scope == 'fastest':
@@ -205,9 +266,11 @@ def run_export(
                     show_telemetry=show_tel, padding=padding,
                     is_bike=is_bike, overlay_layout=layout,
                     progress_cb=scaled_prog, log_cb=log,
-                    reference_lap=reference_lap,
+                    reference_lap=_ref_for_lap(lap.lap_num),
                     info_overrides=info_overrides,
                     overlay_only=overlay_only,
+                    track_map_geometry=_track_map_geometry,
+                    track_map_areas=_track_map_areas,
                 )
 
             elif item_scope == 'all_laps':
@@ -227,10 +290,55 @@ def run_export(
                         show_telemetry=show_tel, padding=padding,
                         is_bike=is_bike, overlay_layout=layout,
                         progress_cb=scaled_prog, log_cb=log,
-                        reference_lap=reference_lap,
+                        reference_lap=_ref_for_lap(lap.lap_num),
                         info_overrides=info_overrides,
                         overlay_only=overlay_only,
+                        track_map_geometry=_track_map_geometry,
+                    track_map_areas=_track_map_areas,
                     )
+
+            elif item_scope == 'lap_range':
+                timed     = sess.timed_laps
+                start_num = item.get('lap_range_start')
+                end_num   = item.get('lap_range_end')
+                if not timed:
+                    log("  ✗ No timed laps found")
+                    done_jobs += 1
+                    continue
+                if start_num is None:
+                    start_num = timed[0].lap_num
+                if end_num is None:
+                    end_num = timed[-1].lap_num
+                start_num, end_num = int(start_num), int(end_num)
+                included = [l for l in timed if start_num <= l.lap_num <= end_num]
+                if not included:
+                    log(f"  ✗ No timed laps in range {start_num}–{end_num}")
+                    done_jobs += 1
+                    continue
+                range_pts = [p for l in included for p in l.points]
+                range_lap = Lap(
+                    lap_num  = -1,
+                    points   = range_pts,
+                    duration = range_pts[-1].elapsed - range_pts[0].elapsed,
+                )
+                first_n = included[0].lap_num
+                last_n  = included[-1].lap_num
+                label   = f"Laps{first_n:02d}-{last_n:02d}"
+                out = os.path.join(export_path, f"{_export_stem(sess, label)}{_ext}")
+                log(f"  Lap range {first_n}–{last_n} ({len(included)} laps) → {os.path.basename(out)}")
+                render_lap(
+                    video_path, out, sess, RenderJob(label, range_lap),
+                    sync_offset=offset, encoder=encoder, crf=crf,
+                    n_workers=workers, show_map=show_map,
+                    show_telemetry=show_tel, padding=padding,
+                    is_bike=is_bike, overlay_layout=layout,
+                    progress_cb=scaled_prog, log_cb=log,
+                    reference_lap=_ref_for_lap(included[0].lap_num),
+                    info_overrides=info_overrides,
+                    overlay_only=overlay_only,
+                    track_map_geometry=_track_map_geometry,
+                    track_map_areas=_track_map_areas,
+                )
 
             elif item_scope == 'full':
                 out = os.path.join(export_path, f"{_export_stem(sess, 'Full')}{_ext}")
@@ -242,9 +350,11 @@ def run_export(
                     show_telemetry=show_tel, padding=0.0,
                     is_bike=is_bike, overlay_layout=layout,
                     progress_cb=scaled_prog, log_cb=log,
-                    reference_lap=reference_lap,
+                    reference_lap=static_ref_lap,
                     info_overrides=info_overrides,
                     overlay_only=overlay_only,
+                    track_map_geometry=_track_map_geometry,
+                    track_map_areas=_track_map_areas,
                 )
 
             elif item_scope == 'clip':
@@ -274,10 +384,12 @@ def run_export(
                     n_workers=workers, show_map=show_map,
                     show_telemetry=show_tel, padding=padding,
                     is_bike=is_bike, overlay_layout=layout,
-                    reference_lap=reference_lap,
+                    reference_lap=static_ref_lap,
                     progress_cb=scaled_prog, log_cb=log,
                     info_overrides=info_overrides,
                     overlay_only=overlay_only,
+                    track_map_geometry=_track_map_geometry,
+                    track_map_areas=_track_map_areas,
                 )
 
         except Exception as e:

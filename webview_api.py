@@ -214,13 +214,22 @@ class WebviewAPI:
             return self._cached_sessions()
 
         from session_scanner import (
-            scan_csvs, scan_videos, group_videos, match_sessions, scan_pending_xrk
+            scan_csvs, scan_videos, group_videos, match_sessions,
+            scan_pending_xrk, convert_xrk_files, MatchedSession,
         )
 
         folder = str(Path(folder).resolve())
         video_folder = self._config.video_path or folder
 
-        # Scan telemetry files
+        # Auto-convert any XRK files that don't yet have a CSV.
+        # Progress messages are pushed to JS so the status bar stays informative.
+        pending_xrk = scan_pending_xrk(folder)
+        if pending_xrk:
+            def _xrk_progress(msg: str) -> None:
+                self._push('scan_status', message=msg)
+            convert_xrk_files(folder, progress_cb=_xrk_progress)
+
+        # Scan telemetry files (includes any CSVs just produced above)
         csv_paths = scan_csvs(folder)
 
         # Scan video files
@@ -231,6 +240,23 @@ class WebviewAPI:
 
         groups = group_videos(videos)
         matches = match_sessions(csv_paths, groups)
+
+        # Any XRK that still has no CSV (DLL missing / conversion failed) →
+        # show as a pending session so the user can retry manually.
+        existing_csv_paths = {m.csv_path for m in matches}
+        for xrk_path, csv_path in scan_pending_xrk(folder):
+            if csv_path not in existing_csv_paths:
+                matches.append(MatchedSession(
+                    csv_path        = csv_path,
+                    video_group     = None,
+                    time_delta      = float('inf'),
+                    csv_start       = None,
+                    video_start     = None,
+                    matched         = False,
+                    source          = 'AIM Mychron',
+                    needs_conversion= True,
+                    xrk_path        = xrk_path,
+                ))
 
         # Load cached offsets
         offsets        = self._config.offsets
@@ -374,13 +400,15 @@ class WebviewAPI:
             if not session or not session.laps:
                 return []
 
-            best_dur = min((l.duration for l in session.laps if l.duration), default=None)
+            best_dur = min((l.duration for l in session.timed_laps if l.duration), default=None)
             result = []
             for i, lap in enumerate(session.laps):
                 result.append({
                     'lap_idx':      i,
+                    'lap_num':      lap.lap_num,
                     'duration':     lap.duration,
-                    'is_best':      (lap.duration is not None and best_dur is not None
+                    'is_best':      (not lap.is_outlap and not lap.is_inlap
+                                     and lap.duration is not None and best_dur is not None
                                      and abs(lap.duration - best_dur) < 0.001),
                     'elapsed_start': round(lap.elapsed_start, 3) if hasattr(lap, 'elapsed_start') and lap.elapsed_start is not None else 0.0,
                     'is_outlap':    lap.is_outlap if hasattr(lap, 'is_outlap') else False,
@@ -453,6 +481,211 @@ class WebviewAPI:
     def edit_session_info(self, csv_path: str, overrides: dict) -> None:
         self._config.session_info[csv_path] = overrides
         self._config.save()
+
+    def bulk_rename_track(self, csv_paths: list, new_name: str) -> dict:
+        """Set the track override to new_name for each path in csv_paths.
+
+        The caller (JS) is responsible for determining which paths to rename,
+        since it has access to the enriched _meta that the backend does not.
+        Returns {'updated': N}.
+        """
+        updated = 0
+        for csv_path in csv_paths:
+            if not csv_path:
+                continue
+            abs_path = os.path.abspath(csv_path)
+            existing = self._config.session_info.get(abs_path, {})
+            self._config.session_info[abs_path] = {**existing, 'info_track': new_name}
+            updated += 1
+
+        if updated:
+            self._config.save()
+        return {'updated': updated}
+
+    def get_laps_for_ref_picker(self, csv_path: str) -> list:
+        """Return timed laps from all sessions sharing the same track as csv_path.
+
+        Groups laps by session for the manual reference lap picker UI.
+        Returns [{csv_path, date, laps: [{lap_num, duration, is_best}]}].
+        """
+        from app_config import load_scan_cache
+        session = self._load_session(csv_path)
+        if not session:
+            return []
+
+        abs_path      = os.path.abspath(csv_path)
+        base_track    = session.track or ''
+        override      = self._config.session_info.get(abs_path, {}).get('info_track', '').strip()
+        current_track = (override or base_track).strip().lower()
+
+        cache   = load_scan_cache()
+        entries = cache.get('sessions', [])
+        results = []
+
+        for entry in entries:
+            ep = entry.get('csv_path', '')
+            if not ep or not os.path.exists(ep):
+                continue
+            abs_ep    = os.path.abspath(ep)
+            ov_track  = self._config.session_info.get(abs_ep, {}).get('info_track', '').strip()
+            raw_track = entry.get('track', '').strip()
+            try:
+                sess = self._load_session(ep)
+                if not sess:
+                    continue
+                # Fall back to actual session track when scan cache entry is stale/empty
+                entry_trk = (ov_track or raw_track or sess.track or '').strip().lower()
+                # When current session has a track name, filter to matching sessions only.
+                # When it has no track name, show everything so the user isn't blocked.
+                if current_track and entry_trk != current_track:
+                    continue
+                timed    = sess.timed_laps
+                best_dur = min((l.duration for l in timed), default=None)
+                laps     = [
+                    {
+                        'lap_num':  l.lap_num,
+                        'duration': round(l.duration, 3),
+                        'is_best':  best_dur is not None and abs(l.duration - best_dur) < 0.001,
+                    }
+                    for l in timed
+                ]
+                if laps:
+                    results.append({
+                        'csv_path': ep,
+                        'date':     entry.get('csv_start', ''),
+                        'laps':     laps,
+                    })
+            except Exception as e:
+                logger.debug('get_laps_for_ref_picker: could not load %s: %s', ep, e)
+
+        return results
+
+    # ── Track map (OSM) ──────────────────────────────────────────────────────
+    def get_track_map_candidates(self, csv_path: str) -> dict:
+        """Return {candidates, selected_osm_id, auto_osm_id, track_key} for a session.
+
+        Queries Overpass API (cached on disk). May be slow on first call.
+        Returns {candidates: [], selected_osm_id: '', auto_osm_id: '', track_key: ''} on error.
+        """
+        from track_map_cache import fetch_candidates, auto_select
+        empty = {'candidates': [], 'selected_osm_id': '', 'auto_osm_id': '', 'track_key': ''}
+        try:
+            session = self._load_session(csv_path)
+            if not session:
+                return empty
+            pts  = session.all_points
+            lats = [p.lat for p in pts if p.lat]
+            lons = [p.lon for p in pts if p.lon]
+            if not lats:
+                return empty
+
+            clat = sum(lats) / len(lats)
+            clon = sum(lons) / len(lons)
+            candidates = fetch_candidates(clat, clon)
+            auto_id    = auto_select(candidates, lats, lons) or ''
+
+            abs_csv    = os.path.abspath(csv_path)
+            track_name = (self._config.session_info.get(abs_csv, {}).get('info_track')
+                          or getattr(session, 'track', '') or '').lower().strip()
+            selections = getattr(self._config, 'track_map_selections', {}) or {}
+            selected_id = selections.get(track_name, '')
+
+            # Slim down — strip full geometry to keep response size small
+            slim = [
+                {
+                    'osm_id':          c['osm_id'],
+                    'name':            c['name'],
+                    'centroid_dist_m': round(c.get('centroid_dist_m', 0)),
+                }
+                for c in candidates
+            ]
+            return {
+                'candidates':      slim,
+                'selected_osm_id': selected_id,
+                'auto_osm_id':     auto_id,
+                'track_key':       track_name,
+            }
+        except Exception:
+            logger.exception('get_track_map_candidates failed for %s', csv_path)
+            return empty
+
+    def set_track_map_selection(self, track_key: str, osm_id: str) -> None:
+        """Save (or clear) the user-chosen OSM way for a track name."""
+        if not isinstance(getattr(self._config, 'track_map_selections', None), dict):
+            self._config.track_map_selections = {}
+        key = track_key.lower().strip()
+        if osm_id:
+            self._config.track_map_selections[key] = str(osm_id)
+        else:
+            self._config.track_map_selections.pop(key, None)
+        self._config.save()
+
+    def get_track_map_geometry(self, csv_path: str,
+                               centroid_lat: float = None,
+                               centroid_lon: float = None) -> dict:
+        """Return {lats, lons, areas} for the selected/auto OSM track map of a session.
+
+        centroid_lat/lon should be supplied by the caller (already computed JS-side
+        from loaded telemetry) so this method never needs to reload the session file.
+        Overpass queries happen only via get_track_map_candidates (user-triggered).
+        """
+        from track_map_cache import load_geometry, load_areas, auto_select, _cache_path
+        import json as _json
+        try:
+            abs_csv    = os.path.abspath(csv_path)
+            track_name = (self._config.session_info.get(abs_csv, {}).get('info_track', '')
+                          or self._fast_track_name(csv_path)).lower().strip()
+            selections = getattr(self._config, 'track_map_selections', {}) or {}
+            osm_id     = selections.get(track_name, '')
+
+            # Auto-select from disk cache using caller-supplied centroid — no session load
+            if not osm_id and centroid_lat is not None and centroid_lon is not None:
+                grid_lat = round(centroid_lat, 1)
+                grid_lon = round(centroid_lon, 1)
+                cp = _cache_path(f'candidates_{grid_lat:.1f}_{grid_lon:.1f}')
+                if cp.exists():
+                    try:
+                        with open(cp, 'r', encoding='utf-8') as f:
+                            cached = _json.load(f)
+                        osm_id = auto_select(cached, [centroid_lat], [centroid_lon]) or ''
+                    except Exception:
+                        pass
+
+            areas = []
+            if centroid_lat is not None and centroid_lon is not None:
+                areas = load_areas(centroid_lat, centroid_lon)
+
+            if not osm_id:
+                return {'lats': [], 'lons': [], 'areas': areas}
+
+            geometry = load_geometry(osm_id)
+            if not geometry:
+                return {'lats': [], 'lons': [], 'areas': areas}
+
+            return {
+                'lats':  [g['lat'] for g in geometry],
+                'lons':  [g['lon'] for g in geometry],
+                'areas': areas,
+            }
+        except Exception:
+            logger.exception('get_track_map_geometry failed for %s', csv_path)
+            return {'lats': [], 'lons': [], 'areas': []}
+
+    @staticmethod
+    def _fast_track_name(csv_path: str) -> str:
+        """Read track name from CSV header only — no full session parse."""
+        try:
+            suffix = os.path.splitext(csv_path)[1].lower()
+            if suffix == '.csv':
+                with open(csv_path, encoding='utf-8-sig', errors='ignore') as fh:
+                    for line in fh:
+                        if line.startswith('Track,'):
+                            return line.strip().split(',', 1)[1]
+                        if line.startswith('Record,') or line.startswith('Time (s),'):
+                            break
+        except Exception:
+            pass
+        return ''
 
     # ── Export ────────────────────────────────────────────────────────────────
     def start_export(self, params: dict) -> None:
@@ -580,27 +813,30 @@ class WebviewAPI:
         _crf     = max(0, min(int(params.get('crf', 18)), 51))
         try:
             run_export(
-                items         = params.get('items', []),
-                scope         = params.get('scope', 'fastest'),
-                export_path   = params.get('export_path', ''),
-                encoder       = params.get('encoder', 'libx264'),
-                crf           = _crf,
-                workers       = _workers,
-                padding       = params.get('padding', 5.0),
-                is_bike       = params.get('is_bike', False),
-                show_map      = params.get('show_map', True),
-                show_tel      = params.get('show_tel', True),
-                layout        = params.get('layout', {}),
-                clip_start_s  = params.get('clip_start_s', 0.0),
-                clip_end_s    = params.get('clip_end_s', 0.0),
-                ref_mode      = params.get('ref_mode', 'none'),
-                ref_lap_obj   = None,
-                bike_overrides = self._config.bike_overrides,
-                session_info  = self._config.session_info,
-                log_cb        = log_cb,
-                progress_cb   = progress_cb,
-                done_cb       = done_cb,
-                overlay_only  = params.get('overlay_only', False),
+                items             = params.get('items', []),
+                scope             = params.get('scope', 'fastest'),
+                export_path       = params.get('export_path', ''),
+                encoder           = params.get('encoder', 'libx264'),
+                crf               = _crf,
+                workers           = _workers,
+                padding           = params.get('padding', 5.0),
+                is_bike           = params.get('is_bike', False),
+                show_map          = params.get('show_map', True),
+                show_tel          = params.get('show_tel', True),
+                layout            = params.get('layout', {}),
+                clip_start_s      = params.get('clip_start_s', 0.0),
+                clip_end_s        = params.get('clip_end_s', 0.0),
+                ref_mode          = params.get('ref_mode', 'none'),
+                ref_lap_obj       = None,
+                ref_lap_csv_path  = params.get('ref_lap_csv_path', ''),
+                ref_lap_num       = int(params.get('ref_lap_num', 0) or 0),
+                bike_overrides    = self._config.bike_overrides,
+                session_info      = self._config.session_info,
+                log_cb            = log_cb,
+                progress_cb       = progress_cb,
+                done_cb           = done_cb,
+                overlay_only          = params.get('overlay_only', False),
+                track_map_selections  = getattr(self._config, 'track_map_selections', {}) or {},
             )
         except Exception as e:
             done_cb(False, str(e))

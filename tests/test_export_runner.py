@@ -131,7 +131,7 @@ class TestScopeValues:
     Verify the expected string values are what Python branches on.
     """
 
-    VALID_SCOPES = ('fastest', 'all_laps', 'clip', 'full')
+    VALID_SCOPES = ('fastest', 'all_laps', 'clip', 'full', 'selected_lap', 'lap_range')
 
     @pytest.mark.parametrize('scope', VALID_SCOPES)
     def test_known_scope_strings(self, scope):
@@ -188,8 +188,20 @@ class TestProgressRange:
                     f"end-of-session progress out of range: {v} (done={done}/{total})"
 
     def test_ref_mode_session_best_string(self):
-        """export_runner checks ref_mode == 'session_best'; JS must send that exact value."""
-        import export_runner, inspect
-        src = inspect.getsource(export_runner.run_export)
-        assert "'session_best'" in src, "Python must check ref_mode == 'session_best'"
+        """reference_resolver handles 'session_best'; JS must send that exact string."""
+        import reference_resolver, inspect
+        src = inspect.getsource(reference_resolver.resolve_reference_lap)
+        assert "'session_best'" in src, "resolve_reference_lap must handle 'session_best'"
         assert "'best_in_session'" not in src, "'best_in_session' is the old broken value"
+
+    def test_new_ref_modes_exist_in_resolver(self):
+        """reference_resolver must handle all new ref_mode values."""
+        import reference_resolver, inspect
+        src = inspect.getsource(reference_resolver.resolve_reference_lap)
+        for mode in ('session_best_so_far', 'personal_best', 'day_best', 'manual'):
+            assert f"'{mode}'" in src, f"resolve_reference_lap must handle '{mode}'"
+
+    def test_load_any_session_is_module_level(self):
+        """load_any_session must be importable from export_runner for use by other modules."""
+        from export_runner import load_any_session
+        assert callable(load_any_session)

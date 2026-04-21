@@ -214,21 +214,31 @@ def load_csv(path: str) -> Session:
         laps.append(Lap(lap_num=lap_num, points=pts, duration=dur,
                         is_outlap=(lap_num == 0)))
 
-    # Mark last lap as inlap if much longer than median (mirrors racebox_data logic)
+    # Classify non-timed laps
     timed = [l for l in laps if l.lap_num > 0]
-    if len(timed) >= 3:
+    if len(timed) >= 2:
         med = sorted(l.duration for l in timed)[len(timed) // 2]
-        if timed[-1].duration > med * 1.5:
+        # Last lap: too long = cool-down/inlap; too short = session cut off mid-lap
+        if timed[-1].duration > med * 1.5 or timed[-1].duration < med * 0.5:
             timed[-1].is_inlap = True
+        # First timed lap: too short = recording started mid-lap
+        if timed[0].duration < med * 0.5 and not timed[0].is_inlap:
+            timed[0].is_outlap = True
 
-    best_timed = [l for l in timed if not l.is_inlap]
+    best_timed = [l for l in timed if not l.is_inlap and not l.is_outlap]
     best_lap_time = min((l.duration for l in best_timed), default=0.0)
 
-    # Try to parse AIM filename convention: Driver_Track_a_Session
-    # e.g. "Toby Houston_MOSPORT_a_0669" → track = "MOSPORT"
+    # AIM filename convention: Driver[_Number]_Track_a_Session
+    # The track is the segment immediately before the fixed '_a_' separator.
+    # e.g. "Toby Houston_MOSPORT_a_0669"  → "MOSPORT"
+    # e.g. "Marti_7_Osona_a_1128"         → "Osona"
     stem = os.path.splitext(os.path.basename(path))[0]
     parts = stem.split('_')
-    track = parts[1] if len(parts) >= 3 else stem
+    try:
+        a_idx = parts.index('a')
+        track = parts[a_idx - 1] if a_idx >= 2 else parts[1]
+    except ValueError:
+        track = parts[1] if len(parts) >= 3 else stem
 
     return Session(
         source        = 'AIM Mychron',

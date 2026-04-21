@@ -114,6 +114,7 @@
   let _liveRafId       = null;
   let _mountGen        = 0;     // incremented on unmount; guards stale async continuations
   let _resizeObserver  = null;
+  let _trackMapGeometry = null; // {lats, lons} from OSM — loaded async on session change
 
   // Constants (normalised)
   const MIN_NORM        = 0.04;
@@ -237,12 +238,16 @@
     const hist = _livePoints.slice(histStart, idx + 1);
 
     if (channel === 'map') {
+      const osmOn = gauge?.track_map_enabled !== false;
       return {
         theme,
         lats: _liveLats || [], lons: _liveLons || [], cur_idx: idx,
-        zoom_radius_m: gauge?.zoom_radius_m ?? 150,
-        show_ref: gauge?.show_ref !== false,
+        zoom_radius_m:  gauge?.zoom_radius_m ?? 150,
+        show_ref:       gauge?.show_ref !== false,
         ref_lats: [], ref_lons: [],
+        track_map_lats:  (osmOn && _trackMapGeometry) ? (_trackMapGeometry.lats  || []) : [],
+        track_map_lons:  (osmOn && _trackMapGeometry) ? (_trackMapGeometry.lons  || []) : [],
+        track_map_areas: (osmOn && _trackMapGeometry) ? (_trackMapGeometry.areas || []) : [],
       };
     }
     if (channel === 'g_meter') {
@@ -282,11 +287,11 @@
       }
       return {
         ...base,
-        info_track:      ov.track    || meta.track || '',
-        info_date:       ov.date     || info_date,
-        info_time:       ov.time     || info_time,
-        info_vehicle:    ov.vehicle  || '',
-        info_session:    ov.session  || '',
+        info_track:      meta.track   || ov.track   || '',
+        info_date:       info_date    || ov.date   || '',
+        info_time:       info_time    || ov.time   || '',
+        info_vehicle:    meta.vehicle || ov.vehicle || '',
+        info_session:    meta.session || ov.session || '',
         info_weather:    ov.weather  || '',
         info_wind:       ov.wind     || '',
         selected_fields: gauge?.selected_fields || ['track', 'datetime', 'vehicle', 'weather', 'wind'],
@@ -472,7 +477,17 @@
 
       // Metadata may already be available if the browser cached it from a previous
       // load — in that case loadedmetadata won't fire again, so apply immediately.
-      if (vid.readyState >= 1) _applyAspect();
+      if (vid.readyState >= 1) {
+        _applyAspect();
+        if (scrub && vid.duration) scrub.max = Math.round(vid.duration * 1000);
+        // Seek to current lap start (critical on fast remount with cached video)
+        if (_liveLaps?.[_selLapIdx] != null && vid.duration) {
+          const lap    = _liveLaps[_selLapIdx];
+          const seekTo = _liveOffset + (lap.elapsed_start || 0);
+          vid.currentTime = Math.max(0, Math.min(vid.duration, seekTo));
+          if (scrub) scrub.value = Math.round(vid.currentTime * 1000);
+        }
+      }
       vid.addEventListener('timeupdate', () => {
         if (scrub && !vid.seeking) scrub.value = Math.round(vid.currentTime * 1000);
         if (timeEl) timeEl.textContent = _fmtVTime(vid.currentTime);
@@ -543,6 +558,7 @@
     if (!_liveSession || !_liveLaps) return;
     if (lapIdx < 0 || lapIdx >= _liveLaps.length) return;
 
+    const myGen = _mountGen;  // guard against navigation during lap load
     _selLapIdx = lapIdx;
     _stopLiveRaf();
 
@@ -564,7 +580,8 @@
     });
 
     _updateLapSelector();
-    await _loadLapData(lapIdx);
+    await _loadLapData(lapIdx, myGen);
+    if (_mountGen !== myGen) return;
     _startLiveRaf();
   }
 
@@ -614,8 +631,10 @@
     const myGen  = _mountGen;  // bail out if unmounted before we finish
     _liveSession = session;
     _liveOffset  = session.sync_offset ?? 0;
+    _trackMapGeometry = null;
 
-    // Fetch metadata and lap list in parallel
+    // Fetch metadata and lap list in parallel — no track-map call here so these
+    // are never blocked by a slow session-file reload on the Python side.
     const [meta, laps] = await Promise.all([
       API.getSessionMeta(session.csv_path).catch(() => ({})),
       API.getLaps(session.csv_path).catch(() => []),
@@ -649,6 +668,25 @@
     await _loadLapData(_selLapIdx, myGen);
     if (_mountGen !== myGen) return;
     _startLiveRaf();
+
+    // Fetch OSM track map AFTER telemetry is loaded — centroid comes from already-loaded
+    // GPS data so Python never has to reload the session file for this call.
+    _fetchTrackMapGeometry(myGen);
+  }
+
+  // ── Fetch OSM track map geometry using GPS centroid from loaded telemetry ────
+  function _fetchTrackMapGeometry(mountGen) {
+    if (!_liveSession || !_liveLats?.length) return;
+    const n    = _liveLats.length;
+    const clat = _liveLats.reduce((a, b) => a + b, 0) / n;
+    const clon = _liveLons.reduce((a, b) => a + b, 0) / n;
+    API.getTrackMapGeometry(_liveSession.csv_path, clat, clon)
+      .then(geom => {
+        if (_mountGen !== mountGen) return;
+        _trackMapGeometry = (geom?.lats?.length) ? geom : null;
+        if (_trackMapGeometry) _rerenderLive();
+      })
+      .catch(() => {});
   }
 
   function _fmtVTime(t) {
@@ -1064,10 +1102,11 @@
         </div>`;
     }
 
-    if (g.channel === 'map' && g.style === 'Zoomed') {
-      const radius  = g.zoom_radius_m ?? 150;
-      const showRef = g.show_ref !== false;
-      return `
+    if (g.channel === 'map') {
+      const osmEnabled = g.track_map_enabled !== false;
+      const radius     = g.zoom_radius_m ?? 150;
+      const showRef    = g.show_ref !== false;
+      const zoomedHtml = g.style === 'Zoomed' ? `
         <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px;">
           <div style="font-size:9px;color:var(--text3);margin-bottom:6px;
                       text-transform:uppercase;letter-spacing:0.04em;">Zoom Settings</div>
@@ -1085,7 +1124,23 @@
             Reference lap trace shown in purple.<br>
             Ref GPS loaded when a ref lap is set.
           </div>
-        </div>`;
+        </div>` : '';
+      return `
+        <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px;">
+          <div style="font-size:9px;color:var(--text3);margin-bottom:6px;
+                      text-transform:uppercase;letter-spacing:0.04em;">Circuit Outline (OSM)</div>
+          <div class="form-row">
+            <span class="form-label">Show outline</span>
+            <input type="checkbox" id="map-osm-enabled" ${osmEnabled ? 'checked' : ''}>
+          </div>
+          <button class="btn btn-sm" id="map-osm-configure"
+                  style="width:100%;margin-top:6px;font-size:10px;">
+            Configure Track Map
+          </button>
+          <div id="map-osm-status" style="font-size:9px;color:var(--text3);margin-top:5px;line-height:1.4;"></div>
+          <div id="map-osm-picker" style="display:none;margin-top:8px;"></div>
+        </div>
+        ${zoomedHtml}`;
     }
 
     if (g.channel === 'multi') {
@@ -1161,17 +1216,122 @@
       });
     }
 
-    if (g.channel === 'map' && g.style === 'Zoomed') {
-      panel.querySelector('#map-radius')?.addEventListener('change', e => {
-        g.zoom_radius_m = Math.max(10, Math.min(5000, parseInt(e.target.value) || 150));
+    if (g.channel === 'map') {
+      panel.querySelector('#map-osm-enabled')?.addEventListener('change', e => {
+        g.track_map_enabled = e.target.checked;
         rebuildGaugeCanvases();
         saveLayout();
       });
-      panel.querySelector('#map-show-ref')?.addEventListener('change', e => {
-        g.show_ref = e.target.checked;
-        rebuildGaugeCanvases();
-        saveLayout();
+
+      panel.querySelector('#map-osm-configure')?.addEventListener('click', async () => {
+        const picker   = panel.querySelector('#map-osm-picker');
+        const statusEl = panel.querySelector('#map-osm-status');
+        if (!picker) return;
+
+        const csvPath = _liveSession?.csv_path;
+        if (!csvPath) {
+          if (statusEl) statusEl.textContent = 'Load a session in the editor first.';
+          return;
+        }
+
+        // Toggle: if already open, close
+        if (picker.style.display !== 'none') {
+          picker.style.display = 'none';
+          return;
+        }
+
+        picker.style.display = 'block';
+        picker.innerHTML = '<div style="font-size:9px;color:var(--text3);">Searching OSM…</div>';
+
+        try {
+          const result = await API.getTrackMapCandidates(csvPath);
+          const { candidates, selected_osm_id, auto_osm_id, track_key } = result;
+
+          if (!candidates.length) {
+            picker.innerHTML = `<div style="font-size:9px;color:var(--text3);">
+              No motor racing circuits found nearby in OpenStreetMap.<br>
+              Make sure your track has <em>leisure=track + sport=motor_racing</em> tags.
+            </div>`;
+            if (statusEl) statusEl.textContent = 'No OSM circuits found nearby.';
+            return;
+          }
+
+          const currentId = selected_osm_id || auto_osm_id;
+          const rows = candidates.map(c => {
+            const isSelected = c.osm_id === currentId;
+            const isAuto     = c.osm_id === auto_osm_id && !selected_osm_id;
+            const distKm     = (c.centroid_dist_m / 1000).toFixed(1);
+            const badge      = isAuto && !selected_osm_id
+              ? '<span style="background:#2255aa;color:#fff;border-radius:2px;padding:0 3px;font-size:8px;margin-left:4px;">auto</span>'
+              : '';
+            return `<div class="osm-cand-row" data-osm-id="${c.osm_id}"
+                style="padding:5px 7px;border-radius:4px;cursor:pointer;margin-bottom:2px;font-size:10px;
+                       background:${isSelected ? 'var(--acc)' : 'var(--bg2)'};
+                       color:${isSelected ? '#fff' : 'var(--text)'};
+                       border:1px solid ${isSelected ? 'var(--acc)' : 'var(--border)'};">
+              ${_esc(c.name)}${badge}
+              <span style="float:right;font-size:8px;opacity:0.6;">${distKm} km</span>
+            </div>`;
+          }).join('');
+
+          const clearRow = selected_osm_id
+            ? `<div class="osm-cand-row" data-osm-id=""
+                style="padding:5px 7px;border-radius:4px;cursor:pointer;margin-bottom:2px;font-size:10px;
+                       background:var(--bg2);color:var(--text3);border:1px solid var(--border);">
+                Auto-detect (clear manual selection)
+              </div>`
+            : '';
+
+          picker.innerHTML = `
+            <div style="font-size:9px;color:var(--text3);margin-bottom:5px;">
+              Circuits found near this track · click to select:
+            </div>
+            ${clearRow}${rows}`;
+
+          picker.querySelectorAll('.osm-cand-row').forEach(row => {
+            row.addEventListener('click', async () => {
+              const osmId = row.dataset.osmId;
+              await API.setTrackMapSelection(track_key, osmId);
+              // Refresh preview geometry
+              _trackMapGeometry = null;
+              API.getTrackMapGeometry(csvPath).then(geom => {
+                _trackMapGeometry = (geom && geom.lats && geom.lats.length) ? geom : null;
+                rebuildGaugeCanvases();
+              }).catch(() => {});
+              // Update UI: re-open picker to show new selection
+              const name = candidates.find(c => c.osm_id === osmId)?.name || 'Auto';
+              if (statusEl) statusEl.textContent = osmId ? `Using: ${name}` : 'Auto-detect';
+              picker.style.display = 'none';
+              rebuildGaugeCanvases();
+            });
+          });
+
+          // Show current selection in status
+          if (statusEl) {
+            const selName = candidates.find(c => c.osm_id === currentId)?.name;
+            statusEl.textContent = selected_osm_id
+              ? `Using: ${selName || selected_osm_id}`
+              : (auto_osm_id
+                  ? `Auto: ${candidates.find(c => c.osm_id === auto_osm_id)?.name || auto_osm_id}`
+                  : 'No circuit found nearby.');
+          }
+        } catch (err) {
+          picker.innerHTML = `<div style="font-size:9px;color:var(--err);">Failed: ${err.message || err}</div>`;
+        }
       });
+
+      if (g.style === 'Zoomed') {
+        panel.querySelector('#map-radius')?.addEventListener('change', e => {
+          g.zoom_radius_m = Math.max(10, Math.min(5000, parseInt(e.target.value) || 150));
+          rebuildGaugeCanvases();
+          saveLayout();
+        });
+        panel.querySelector('#map-show-ref')?.addEventListener('change', e => {
+          g.show_ref = e.target.checked;
+          rebuildGaugeCanvases();
+          saveLayout();
+        });
+      }
     }
 
     if (g.channel === 'lap_info') {
@@ -1509,7 +1669,18 @@
     // re-navigation can fail/reject and zero out _livePort, hiding the video element.
     if (!_livePort) _livePort = await API.getVideoServerPort().catch(() => 0);
     if (_mountGen !== myGen) return;  // navigated away while awaiting port
-    _liveOffset = prevSession?.sync_offset ?? 0;
+
+    // Fast-remount path: if the same session is already loaded in memory, skip all
+    // Python API calls (getOverlay, listPresets, getSessionMeta, getLaps, loadLapHistory).
+    // Just rebuild the DOM from preserved state and restart the RAF.
+    const sameSession = !!(
+      _livePoints?.length > 0 &&
+      _liveSession?.csv_path === prevSession?.csv_path &&
+      _layout
+    );
+
+    // Sync offset may have changed while user was on another tab
+    _liveOffset = prevSession?.sync_offset ?? _liveOffset ?? 0;
 
     const vp = prevSession?.video_paths?.[0] ?? null;
     const videoSrc = (vp && _livePort)
@@ -1631,37 +1802,120 @@
               <select id="ref-mode-sel" style="width:100%;font-size:11px;">
                 <option value="none">None</option>
                 <option value="session_best">Best in session</option>
+                <option value="session_best_so_far">Best yet (in session)</option>
+                <option value="personal_best">Personal best</option>
+                <option value="day_best">Best of the day</option>
+                <option value="manual">Manual…</option>
               </select>
+              <div id="ref-manual-picker" style="display:none;margin-top:8px;max-height:200px;
+                   overflow-y:auto;border:1px solid var(--border);border-radius:3px;padding:4px;">
+                <div id="ref-picker-content" style="font-size:10px;color:var(--text3)">Loading…</div>
+              </div>
             </div>
           </div>
 
         </div>
       </div>`;
 
-    // Load overlay layout
-    try {
-      _layout = await API.getOverlay();
-      _layout.gauges = _layout.gauges || [];
-    } catch (_) {
-      _layout = { is_bike: false, theme: 'Dark', gauges: [] };
-    }
-    if (_mountGen !== myGen) return;
+    // Load overlay layout + presets — skipped on fast remount (already in memory)
+    if (!sameSession) {
+      try {
+        _layout = await API.getOverlay();
+        _layout.gauges = _layout.gauges || [];
+      } catch (_) {
+        _layout = { is_bike: false, theme: 'Dark', gauges: [] };
+      }
+      if (_mountGen !== myGen) return;
 
-    await loadPresetList();
-    if (_mountGen !== myGen) return;
+      await loadPresetList();
+      if (_mountGen !== myGen) return;
+    } else {
+      rebuildPresetSelector();  // repopulate dropdown from cached _presets
+    }
     rebuildThemeSelector();
     rebuildGaugeList();
     rebuildGaugeCanvases();
     setupMouseEvents();
 
     // Restore ref_mode from layout
-    const refSel = container.querySelector('#ref-mode-sel');
+    const refSel    = container.querySelector('#ref-mode-sel');
+    const refPicker = container.querySelector('#ref-manual-picker');
+
+    function _fmtLapTime(secs) {
+      if (!secs && secs !== 0) return '—';
+      const m = Math.floor(secs / 60);
+      return m + ':' + (secs % 60).toFixed(3).padStart(6, '0');
+    }
+
+    async function refreshManualPicker() {
+      if (!refPicker) return;
+      const isManual = _layout.ref_mode === 'manual';
+      refPicker.style.display = isManual ? '' : 'none';
+      if (!isManual) return;
+
+      const content = container.querySelector('#ref-picker-content');
+      if (content) content.textContent = 'Loading laps…';
+
+      const ps = State.get('previewSession');
+      if (!ps?.csv_path) {
+        if (content) content.textContent = 'No session loaded.';
+        return;
+      }
+
+      try {
+        const groups = await API.getLapsForRefPicker(ps.csv_path);
+        if (!groups?.length) {
+          if (content) content.textContent = 'No laps found for this track.';
+          return;
+        }
+
+        const selCsv = _layout.ref_lap_csv_path || '';
+        const selNum = _layout.ref_lap_num || 0;
+        let   html   = '';
+
+        for (const g of groups) {
+          const date = g.date ? new Date(g.date).toLocaleDateString() : '—';
+          html += `<div style="color:var(--text2);font-size:9px;margin:4px 0 2px;
+                               font-weight:600;padding:0 2px">${date}</div>`;
+          for (const lap of g.laps) {
+            const sel = (g.csv_path === selCsv && lap.lap_num === selNum);
+            const dur = _fmtLapTime(lap.duration);
+            html += `<div class="ref-lap-row" data-csv="${lap.csv_path||g.csv_path}"
+                          data-num="${lap.lap_num}"
+                          style="padding:2px 4px;cursor:pointer;border-radius:2px;display:flex;
+                                 justify-content:space-between;font-size:10px;
+                                 background:${sel ? 'var(--acc)' : 'transparent'};
+                                 color:${sel ? '#fff' : 'inherit'}">
+                       <span>Lap ${lap.lap_num}${lap.is_best ? ' ★' : ''}</span>
+                       <span style="color:${sel ? '#fff' : 'var(--acc2)'}">${dur}</span>
+                     </div>`;
+          }
+        }
+
+        if (content) {
+          content.innerHTML = html;
+          content.querySelectorAll('.ref-lap-row').forEach(row => {
+            row.addEventListener('click', () => {
+              _layout.ref_lap_csv_path = row.dataset.csv;
+              _layout.ref_lap_num      = parseInt(row.dataset.num);
+              saveLayout();
+              refreshManualPicker();
+            });
+          });
+        }
+      } catch (e) {
+        if (content) content.textContent = `Error: ${e}`;
+      }
+    }
+
     if (refSel) {
       refSel.value = _layout.ref_mode || 'none';
       refSel.addEventListener('change', e => {
         _layout.ref_mode = e.target.value;
         saveLayout();
+        refreshManualPicker();
       });
+      refreshManualPicker();
     }
 
     container.querySelector('#add-gauge-btn').addEventListener('click', addGauge);
@@ -1695,6 +1949,7 @@
         updatePropPanel();
         const rs = container.querySelector('#ref-mode-sel');
         if (rs) rs.value = _layout.ref_mode || 'none';
+        refreshManualPicker();
       }
     });
 
@@ -1726,7 +1981,18 @@
 
     // Wire video/scrub controls once, then load session data
     _wireVideoControls();
-    if (prevSession) loadLiveSession(prevSession);
+
+    if (sameSession) {
+      // ── Fast path: same session already in memory — restore UI without Python calls ──
+      _updateLapSelector();
+      _rerenderLive();
+      _startLiveRaf();
+      // If track map geometry isn't loaded yet, try fetching it now
+      if (!_trackMapGeometry) _fetchTrackMapGeometry(myGen);
+    } else {
+      // ── Slow path: new session or first mount — full async load ──
+      if (prevSession) loadLiveSession(prevSession);
+    }
   }
 
   function unmount() {
@@ -1734,13 +2000,9 @@
     if (_animFrame) { cancelAnimationFrame(_animFrame); _animFrame = null; }
     _stopLiveRaf();
     if (_resizeObserver) { _resizeObserver.disconnect(); _resizeObserver = null; }
-    _livePoints      = null;
-    _liveLats        = null;
-    _liveLons        = null;
-    _liveSession     = null;
-    _liveSessionMeta = null;
-    _liveLaps        = null;
-    _container       = null;
+    _container = null;
+    // Live session state (_livePoints, _liveLaps, _liveSession, etc.) is intentionally
+    // preserved so that returning to this page skips all Python round-trips.
   }
 
   Router.register('editor', { mount, unmount });

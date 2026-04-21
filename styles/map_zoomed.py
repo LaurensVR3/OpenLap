@@ -3,12 +3,14 @@ Map style: Zoomed
 =================
 Centred on the current GPS position with a configurable radius (metres).
 Optionally renders the reference-lap trace in purple.
+Optionally draws an OpenStreetMap circuit outline as a road-like background.
 
 ELEMENT_TYPE : "map"
 Data keys    : lats, lons, cur_idx,
                zoom_radius_m  (default 150),
                show_ref       (default False),
-               ref_lats, ref_lons  (reference-lap GPS arrays, may be empty)
+               ref_lats, ref_lons  (reference-lap GPS arrays, may be empty),
+               track_map_lats, track_map_lons  (optional OSM geometry)
 """
 STYLE_NAME   = "Zoomed"
 ELEMENT_TYPE = "map"
@@ -17,6 +19,21 @@ import math
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+
+
+def _chaikin(xs, ys, rounds=2):
+    for _ in range(rounds):
+        nxs = [xs[0]]
+        nys = [ys[0]]
+        for i in range(len(xs) - 1):
+            nxs.extend([0.75 * xs[i] + 0.25 * xs[i + 1],
+                         0.25 * xs[i] + 0.75 * xs[i + 1]])
+            nys.extend([0.75 * ys[i] + 0.25 * ys[i + 1],
+                         0.25 * ys[i] + 0.75 * ys[i + 1]])
+        nxs.append(xs[-1])
+        nys.append(ys[-1])
+        xs, ys = nxs, nys
+    return xs, ys
 
 
 def _gps_to_local(lats, lons, center_lat, center_lon):
@@ -50,8 +67,11 @@ def render(data: dict, w: int, h: int):
     start_col    = T.get('map_start',       '#00ff88')
     ref_col      = '#cc44ff'
 
+    osm_lats  = list(data.get('track_map_lats')  or [])
+    osm_lons  = list(data.get('track_map_lons')  or [])
+    osm_areas = list(data.get('track_map_areas') or [])
+
     if not lats or len(lats) < 2:
-        # Fall back to plain Circuit style when there is no GPS data
         from styles.map_circuit import render as _circuit
         return _circuit(data, w, h)
 
@@ -65,6 +85,23 @@ def render(data: dict, w: int, h: int):
     fig, ax = plt.subplots(figsize=(w / dpi, h / dpi), dpi=dpi)
     fig.patch.set_alpha(0)
     ax.set_facecolor(map_bg)
+
+    # Draw OSM area polygons first (lowest layer)
+    for area in osm_areas:
+        a_lats = area.get('lats', [])
+        a_lons = area.get('lons', [])
+        if len(a_lats) >= 3:
+            ox_a, oy_a = _gps_to_local(a_lats, a_lons, center_lat, center_lon)
+            ax.fill(ox_a, oy_a, color='#4a5568', alpha=0.55, zorder=0)
+
+    # Draw OSM road background (below GPS trace) — smoothed
+    if osm_lats and osm_lons:
+        ox, oy = _gps_to_local(osm_lats, osm_lons, center_lat, center_lon)
+        sx, sy = _chaikin(ox, oy)
+        ax.plot(sx, sy, color='#4a5568', lw=9.0,
+                solid_capstyle='round', solid_joinstyle='round', zorder=0)
+        ax.plot(sx, sy, color='#2d3748', lw=5.5,
+                solid_capstyle='round', solid_joinstyle='round', zorder=0)
 
     # Full track outline
     ax.plot(x, y, color=track_outer, lw=5.0, solid_capstyle='round', zorder=1)
@@ -95,7 +132,6 @@ def render(data: dict, w: int, h: int):
     ax.plot(x[safe_idx], y[safe_idx], 'o',
             color=dot_col, ms=dot_ms, mec='white', mew=1.8, zorder=7)
 
-    # View centred on current position ± radius
     ax.set_xlim(-radius, radius)
     ax.set_ylim(-radius, radius)
     ax.set_aspect('equal')
@@ -109,8 +145,8 @@ def render(data: dict, w: int, h: int):
     ys = np.arange(h, dtype=np.float32) - cy_px
     xs = np.arange(w, dtype=np.float32) - cx_px
     dist = np.sqrt(xs[np.newaxis, :] ** 2 + ys[:, np.newaxis] ** 2)
-    inner_r = min(w, h) * 0.32   # fully opaque inside this radius
-    outer_r = min(w, h) * 0.50   # fully transparent at this radius
+    inner_r = min(w, h) * 0.32
+    outer_r = min(w, h) * 0.50
     fade = np.clip((outer_r - dist) / max(1.0, outer_r - inner_r), 0.0, 1.0)
     rgba = rgba.copy()
     rgba[:, :, 3] = (rgba[:, :, 3].astype(np.float32) * fade).astype(np.uint8)

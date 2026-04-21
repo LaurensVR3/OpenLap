@@ -6,6 +6,32 @@
  * data keys: lats (array), lons (array), cur_idx (int)
  * theme keys: map_bg_rgba, map_track_outer, map_track_inner, map_driven, map_dot, map_start
  */
+
+/**
+ * Smooth polyline using midpoint quadratic bezier (Chaikin-style).
+ * xs/ys are pre-projected screen coordinate arrays.
+ * closed=true joins the last point back to the first seamlessly.
+ */
+function _strokeSmooth(ctx, xs, ys, closed) {
+  const n = Math.min(xs.length, ys.length);
+  if (n < 2) return;
+  ctx.beginPath();
+  if (closed && n > 2) {
+    ctx.moveTo((xs[n - 1] + xs[0]) / 2, (ys[n - 1] + ys[0]) / 2);
+    for (let i = 0; i < n - 1; i++) {
+      ctx.quadraticCurveTo(xs[i], ys[i], (xs[i] + xs[i + 1]) / 2, (ys[i] + ys[i + 1]) / 2);
+    }
+    ctx.quadraticCurveTo(xs[n - 1], ys[n - 1], (xs[n - 1] + xs[0]) / 2, (ys[n - 1] + ys[0]) / 2);
+    ctx.closePath();
+  } else {
+    ctx.moveTo(xs[0], ys[0]);
+    for (let i = 1; i < n - 1; i++) {
+      ctx.quadraticCurveTo(xs[i], ys[i], (xs[i] + xs[i + 1]) / 2, (ys[i] + ys[i + 1]) / 2);
+    }
+    ctx.lineTo(xs[n - 1], ys[n - 1]);
+  }
+}
+
 const GaugeMap = {
   render(ctx, data, w, h) {
     const theme = GaugeBase.getTheme(data.theme || 'Dark');
@@ -16,9 +42,12 @@ const GaugeMap = {
     GaugeBase.roundRect(ctx, 2, 2, w - 4, h - 4, Math.max(4, Math.round(Math.min(w, h) * 0.04)));
     ctx.fill();
 
-    const lats   = data.lats   || [];
-    const lons   = data.lons   || [];
-    const curIdx = data.cur_idx ?? 0;
+    const lats     = data.lats   || [];
+    const lons     = data.lons   || [];
+    const curIdx   = data.cur_idx ?? 0;
+    const osmLats  = data.track_map_lats  || [];
+    const osmLons  = data.track_map_lons  || [];
+    const osmAreas = data.track_map_areas || [];
 
     if (lats.length < 2 || lons.length < 2) {
       ctx.fillStyle    = theme.label || '#4e6578';
@@ -29,12 +58,14 @@ const GaugeMap = {
       return;
     }
 
-    // Compute bounding box
-    const pad = 0.10;
-    const minLat = Math.min(...lats);
-    const maxLat = Math.max(...lats);
-    const minLon = Math.min(...lons);
-    const maxLon = Math.max(...lons);
+    // Compute bounding box from GPS trace + OSM geometry combined
+    const pad     = 0.10;
+    const allLats = osmLats.length ? [...lats, ...osmLats] : lats;
+    const allLons = osmLons.length ? [...lons, ...osmLons] : lons;
+    const minLat  = Math.min(...allLats);
+    const maxLat  = Math.max(...allLats);
+    const minLon  = Math.min(...allLons);
+    const maxLon  = Math.max(...allLons);
     const spanLat = maxLat - minLat || 1e-6;
     const spanLon = maxLon - minLon || 1e-6;
 
@@ -54,39 +85,74 @@ const GaugeMap = {
       };
     }
 
-    const n = Math.min(lats.length, lons.length);
+    // Pre-project screen coordinates once per dataset
+    const osmXs = [], osmYs = [];
+    if (osmLats.length >= 2 && osmLons.length >= 2) {
+      const on = Math.min(osmLats.length, osmLons.length);
+      for (let i = 0; i < on; i++) {
+        const p = toScreen(osmLats[i], osmLons[i]);
+        osmXs.push(p.x); osmYs.push(p.y);
+      }
+    }
 
-    // Full track outline (outer)
-    ctx.beginPath();
+    const n = Math.min(lats.length, lons.length);
+    const gpsXs = [], gpsYs = [];
     for (let i = 0; i < n; i++) {
       const p = toScreen(lats[i], lons[i]);
-      i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+      gpsXs.push(p.x); gpsYs.push(p.y);
     }
-    ctx.closePath();
+
+    // OSM area polygons — filled track surface, drawn first (lowest layer)
+    if (osmAreas.length) {
+      ctx.fillStyle = 'rgba(74,85,104,0.55)';
+      for (const area of osmAreas) {
+        const aLats = area.lats || [];
+        const aLons = area.lons || [];
+        const an = Math.min(aLats.length, aLons.length);
+        if (an < 3) continue;
+        ctx.beginPath();
+        for (let i = 0; i < an; i++) {
+          const p = toScreen(aLats[i], aLons[i]);
+          if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    // OSM road background — smoothed, drawn below GPS trace
+    if (osmXs.length >= 2) {
+      ctx.lineCap  = 'round';
+      ctx.lineJoin = 'round';
+      _strokeSmooth(ctx, osmXs, osmYs, false);
+      ctx.strokeStyle = '#4a5568';
+      ctx.lineWidth   = Math.max(6, w * 0.045);
+      ctx.stroke();
+
+      _strokeSmooth(ctx, osmXs, osmYs, false);
+      ctx.strokeStyle = '#2d3748';
+      ctx.lineWidth   = Math.max(4, w * 0.028);
+      ctx.stroke();
+    }
+
+    // Full track outline (outer) — smoothed closed circuit
+    ctx.lineCap  = 'round';
+    ctx.lineJoin = 'round';
+    _strokeSmooth(ctx, gpsXs, gpsYs, true);
     ctx.strokeStyle = theme.map_track_outer || '#1a2a3a';
     ctx.lineWidth   = Math.max(4, w * 0.03);
-    ctx.lineCap     = 'round';
-    ctx.lineJoin    = 'round';
     ctx.stroke();
 
     // Full track inner
-    ctx.beginPath();
-    for (let i = 0; i < n; i++) {
-      const p = toScreen(lats[i], lons[i]);
-      i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
-    }
-    ctx.closePath();
+    _strokeSmooth(ctx, gpsXs, gpsYs, true);
     ctx.strokeStyle = theme.map_track_inner || '#2255aa';
     ctx.lineWidth   = Math.max(2, w * 0.015);
     ctx.stroke();
 
-    // Driven portion (from start to cur_idx)
+    // Driven portion (from start to cur_idx) — smoothed open segment
     if (curIdx > 0) {
-      ctx.beginPath();
-      for (let i = 0; i <= Math.min(curIdx, n - 1); i++) {
-        const p = toScreen(lats[i], lons[i]);
-        i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
-      }
+      const di = Math.min(curIdx, n - 1) + 1;
+      _strokeSmooth(ctx, gpsXs.slice(0, di), gpsYs.slice(0, di), false);
       ctx.strokeStyle = theme.map_driven || '#ffffff';
       ctx.lineWidth   = Math.max(1.5, w * 0.010);
       ctx.stroke();
@@ -127,6 +193,9 @@ const GaugeMap = {
     const refLats    = data.ref_lats || [];
     const refLons    = data.ref_lons || [];
     const refCurIdx  = data.ref_cur_idx ?? 0;
+    const osmLats    = data.track_map_lats  || [];
+    const osmLons    = data.track_map_lons  || [];
+    const osmAreas   = data.track_map_areas || [];
 
     if (lats.length < 2) {
       ctx.fillStyle    = theme.label || '#4e6578';
@@ -167,51 +236,87 @@ const GaugeMap = {
 
     const n = Math.min(lats.length, lons.length);
 
-    // Full track — outer
-    ctx.beginPath();
+    // Pre-project screen coordinates once per dataset
+    const osmXsZ = [], osmYsZ = [];
+    if (osmLats.length >= 2 && osmLons.length >= 2) {
+      const on = Math.min(osmLats.length, osmLons.length);
+      for (let i = 0; i < on; i++) {
+        const p = toScreen(osmLats[i], osmLons[i]);
+        osmXsZ.push(p.x); osmYsZ.push(p.y);
+      }
+    }
+
+    const gpsXsZ = [], gpsYsZ = [];
     for (let i = 0; i < n; i++) {
       const p = toScreen(lats[i], lons[i]);
-      i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+      gpsXsZ.push(p.x); gpsYsZ.push(p.y);
     }
-    ctx.closePath();
+
+    // OSM area polygons — filled track surface, drawn first (lowest layer)
+    if (osmAreas.length) {
+      ctx.fillStyle = 'rgba(74,85,104,0.55)';
+      for (const area of osmAreas) {
+        const aLats = area.lats || [];
+        const aLons = area.lons || [];
+        const an = Math.min(aLats.length, aLons.length);
+        if (an < 3) continue;
+        ctx.beginPath();
+        for (let i = 0; i < an; i++) {
+          const p = toScreen(aLats[i], aLons[i]);
+          if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+        }
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    // OSM road background — smoothed
+    if (osmXsZ.length >= 2) {
+      ctx.lineCap  = 'round';
+      ctx.lineJoin = 'round';
+      _strokeSmooth(ctx, osmXsZ, osmYsZ, false);
+      ctx.strokeStyle = '#4a5568';
+      ctx.lineWidth   = Math.max(6, w * 0.045);
+      ctx.stroke();
+
+      _strokeSmooth(ctx, osmXsZ, osmYsZ, false);
+      ctx.strokeStyle = '#2d3748';
+      ctx.lineWidth   = Math.max(4, w * 0.028);
+      ctx.stroke();
+    }
+
+    // Full track — outer, smoothed closed circuit
+    ctx.lineCap  = 'round';
+    ctx.lineJoin = 'round';
+    _strokeSmooth(ctx, gpsXsZ, gpsYsZ, true);
     ctx.strokeStyle = theme.map_track_outer || '#1a2a3a';
     ctx.lineWidth   = Math.max(4, w * 0.03);
-    ctx.lineCap     = 'round';
-    ctx.lineJoin    = 'round';
     ctx.stroke();
 
     // Full track — inner
-    ctx.beginPath();
-    for (let i = 0; i < n; i++) {
-      const p = toScreen(lats[i], lons[i]);
-      i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
-    }
-    ctx.closePath();
+    _strokeSmooth(ctx, gpsXsZ, gpsYsZ, true);
     ctx.strokeStyle = theme.map_track_inner || '#2255aa';
     ctx.lineWidth   = Math.max(2, w * 0.015);
     ctx.stroke();
 
-    // Reference lap trace (purple)
+    // Reference lap trace (purple) — smoothed
     if (showRef && refLats.length >= 2 && refLons.length >= 2) {
+      const refXs = [], refYs = [];
       const rn = Math.min(refLats.length, refLons.length);
-      ctx.beginPath();
       for (let i = 0; i < rn; i++) {
         const p = toScreen(refLats[i], refLons[i]);
-        i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+        refXs.push(p.x); refYs.push(p.y);
       }
-      ctx.closePath();
+      _strokeSmooth(ctx, refXs, refYs, true);
       ctx.strokeStyle = '#cc44ff';
       ctx.lineWidth   = Math.max(2, w * 0.013);
       ctx.stroke();
     }
 
-    // Driven portion
+    // Driven portion — smoothed open segment
     if (curIdx > 0) {
-      ctx.beginPath();
-      for (let i = 0; i <= Math.min(curIdx, n - 1); i++) {
-        const p = toScreen(lats[i], lons[i]);
-        i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
-      }
+      const di = Math.min(curIdx, n - 1) + 1;
+      _strokeSmooth(ctx, gpsXsZ.slice(0, di), gpsYsZ.slice(0, di), false);
       ctx.strokeStyle = theme.map_driven || '#ffffff';
       ctx.lineWidth   = Math.max(1.5, w * 0.010);
       ctx.stroke();

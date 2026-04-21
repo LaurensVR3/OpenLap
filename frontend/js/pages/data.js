@@ -133,7 +133,8 @@
     const isDayB  = _dayBest[s.csv_path];
     const time    = s.csv_start ? new Date(s.csv_start)
                       .toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}) : '—';
-    const track   = m.track || baseName(s.csv_path);
+    const trackOverride = _config?.session_info?.[s.csv_path]?.info_track;
+    const track   = trackOverride || m.track || baseName(s.csv_path);
     const lapStr  = m.laps  || '—';
     const bestStr = m.best  || (m.best_secs != null ? fmtTime(m.best_secs) : '—');
     const syncLabel = s.needs_conversion           ? '↻ conv'
@@ -197,8 +198,10 @@
     const off = s.sync_offset;
 
     // Session info
-    const vidPaths = s.video_paths || [];
-    const hasVid   = s.matched && vidPaths.length > 0;
+    const vidPaths    = s.video_paths || [];
+    const hasVid      = s.matched && vidPaths.length > 0;
+    const trackOverride  = _config?.session_info?.[s.csv_path]?.info_track;
+    const effectiveTrack = trackOverride || m.track || '';
 
     pane.innerHTML = `
 <!-- Info card -->
@@ -206,7 +209,13 @@
   <div class="dr-card-title">SESSION INFO</div>
   <div class="dr-rows">
     <div class="dr-row"><span class="dr-lbl">Source</span><span class="dr-val">${esc(s.source||'RaceBox')}</span></div>
-    <div class="dr-row"><span class="dr-lbl">Track</span><span class="dr-val dr-track-val">${esc(m.track||'—')}</span></div>
+    <div class="dr-row">
+      <span class="dr-lbl">Track</span>
+      <span class="dr-val dr-track-val" id="dr-track-display">
+        ${esc(effectiveTrack||'—')}
+        <button class="btn-inline-edit" id="dr-track-edit-btn" title="Edit track name" style="margin-left:4px;opacity:0.6;font-size:9px;cursor:pointer;border:none;background:none;color:var(--acc2);padding:0 2px">✎</button>
+      </span>
+    </div>
     <div class="dr-row"><span class="dr-lbl">Date</span><span class="dr-val">${esc(fmtDateTime(s.csv_start))}</span></div>
     <div class="dr-row"><span class="dr-lbl">Laps</span><span class="dr-val">${esc(m.laps||'—')}</span></div>
     <div class="dr-row"><span class="dr-lbl">Best</span><span class="dr-val" style="color:var(--ok)">${esc(m.best||'—')}</span></div>
@@ -253,7 +262,7 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
 
 <!-- Primary CTA: Open in Overlay -->
 <button class="btn btn-accent" id="dr-goto-overlay"
-        style="width:100%; padding:9px; font-size:11px; font-weight:600; border-radius:var(--radius); flex-shrink:0;">
+        style="width:100%; padding:9px; font-size:11px; font-weight:600; border-radius:var(--radius); flex-shrink:0; margin-top:auto;">
   Open in Overlay →
 </button>
 `;
@@ -262,9 +271,15 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
   }
 
   function renderAlignCard(s, vidPaths, off) {
-    const offVal   = off != null ? off.toFixed(3) : '';
-    const isAuto   = s.sync_source === 'auto';
-    const autoNote = isAuto
+    const offVal    = off != null ? off.toFixed(3) : '';
+    const isAuto    = s.sync_source === 'auto';
+    const isSyncing = _autoSyncing && s.sync_offset == null && !s.auto_sync_failed;
+    const autoNote  = isSyncing
+      ? `<div style="font-size:9px;color:#ffb74d;margin-bottom:6px;padding:5px 6px;
+                     background:rgba(255,183,77,0.08);border-radius:4px;border-left:2px solid #ffb74d">
+           Auto-detecting sync offset… scrub will be available once complete.
+         </div>`
+      : isAuto
       ? `<div style="font-size:9px;color:#64b5f6;margin-bottom:6px;padding:5px 6px;
                      background:rgba(100,181,246,0.08);border-radius:4px;border-left:2px solid #64b5f6">
            Auto-detected: ${off != null ? off.toFixed(3)+'s' : '—'} — scrub to verify, then click Mark to confirm
@@ -294,7 +309,113 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
 </div>`;
   }
 
+  function _showBulkRenamePrompt(pane, oldName, newName, count) {
+    // Remove any existing prompt first
+    pane.querySelector('#bulk-rename-banner')?.remove();
+
+    const banner = document.createElement('div');
+    banner.id = 'bulk-rename-banner';
+    banner.style.cssText = `
+      margin:8px 0 0; padding:8px 10px; border-radius:4px;
+      background:rgba(99,102,241,0.12); border:1px solid rgba(99,102,241,0.35);
+      font-size:10px; color:var(--text1); line-height:1.5;
+    `;
+    banner.innerHTML = `
+      <div style="margin-bottom:6px">
+        <strong>${count} other session${count !== 1 ? 's' : ''}</strong>
+        also named <em>"${esc(oldName)}"</em>.<br>
+        Rename all of them to <em>"${esc(newName)}"</em> as well?
+      </div>
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm btn-accent" id="bulk-rename-yes">Yes, rename all</button>
+        <button class="btn btn-sm" id="bulk-rename-no">No, just this one</button>
+      </div>
+    `;
+
+    // Insert after the info card (first .dr-card)
+    const firstCard = pane.querySelector('.dr-card');
+    firstCard ? firstCard.after(banner) : pane.prepend(banner);
+
+    banner.querySelector('#bulk-rename-yes').addEventListener('click', async () => {
+      banner.innerHTML = '<span style="color:var(--text3)">Renaming…</span>';
+      try {
+        // Compute the exact paths to rename here in JS where _meta is available,
+        // rather than letting the backend guess from the (often empty) scan cache.
+        if (!_config.session_info) _config.session_info = {};
+        const pathsToRename = [];
+        for (const sess of _sessions) {
+          if (sess.csv_path === _selCsv) continue;
+          const ov = _config.session_info[sess.csv_path]?.info_track;
+          const mt = _meta[sess.csv_path]?.track;
+          if ((ov || mt || '').trim().toLowerCase() === oldName.toLowerCase()) {
+            pathsToRename.push(sess.csv_path);
+          }
+        }
+        await API.bulkRenameTrack(pathsToRename, newName);
+        // Apply to local config cache
+        for (const csvPath of pathsToRename) {
+          const ex = _config.session_info[csvPath] || {};
+          _config.session_info[csvPath] = { ...ex, info_track: newName };
+        }
+        banner.remove();
+        renderLeft();
+      } catch (e) {
+        banner.innerHTML = `<span style="color:var(--err)">Error: ${esc(String(e))}</span>`;
+      }
+    });
+
+    banner.querySelector('#bulk-rename-no').addEventListener('click', () => banner.remove());
+  }
+
   function wirePropPanel(s, pane) {
+    // Inline track name edit
+    pane.querySelector('#dr-track-edit-btn')?.addEventListener('click', () => {
+      const display     = pane.querySelector('#dr-track-display');
+      const trackOverride  = _config?.session_info?.[s.csv_path]?.info_track;
+      const currentTrack   = trackOverride || _meta[s.csv_path]?.track || '';
+      display.innerHTML = `
+        <input type="text" class="input-field" id="dr-track-input"
+               value="${esc(currentTrack)}" style="width:130px;font-size:11px;padding:1px 4px">
+        <button class="btn btn-sm" id="dr-track-save" style="padding:1px 5px;margin-left:2px">✓</button>
+        <button class="btn btn-sm" id="dr-track-cancel" style="padding:1px 5px">✕</button>
+      `;
+      const inp = pane.querySelector('#dr-track-input');
+      inp?.focus(); inp?.select();
+
+      const saveTrack = async () => {
+        const newTrack = pane.querySelector('#dr-track-input')?.value?.trim() ?? '';
+        if (newTrack === currentTrack) { renderRight(); return; }
+
+        // Save this session first
+        const existing = _config?.session_info?.[s.csv_path] || {};
+        await API.editSessionInfo(s.csv_path, { ...existing, info_track: newTrack });
+        if (!_config.session_info) _config.session_info = {};
+        _config.session_info[s.csv_path] = { ...existing, info_track: newTrack };
+
+        // Count other sessions sharing the old effective track name
+        const others = currentTrack ? _sessions.filter(sess => {
+          if (sess.csv_path === s.csv_path) return false;
+          const ov = _config?.session_info?.[sess.csv_path]?.info_track;
+          const mt = _meta[sess.csv_path]?.track;
+          return (ov || mt || '').trim().toLowerCase() === currentTrack.toLowerCase();
+        }) : [];
+
+        renderRight();
+        renderLeft();
+
+        if (others.length > 0) {
+          _showBulkRenamePrompt(pane, currentTrack, newTrack, others.length);
+        }
+      };
+
+      pane.querySelector('#dr-track-save')?.addEventListener('click', saveTrack);
+      pane.querySelector('#dr-track-cancel')?.addEventListener('click', () => renderRight());
+      inp?.addEventListener('keydown', e => {
+        if (e.key === 'Enter')  saveTrack();
+        if (e.key === 'Escape') renderRight();
+      });
+    });
+
     // Open in Overlay
     pane.querySelector('#dr-goto-overlay')?.addEventListener('click', () => {
       const laps = _lapDetails[s.csv_path] || [];
@@ -343,9 +464,24 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
         await API.assignVideo(s.csv_path, videoPath);
         s.video_paths = [videoPath];
         s.matched     = true;
+        // Update previewSession so editor picks up the new video immediately
+        const prev = State.get('previewSession');
+        if (prev?.csv_path === s.csv_path) {
+          State.set('previewSession', { ...prev, video_paths: s.video_paths, sync_offset: s.sync_offset ?? 0 });
+        }
         await API.saveSessionsCache(_sessions).catch(() => {});
         renderRight();
         renderLeft();
+        // Trigger auto-sync for this session now that it has a video
+        if (_config?.auto_sync_enabled && s.sync_offset == null && !s.auto_sync_failed) {
+          API.startAutoSync([s]).then(r => {
+            if (r?.queued > 0) {
+              _autoSyncing = true;
+              setStatus(`Video assigned — auto-syncing…`);
+              if (_selCsv === s.csv_path) renderRight();
+            }
+          }).catch(() => {});
+        }
       } catch (e) {
         if (msg) { msg.textContent = String(e); msg.className = 'status-msg status-err'; }
         btn.disabled = false;
@@ -391,10 +527,14 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
       return `${m}:${sec}`;
     }
 
+    let _sought = false; // guard: seek once per wireVideoSync call
+
     function seekToLap1() {
       if (s.sync_offset == null || !video.duration) return;
       const outlapDur = getOutlapDur();
       const lap1Vid = Math.max(0, Math.min(video.duration, s.sync_offset + outlapDur));
+      _sought = true;
+      if (scrub) scrub.max = Math.round(video.duration * 1000);
       video.currentTime = lap1Vid;
       if (scrub) scrub.value = Math.round(lap1Vid * 1000);
       if (timeEl) timeEl.textContent = fmtVTime(lap1Vid);
@@ -404,8 +544,11 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
     video.addEventListener('loadedmetadata', () => {
       scrub.max = Math.round(video.duration * 1000);
       fps = 30;
-      seekToLap1();
+      if (!_sought) seekToLap1();
     });
+
+    // Fallback: canplay fires later than loadedmetadata and is more reliable in some WebView builds
+    video.addEventListener('canplay', () => { if (!_sought) seekToLap1(); }, { once: true });
 
     video.addEventListener('timeupdate', () => {
       if (!video.seeking) {
@@ -416,6 +559,7 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
     });
 
     scrub?.addEventListener('input', () => {
+      _sought = true; // user is scrubbing; suppress any delayed auto-seek
       video.currentTime = scrub.value / 1000;
       if (timeEl) timeEl.textContent = fmtVTime(video.currentTime);
       if (offInp) offInp.value = (scrub.value / 1000).toFixed(3);
@@ -445,8 +589,37 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
       renderRight(); // re-renders the panel so the auto banner and button label update
     });
 
-    // If video is already loaded and we have lap data, seek to lap-1 position now.
-    if (video.readyState >= 1 && s.sync_offset != null) seekToLap1();
+    // If metadata already available (e.g. browser cache), seek immediately.
+    if (video.readyState >= 1 && s.sync_offset != null) {
+      seekToLap1();
+    } else if (video.readyState < 1) {
+      // Force load in case preload="metadata" was suppressed (WebView2 cache behaviour)
+      video.load();
+    }
+  }
+
+  // Called after renderRight() from the auto_sync_progress 'done' handler.
+  // wireVideoSync already attaches a loadedmetadata/canplay listener, but if the
+  // browser returns readyState >= 1 immediately (cached metadata), those events
+  // never fire and the existing readyState check inside wireVideoSync might have
+  // run before video.load() finished.  This function does one final check and
+  // seeks if the element is now ready.
+  function _seekVideoAfterAutoSync(s, syncOffset) {
+    const pane = _container?.querySelector('#data-right');
+    const vid  = pane?.querySelector('#sync-video');
+    if (!vid || vid.readyState < 1 || !vid.duration) return;
+    const laps       = _lapDetails[s.csv_path] || [];
+    const firstTimed = laps.find(l => !l.is_outlap);
+    const outlapDur  = firstTimed?.elapsed_start || 0;
+    const lap1Vid    = Math.max(0, Math.min(vid.duration, syncOffset + outlapDur));
+    const scrub  = pane.querySelector('#sv-scrub');
+    const timeEl = pane.querySelector('#sv-time');
+    const offInp = pane.querySelector('#sv-off-input');
+    if (scrub) scrub.max = Math.round(vid.duration * 1000);
+    vid.currentTime = lap1Vid;
+    if (scrub) scrub.value = Math.round(lap1Vid * 1000);
+    if (timeEl) timeEl.textContent = `${Math.floor(lap1Vid / 60)}:${(lap1Vid % 60).toFixed(3).padStart(6, '0')}`;
+    if (offInp) offInp.value = lap1Vid.toFixed(3);
   }
 
   async function saveOffset(s) {
@@ -466,7 +639,10 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
   function refreshFooter() {
     const footer = _container?.querySelector('#data-footer');
     if (!footer) return;
-    footer.innerHTML = `<span class="footer-hint">${esc(_statusMsg || 'Select a session to get started.')}</span>`;
+    const hint = _sessions.length
+      ? `${_sessions.length} session${_sessions.length !== 1 ? 's' : ''} — select one to get started.`
+      : 'Select a session to get started.';
+    footer.innerHTML = `<span class="footer-hint">${esc(hint)}</span>`;
   }
 
   // ── Lap loading ───────────────────────────────────────────────────────────────
@@ -508,6 +684,8 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
         try {
           const m = await API.getSessionMeta(s.csv_path);
           _meta[s.csv_path] = m;
+          // Write track back into the session object so it persists in the cache
+          if (m.track) s.track = m.track;
           // Mirror sync fields from config in case they updated since last scan
           if (_config?.offsets?.[s.csv_path] != null) {
             s.sync_offset = _config.offsets[s.csv_path];
@@ -521,6 +699,9 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
       renderLeft();
     }
     _metaBusy = false;
+    // Persist enriched track names to cache so backend queries (ref picker,
+    // personal best, bulk rename) can match by track without loading every session.
+    API.saveSessionsCache(_sessions).catch(() => {});
   }
 
   // ── Scan ──────────────────────────────────────────────────────────────────────
@@ -542,6 +723,7 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
     }
 
     _scanning = true;
+    _autoSyncing = false;
     setStatus(auto ? 'Auto-scanning…' : 'Scanning…');
     _container?.querySelector('#scan-btn')?.setAttribute('disabled', '');
 
@@ -568,7 +750,7 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
       // Persist the full merged list so next startup shows cached results immediately
       API.saveSessionsCache(_sessions).catch(() => {});
       // Trigger background auto-sync if enabled
-      if (_config?.auto_sync_enabled && !_autoSyncing) {
+      if (_config?.auto_sync_enabled) {
         const candidates = _sessions.filter(s => s.matched && s.video_paths?.length);
         API.startAutoSync(candidates).then(r => {
           if (r?.queued > 0) {
@@ -687,6 +869,11 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
     container.querySelector('#scan-btn').addEventListener('click', () => doScan(false));
     initResizer(container);
 
+    // XRK auto-conversion progress from the backend
+    _unlistenFns.push(API.on('scan_status', detail => {
+      if (_scanning) setStatus(detail.message || '');
+    }));
+
     // Listen to auto-sync push events to update session status in real-time
     let _asIdx = 0, _asTotal = 0, _asDone = 0, _asFailed = 0;
     _unlistenFns.push(API.on('auto_sync_progress', detail => {
@@ -705,16 +892,25 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
         if (s.sync_source !== 'user') {
           s.sync_offset = detail.offset;
           s.sync_source = 'auto';
+          // Keep previewSession in sync so editor gets the detected offset
+          const prev = State.get('previewSession');
+          if (prev?.csv_path === s.csv_path) {
+            State.set('previewSession', { ...prev, video_paths: s.video_paths || prev.video_paths, sync_offset: detail.offset });
+          }
           renderLeft();
-          if (_selCsv === s.csv_path) renderRight();
+          renderRight();
+          // If the video element is already loaded (WebView2 cache), wireVideoSync's
+          // readyState check runs before load() triggers metadata — seek it now.
+          _seekVideoAfterAutoSync(s, detail.offset);
         }
         const off = detail.offset >= 0 ? `+${detail.offset.toFixed(3)}s` : `${detail.offset.toFixed(3)}s`;
-        setStatus(`Auto-syncing session ${_asIdx} of ${_asTotal} — offset detected: ${off} at ${detail.confidence?.toFixed(2)}× confidence`);
+        setStatus(`Auto-sync: offset detected ${off} at ${detail.confidence?.toFixed(2)}× confidence`);
       } else if (detail.status === 'failed') {
         _asFailed++;
         s.auto_sync_failed = true;
-        setStatus(`Auto-syncing session ${_asIdx} of ${_asTotal} — no confident match found (${detail.confidence?.toFixed(2)}× confidence)`);
+        setStatus(`Auto-sync: no confident match (${detail.confidence?.toFixed(2)}× confidence) — set offset manually`);
         renderLeft();
+        renderRight();
       }
     }));
     _unlistenFns.push(API.on('auto_sync_done', () => {
