@@ -1,6 +1,6 @@
 """
-rb_render.py — Video rendering engine
-=======================================
+video_renderer.py — Video rendering engine
+===========================================
 Handles video joining (ffmpeg), frame rendering (multiprocessing),
 and final mux. No GUI state — all inputs passed explicitly.
 """
@@ -496,13 +496,19 @@ def render_lap(
 
     if n_frames <= 0:
         cap.release()
-        need_start = vid_lap_start - padding
-        raise LapOutOfRangeError(
-            f"Lap is {job.duration:.1f}s long (at session position {job.gpx_start:.1f}s–{job.gpx_end:.1f}s), "
-            f"but with sync offset {sync_offset:.1f}s this maps to video time {need_start:.1f}s–{vid_lap_end+padding:.1f}s, "
-            f"which is outside the video duration of {vid_dur_s:.1f}s. "
-            f"Set the sync offset in the Data tab (scrub to where lap 1 starts, then click Mark)."
-        )
+        if job.gpx_start is not None:
+            need_start = vid_lap_start - padding
+            raise LapOutOfRangeError(
+                f"Lap is {job.duration:.1f}s long (at session position {job.gpx_start:.1f}s–{job.gpx_end:.1f}s), "
+                f"but with sync offset {sync_offset:.1f}s this maps to video time {need_start:.1f}s–{vid_lap_end+padding:.1f}s, "
+                f"which is outside the video duration of {vid_dur_s:.1f}s. "
+                f"Set the sync offset in the Data tab (scrub to where lap 1 starts, then click Mark)."
+            )
+        else:
+            raise LapOutOfRangeError(
+                f"Video appears empty or unreadable (0 frames). "
+                f"Check that the video file is not corrupt: {video_path}"
+            )
 
     if overlay_only:
         import subprocess as _sp, threading as _th, queue as _q_mod
@@ -535,7 +541,7 @@ def render_lap(
         tmp_raw = None
     else:
         cap.set(cv2.CAP_PROP_POS_FRAMES, f_start)
-        tmp_raw = out_path.replace('.mp4', '_raw.avi')
+        tmp_raw = os.path.splitext(out_path)[0] + '_raw.avi'
         writer  = cv2.VideoWriter(
             tmp_raw, cv2.VideoWriter_fourcc(*'MJPG'), fps, (vw, vh))
 
@@ -767,7 +773,7 @@ def render_lap(
             log(f"  ✓ Saved: {out_path}")
         except Exception as e:
             log(f"  ✗ Mux failed: {e}")
-            fallback = out_path.replace('.mp4', '_raw.avi')
+            fallback = os.path.splitext(out_path)[0] + '_raw.avi'
             if os.path.exists(tmp_raw):
                 os.rename(tmp_raw, fallback)
             log(f"  Raw saved: {fallback}")

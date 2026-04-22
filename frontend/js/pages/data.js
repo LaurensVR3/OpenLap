@@ -581,7 +581,6 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
       const rawTime   = video.currentTime;
       const outlapDur = getOutlapDur();
       const offset    = rawTime - outlapDur;
-      console.log('[mark] rawTime:', rawTime, '| outlapDur:', outlapDur, '| saved sync_offset:', offset);
       s.sync_offset = offset;
       s.sync_source = 'user';
       await saveOffset(s);

@@ -1,9 +1,9 @@
 """
-rb_batch.py — Batch session matcher and state manager
+session_scanner.py — Session matcher and state manager
 =======================================================
-Scans folders for RaceBox CSVs and video files, matches them by
-timestamp proximity, and persists processing state so runs can be
-resumed after interruption.
+Scans folders for telemetry files (RaceBox CSV, AIM XRK, MoTeC LD, GPX)
+and video files, matches them by timestamp proximity, and persists
+processing state so runs can be resumed after interruption.
 
 Matching strategy:
   1. Parse session start time from CSV metadata (Date UTC field).

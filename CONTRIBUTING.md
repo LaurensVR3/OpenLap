@@ -7,7 +7,7 @@ Thanks for your interest. OpenLap is a PyWebView desktop app — Python backend,
 ```bash
 git clone https://github.com/LaurensVR3/OpenLap.git
 cd OpenLap
-pip install pywebview opencv-python pillow numpy matplotlib pandas
+pip install -e ".[dev]"
 python main.py
 ```
 
@@ -51,7 +51,7 @@ The two rendering stacks (`styles/*.py` and `frontend/js/gauges/*.js`) must stay
 
 ## Adding a telemetry channel
 
-Channels are defined in `racebox_data.py` (`DataPoint` dataclass). All four loaders must populate the same fields — never add source-specific fields to `DataPoint`.
+Channels are defined in `data_model.py` (`DataPoint` dataclass). All four loaders must populate the same fields — never add source-specific fields to `DataPoint`.
 
 ## Good first issues
 

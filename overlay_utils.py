@@ -1,6 +1,6 @@
 """
 overlay_utils.py — Shared utilities for overlay style rendering.
-Imported by rb_overlay.py and all style files in styles/.
+Imported by overlay_worker.py and all style files in styles/.
 """
 from __future__ import annotations
 import math

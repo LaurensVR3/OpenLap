@@ -1,6 +1,6 @@
 """
-rb_data.py — RaceBox CSV loader
-==================================
+racebox_data.py — RaceBox CSV loader
+======================================
 Auto-detects car vs bike mode:
   Car:  GForceX, GForceY, GForceZ
   Bike: GForceX, GForceZ, LeanAngle  (no GForceY)

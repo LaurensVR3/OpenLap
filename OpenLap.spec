@@ -70,6 +70,7 @@ hidden_imports = [
     'styles.gauge_delta',
     'styles.gauge_dial',
     'styles.gauge_gmeter',
+    'styles.gauge_image',
     'styles.gauge_info',
     'styles.gauge_lap_scoreboard',
     'styles.gauge_lean',

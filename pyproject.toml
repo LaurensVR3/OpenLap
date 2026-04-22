@@ -8,10 +8,11 @@ dynamic = ["version"]
 description = "Free, open-source motorsport telemetry overlay software for RaceBox, AIM MyChron, MoTeC, and GPX data. Renders professional gauge overlays on racing video."
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = {text = "GPL-3.0-or-later"}
 
 dependencies = [
     "numpy>=1.24",
+    "scipy>=1.10",
     "matplotlib>=3.7",
     "Pillow>=10.0",
     "opencv-python>=4.8",

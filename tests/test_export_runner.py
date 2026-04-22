@@ -1,6 +1,7 @@
 """
 Tests for export_runner.run_export — field-name compatibility and scope routing.
 """
+import tempfile
 from unittest.mock import MagicMock, patch, call
 import pytest
 
@@ -18,7 +19,7 @@ def _run(items, scope='fastest', **kwargs):
     run_export(
         items=items,
         scope=scope,
-        export_path='/tmp',
+        export_path=tempfile.gettempdir(),
         encoder='libx264',
         crf=18,
         workers=1,
@@ -112,7 +113,7 @@ class TestItemFieldNames:
     def test_webview_sync_offset_zero_is_preserved(self):
         """sync_offset=0.0 must not fall back to legacy 'offset' field."""
         item = {
-            'csv_path':    '/tmp/s.csv',
+            'csv_path':    str(tempfile.gettempdir() + '/s.csv'),
             'video_paths': [],
             'sync_offset': 0.0,
             'offset':      99.9,   # legacy field that must be ignored

@@ -567,7 +567,6 @@
     if (vid && vid.readyState >= 1 && vid.duration) {
       const lap    = _liveLaps[lapIdx];
       const seekTo = _liveOffset + (lap.elapsed_start || 0);
-      console.log('[switchLap]', lapIdx, '| _liveOffset:', _liveOffset, '| elapsed_start:', lap.elapsed_start, '| seekTo:', seekTo, '| duration:', vid.duration);
       vid.currentTime = Math.max(0, Math.min(vid.duration, seekTo));
       const scrub = _container?.querySelector('#live-scrub');
       if (scrub) scrub.value = Math.round(vid.currentTime * 1000);
@@ -643,8 +642,6 @@
 
     _liveSessionMeta = meta;
     _liveLaps        = laps;
-    console.log('[loadLiveSession] _liveOffset:', _liveOffset, '| laps:', JSON.stringify(laps.map(l => ({idx: l.lap_idx, es: l.elapsed_start, outlap: l.is_outlap, inlap: l.is_inlap, dur: l.duration}))));
-
     // Default to the lap requested, but skip the outlap — start on the first timed lap.
     let startIdx = session.lap_idx ?? 0;
     if (laps[startIdx]?.is_outlap || laps[startIdx]?.is_inlap) {

@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Tuple
-from overlay_utils import blend_rgba, blend_rgba_onto_rgba, scale_factor   # re-export scale_factor for rb_render
+from overlay_utils import blend_rgba, blend_rgba_onto_rgba, scale_factor
 
 logger = logging.getLogger(__name__)
 

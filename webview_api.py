@@ -19,7 +19,7 @@ from typing import Optional
 
 import webview
 
-from app_config import AppConfig, overlay_from_dict, load_scan_cache, save_scan_cache
+from app_config import AppConfig, overlay_from_dict, load_scan_cache
 
 logger = logging.getLogger(__name__)
 
@@ -1089,10 +1089,6 @@ class WebviewAPI:
     def assign_video(self, csv_path: str, video_path: str) -> None:
         """Manually link a video file to a telemetry session."""
         abs_csv = str(Path(csv_path).resolve())
-        if not hasattr(self._config, 'video_overrides') or not isinstance(getattr(self._config, 'video_overrides', None), dict):
-            # video_overrides not in config yet — use session_info as storage vehicle
-            pass
-        # Store in session_info under special key
         si = self._config.session_info.setdefault(abs_csv, {})
         si['_video_override'] = str(Path(video_path).resolve())
         self._config.save()

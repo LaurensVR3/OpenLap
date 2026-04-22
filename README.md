@@ -30,7 +30,13 @@ Point it at your telemetry files and a folder of race videos, and it matches ses
 
 **Sample output video** — Karting Haute Picardie Arvillers:
 
-[![OpenLap telemetry overlay on karting video — speed, RPM, G-force, circuit map gauges](https://img.youtube.com/vi/0XuByCyL_mA/maxresdefault.jpg)](https://youtu.be/gsKdIWs6FvM)
+[![OpenLap telemetry overlay on karting video — speed, RPM, G-force, circuit map gauges](https://img.youtube.com/vi/gsKdIWs6FvM/maxresdefault.jpg)](https://youtu.be/gsKdIWs6FvM)
+
+### Screenshots
+
+| Data tab | Export tab | Settings tab |
+|---|---|---|
+| ![Data tab — session list with lap times and sync status](docs/screenshot_data.png) | ![Export tab — encoder selection and progress log](docs/screenshot_export.png) | ![Settings tab — telemetry and video folder configuration](docs/screenshot_settings.png) |
 
 ---
 
@@ -120,13 +126,13 @@ Common use cases: karting, circuit racing, track days, hillclimb, motorcycle tra
 **Install Python dependencies**
 
 ```bash
-pip install pywebview opencv-python pillow numpy
+pip install -e .
 ```
 
 For RaceBox cloud download (optional):
 
 ```bash
-pip install playwright
+pip install -e ".[racebox-download]"
 playwright install chromium
 ```
 

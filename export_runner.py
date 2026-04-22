@@ -1,8 +1,8 @@
 """
 export_runner.py — Background export logic
 ==========================================
-Pure rendering pipeline, decoupled from the Tkinter UI.
-All I/O callbacks are injected so this module has no GUI imports.
+Pure rendering pipeline; all I/O callbacks are injected so this module
+has no GUI imports.
 """
 from __future__ import annotations
 import os

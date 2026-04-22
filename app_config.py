@@ -1,5 +1,5 @@
 # app_config.py — persistent application configuration
-# Saved to ~/.telemetry_overlay/config.json
+# Saved to ~/.openlap/config.json
 
 from __future__ import annotations
 import json
