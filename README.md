@@ -12,17 +12,75 @@ Point it at your telemetry files and a folder of race videos, and it matches ses
 
 ## Quick Start (Windows — no technical knowledge needed)
 
-1. **Download** the latest release: **[⬇ OpenLap for Windows](https://github.com/LaurensVR3/OpenLap/releases/latest)**
-2. **Unzip** the downloaded `.zip` file anywhere you like (e.g. your Desktop or `C:\Tools\OpenLap`)
-3. **Run** `OpenLap.exe` — Windows may show a SmartScreen warning the first time; click **More info → Run anyway** (the app is open source and safe)
-4. **Settings tab** — set the folders where your telemetry files live (RaceBox CSV, AIM `.xrk`, MoTeC `.ld`, or GPX) and your video folder
-   - *AIM users:* click **Download DLL** the first time — this fetches the conversion library automatically
-   - *RaceBox cloud users:* click **Download Login Component**, wait for it to finish, then **Check Auth**
-5. **Data tab** — sessions are scanned automatically; click **▶** next to a session to open it in the editor
-6. **Overlay tab** — drag gauges onto the video preview, pick a theme, adjust styles
-7. **Export tab** — choose quality and encoding, then **Start Export** — finished videos are saved to your Export Folder
+No Python, no FFmpeg, no installation required. Everything is bundled.
 
-> **Important:** keep `OpenLap.exe` and the `_internal` folder in the same directory — they must stay together.
+**1. Download**
+
+Go to **[Releases](https://github.com/LaurensVR3/OpenLap/releases/latest)** and download the `.zip` file.
+
+**2. Unzip**
+
+Extract the zip anywhere — your Desktop, `C:\Tools\OpenLap`, wherever you like. You will get a folder containing `OpenLap.exe` and a folder called `_internal`.
+
+> **Important:** keep `OpenLap.exe` and the `_internal` folder together in the same location at all times. Moving just the `.exe` will break the app.
+
+**3. Run**
+
+Double-click `OpenLap.exe`.
+
+> **Windows SmartScreen warning?** Windows shows this for all software that isn't commercially signed. OpenLap is open source and safe. Click **More info**, then **Run anyway**.
+
+**4. Set up your folders (Settings tab)**
+
+When the app opens, go to the **Settings tab first** and tell it where your files live:
+
+- **RaceBox folder** — the folder where your RaceBox `.csv` files are stored
+- **AIM folder** — the folder containing your AIM `.xrk` / `.xrz` / `.drk` files
+- **MoTeC folder** — the folder containing your MoTeC `.ld` files
+- **GPX folder** — the folder containing your `.gpx` files
+- **Video folder** — the folder where your race videos are stored
+- **Export folder** — where finished videos will be saved
+
+You only need to fill in the sources you actually use.
+
+**First-time setup for AIM users:** click **Download DLL** in the AIM section. This fetches the conversion library that reads `.xrk` files. You only need to do this once.
+
+**First-time setup for RaceBox cloud users:** click **Download Login Component**, wait for it to finish, then click **Check Auth** and log in with your RaceBox account.
+
+**5. Scan your sessions (Data tab)**
+
+Go to the **Data tab**. Sessions are scanned automatically on startup — they will appear grouped by date. If nothing shows up, click **Scan**.
+
+Each session shows its laps and whether a matching video was found:
+- `✓ user` — sync confirmed, ready to export
+- `~ auto` — sync detected automatically (blue); scrub to verify, click **Confirm** to lock it in
+- `≈ unset` — no sync offset set yet; use the Align Video panel to set it manually
+- `no vid` — no matching video found; click **Browse for video…** to link one manually
+
+**6. Set the sync offset**
+
+The sync offset tells OpenLap exactly where in the video the lap timer starts. Without it, gauges will be out of step with the footage.
+
+- **Auto-sync (recommended):** enable **Auto Sync** in Settings. After scanning, OpenLap cross-correlates video motion against G-force to detect the offset automatically. Works best with RaceBox, AIM, and MoTeC data. GPX files do not contain G-force, so auto-sync will not run for GPX sessions.
+- **Manual sync:** in the Data tab, select a session and use the **Align Video** panel. Scrub the video to the exact moment the lap timer starts, then click **Mark**.
+
+**7. Edit the overlay (Overlay tab)**
+
+Click **Open in Overlay →** on any session to jump to the editor.
+
+- Use the lap selector (◀ ▶ or dropdown) to switch between laps
+- Click **Add Gauge** to place a new element — pick a channel (Speed, RPM, G-force, etc.) and a style
+- Drag gauges to reposition; drag the corner handle to resize
+- Switch themes (Dark · Light · Colorful · Monochrome) using the theme picker
+- Save your layout as a named preset so you can reuse it
+
+**8. Export (Export tab)**
+
+Click **+ Export** on the lap or session you want, then go to the **Export tab**.
+
+- Choose scope: **This Lap**, **Fastest Lap**, **All Laps**, or **Full Session**
+- Choose encoder: OpenLap auto-detects your GPU (NVIDIA NVENC · AMD AMF · Intel QSV). If no GPU is found it falls back to CPU (libx264) — this is slower but always works
+- Click **Start Export**. Progress and a log are shown live. Finished videos are saved to your Export Folder.
 
 ---
 
@@ -37,6 +95,34 @@ Point it at your telemetry files and a folder of race videos, and it matches ses
 | Data tab | Export tab | Settings tab |
 |---|---|---|
 | ![Data tab — session list with lap times and sync status](docs/screenshot_data.png) | ![Export tab — encoder selection and progress log](docs/screenshot_export.png) | ![Settings tab — telemetry and video folder configuration](docs/screenshot_settings.png) |
+
+---
+
+## Troubleshooting
+
+**Sessions are not appearing in the Data tab**
+- Check that the correct folder is set in Settings for your data source
+- Make sure the files are the right type (`.csv` for RaceBox, `.xrk`/`.xrz`/`.drk` for AIM, `.ld` for MoTeC, `.gpx` for GPX)
+- Click **Scan** to force a rescan
+- AIM files also need the DLL downloaded (Settings → Download DLL)
+
+**No video matched to a session**
+- OpenLap matches by timestamp. Make sure your camera clock is roughly correct
+- Use **Browse for video…** in the Data tab to link a video manually
+- Supported video formats: anything FFmpeg can read (MP4, MOV, MTS, AVI, etc.)
+
+**Auto-sync did nothing / sync is wrong**
+- Auto-sync requires G-force data. GPX sessions do not have G-force — use manual sync instead
+- If confidence was too low the result is discarded. Use manual sync via the Align Video panel
+- A manually set offset (`✓ user`) is never overwritten by auto-sync
+
+**Export failed or produced no output**
+- Check the log in the Export tab for the specific error
+- Make sure the Export Folder is set in Settings and the folder actually exists
+- Try switching to the CPU encoder (libx264) if a GPU encoder fails
+
+**App crashes on launch**
+- Make sure `OpenLap.exe` and the `_internal` folder are in the same directory — never move the `.exe` on its own
 
 ---
 
@@ -84,7 +170,7 @@ Point it at your telemetry files and a folder of race videos, and it matches ses
 | **RaceBox** | RaceBox Mini, Mini S, Pro, Bike (`.csv`) | Car and bike mode; cloud download built-in |
 | **AIM MyChron** | MyChron 5, MyChron 5S, Solo 2 (`.xrk` · `.xrz` · `.drk`) | Auto-converted to CSV on scan |
 | **MoTeC** | Any MoTeC logger exporting `.ld` | Binary i2 format; full session lap timing |
-| **GPX** | Any GPS device or phone app (`.gpx`) | Speed derived from position + timestamp |
+| **GPX** | Any GPS device or phone app (`.gpx`) | Speed derived from position + timestamp; no G-force, auto-sync not available |
 
 ### Telemetry channels
 
@@ -143,49 +229,6 @@ python main.py
 ```
 
 Configuration is stored at `~/.openlap/config.json`.
-
----
-
-## Usage
-
-### 1. Settings tab
-
-Configure folders for each telemetry source, your **Video Folder**, and **Export Folder**.
-
-- **RaceBox** — set the folder where CSVs are stored; log in to download new sessions from the cloud
-- **AIM MyChron** — point at the folder containing `.xrk` files; conversion to CSV happens automatically
-- **MoTeC** — point at the folder containing `.ld` files
-- **GPX** — point at the folder containing `.gpx` files
-- **Auto Sync** — enable to automatically detect sync offsets after each scan (~20–60s per session using G-force cross-correlation); off by default
-
-### 2. Data tab
-
-Sessions are scanned automatically on startup. Click **Scan** to refresh.
-
-- Sessions appear grouped by date; click a row to see its detail and sync panel
-- The **Sync** column shows the status of each session:
-  - `≈ unset` — no offset set yet
-  - `~ auto` — offset detected automatically (blue); scrub to verify, click **Confirm** to lock it in
-  - `✓ user` — offset manually confirmed (green)
-  - `no vid` — no matching video found
-- Use the **Align Video** panel to sync manually: scrub to where the lap timer starts, press **Mark**
-- Use **Browse for video…** to manually link a session to a video file
-- Click **Open in Overlay →** to jump to the editor with this session loaded
-
-### 3. Overlay tab
-
-- The video preview shows the current session; use the lap selector (◀ ▶ or dropdown) to switch laps
-- **Add Gauge** to place a new element — choose channel and style
-- Drag elements to reposition; drag the corner handle to resize
-- Switch themes and save layouts as named presets
-- Set a **Reference Lap** to enable delta time and reference lap comparison
-- Click **+ Export** to queue the current lap for export
-
-### 4. Export tab
-
-- Review the queued laps (each has its own ✕ to remove individually)
-- Choose encoder, quality, padding, and worker count
-- Click **Start Export**; progress and log are shown live
 
 ---
 
