@@ -2,8 +2,6 @@
 
 **OpenLap** is a free, open-source desktop application that overlays telemetry data on racing video footage. It supports **RaceBox**, **AIM MyChron**, **MoTeC**, and **GPX** data sources and runs entirely on your PC — no subscription, no cloud, no fees.
 
-> A free alternative to RaceRender, Video VBOX, and TrackAddict for Windows.
-
 Point it at your telemetry files and a folder of race videos, and it matches sessions, syncs timing, and renders professional gauge overlays — all from a single window.
 
 > Licensed under the **GNU General Public License v3**. Free forever. Forks must stay open source.
@@ -92,9 +90,9 @@ Click **+ Export** on the lap or session you want, then go to the **Export tab**
 
 ### Screenshots
 
-| Data tab | Export tab | Settings tab |
-|---|---|---|
-| ![Data tab — session list with lap times and sync status](docs/screenshot_data.png) | ![Export tab — encoder selection and progress log](docs/screenshot_export.png) | ![Settings tab — telemetry and video folder configuration](docs/screenshot_settings.png) |
+| Data tab | Overlay tab | Export tab | Settings tab |
+|---|---|---|---|
+| ![Data tab — session list with lap times and sync status](docs/screenshot_data.png) | ![Overlay tab — live video preview with gauge editor](docs/screenshot_overlay.png) | ![Export tab — encoder selection and progress log](docs/screenshot_export.png) | ![Settings tab — telemetry and video folder configuration](docs/screenshot_settings.png) |
 
 ---
 
@@ -198,7 +196,15 @@ Most telemetry overlay tools are expensive, subscription-based, or locked to a s
 - **GPU-accelerated** — NVIDIA NVENC, AMD AMF, Intel QSV; renders fast on any modern PC
 - **Offline** — no internet required after initial setup; your data stays on your machine
 
-Common use cases: karting, circuit racing, track days, hillclimb, motorcycle track riding, autocross / autosolo.
+Common use cases: karting, circuit racing, track days, hillclimb, motorcycle track riding, autocross etc
+
+---
+
+## Support the project
+
+OpenLap is free and always will be. If you want to see more/faster progress, please consider sponsoring.
+
+[![GitHub Sponsors](https://img.shields.io/github/sponsors/LaurensVR3?label=Sponsor&logo=github&color=ea4aaa)](https://github.com/sponsors/LaurensVR3)
 
 ---
 
