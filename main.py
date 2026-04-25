@@ -49,7 +49,14 @@ def main():
 
     api = WebviewAPI()
 
-    _icon = str(_BASE / 'frontend' / 'icon.ico')
+    # pywebview's `icon` is only honored by the Windows (edgechromium/mshtml)
+    # and Linux (GTK/QT) backends. On macOS the cocoa backend takes its icon
+    # from the app bundle's Info.plist, so we skip it entirely there.
+    _icon: str | None = None
+    if sys.platform != 'darwin':
+        candidate = str(_BASE / 'frontend' / 'icon.ico')
+        if os.path.isfile(candidate):
+            _icon = candidate
 
     window = webview.create_window(
         title      = 'OpenLap',
@@ -65,8 +72,7 @@ def main():
 
     # Use GUI thread blocking call — webview.start() must be on main thread.
     # Disable DevTools in packaged builds; keep enabled when running from source.
-    webview.start(debug=not getattr(sys, 'frozen', False),
-                  icon=_icon if os.path.isfile(_icon) else None)
+    webview.start(debug=not getattr(sys, 'frozen', False), icon=_icon)
 
 
 if __name__ == '__main__':
