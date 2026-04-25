@@ -941,7 +941,8 @@ class WebviewAPI:
         ffmpeg_bin = os.environ.get('FFMPEG_BIN') or shutil.which('ffmpeg')
         if not ffmpeg_bin:
             base = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-            candidate = os.path.join(base, 'ffmpeg.exe')
+            fname = 'ffmpeg.exe' if sys.platform == 'win32' else 'ffmpeg'
+            candidate = os.path.join(base, fname)
             if os.path.isfile(candidate):
                 ffmpeg_bin = candidate
         if not ffmpeg_bin:

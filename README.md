@@ -210,16 +210,20 @@ OpenLap is free and always will be. If you want to see more/faster progress, ple
 
 ## Run from source
 
+Works on Windows, macOS, and Linux.
+
 **Requirements**
 
 - Python 3.10+
-- FFmpeg available on your system `PATH`
+- FFmpeg available on your system `PATH` (`brew install ffmpeg` on macOS)
 
 **Install Python dependencies**
 
 ```bash
 pip install -e .
 ```
+
+On macOS the Cocoa backend is already pulled in via PyObjC when pywebview is installed, so no extra step is needed. If you see errors about `AppKit` or `WebKit`, make sure pywebview itself was installed successfully.
 
 For RaceBox cloud download (optional):
 
@@ -235,6 +239,11 @@ python main.py
 ```
 
 Configuration is stored at `~/.openlap/config.json`.
+
+**Known macOS limitations**
+
+- AIM `.xrk` / `.xrz` / `.drk` conversion is unavailable — AIM only ships the required `MatLabXRK` library as a Windows DLL. RaceBox CSV, MoTeC `.ld`, and GPX files work normally.
+- Hardware-accelerated encoding uses **VideoToolbox** (`h264_videotoolbox`). NVENC / AMF / QSV are Windows/Linux only.
 
 ---
 
