@@ -210,7 +210,7 @@ OpenLap is free and always will be. If you want to see more/faster progress, ple
 
 ## Run from source
 
-Works on Windows, macOS, and Linux.
+Works on Windows and macOS.
 
 **Requirements**
 
