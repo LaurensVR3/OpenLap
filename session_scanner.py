@@ -34,6 +34,7 @@ VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.MP4', '.MOV', '.AVI', '.MK
 CSV_EXTENSIONS   = {'.csv', '.CSV'}
 GPX_EXTENSIONS   = {'.gpx', '.GPX'}
 LD_EXTENSIONS    = {'.ld',  '.LD'}
+VBO_EXTENSIONS   = {'.vbo', '.VBO'}
 MAX_GAP          = 120.0    # seconds between consecutive segments of one recording
 MATCH_WINDOW     = 3600.0   # max seconds between CSV start and video group start
 
@@ -239,13 +240,23 @@ def convert_xrk_files(folder: str, progress_cb: Optional[Callable[[str], None]] 
 # ── CSV scanning ───────────────────────────────────────────────────────────────
 
 def scan_csvs(folder: str) -> List[str]:
-    """Recursively find all RaceBox, AIM Mychron CSV, GPX, and MoTeC .ld files."""
+    """Recursively find all RaceBox, AIM Mychron CSV, GPX, MoTeC .ld, and VBOX .vbo files."""
     import motec_data as _motec
     results = []
     for root, _, files in os.walk(folder):
         for fname in sorted(files):
             suffix = Path(fname).suffix
             path = os.path.join(root, fname)
+
+            if suffix in VBO_EXTENSIONS:
+                try:
+                    with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
+                        head = f.read(256)
+                    if '[header]' in head.lower():
+                        results.append(path)
+                except Exception:
+                    logger.debug('Could not read VBO candidate %s', path, exc_info=True)
+                continue
 
             if suffix in GPX_EXTENSIONS:
                 # GPX files are identified by extension + quick content check
@@ -310,6 +321,8 @@ def scan_pending_xrk(folder: str) -> List[Tuple[str, str]]:
 def _csv_source(path: str) -> str:
     """Quick peek at a file to determine its data source."""
     suffix = Path(path).suffix.lower()
+    if suffix == '.vbo':
+        return 'VBOX'
     if suffix == '.gpx':
         return 'GPX'
     if suffix == '.ld':
@@ -371,11 +384,47 @@ def match_sessions(csv_paths: List[str],
 def _read_csv_start_time(path: str) -> Optional[datetime]:
     """Read session start time from a data file.
 
+    VBOX:    reads date from [comments] and time from first [data] row.
     GPX:     reads the first <time> element.
     RaceBox: reads the 'Date UTC,' metadata line.
     AIM:     reads the '# Session-Date:' comment or falls back to mtime.
     MoTeC:   reads the date/time fields from the binary header.
     """
+    if Path(path).suffix.lower() == '.vbo':
+        try:
+            import re as _re
+            sections: dict = {}
+            current = None
+            with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
+                for line in f:
+                    line = line.rstrip('\n\r')
+                    if line.startswith('[') and line.endswith(']'):
+                        current = line[1:-1].strip().lower()
+                        sections[current] = []
+                    elif current is not None and line.strip():
+                        sections[current].append(line)
+            comments = '\n'.join(sections.get('comments', []))
+            dm = _re.search(r'(\d{2})/(\d{2})/(\d{4})', comments)
+            session_date = (datetime(int(dm.group(3)), int(dm.group(2)), int(dm.group(1)),
+                                     tzinfo=timezone.utc) if dm else None)
+            channels = [c.strip().lower() for c in sections.get('header', [])]
+            idx_time = next((i for i, c in enumerate(channels) if c == 'time'), None)
+            data_lines = sections.get('data', [])
+            if session_date and idx_time is not None and data_lines:
+                cols = data_lines[0].split()
+                if idx_time < len(cols):
+                    raw = float(cols[idx_time])
+                    h = int(raw) // 10000
+                    m = (int(raw) // 100) % 100
+                    s = round(raw - h * 10000 - m * 100, 6)
+                    return session_date + timedelta(hours=h, minutes=m, seconds=s)
+            if session_date:
+                return session_date
+        except Exception:
+            logger.debug('Could not read VBOX start time from %s', path, exc_info=True)
+        mtime = os.path.getmtime(path)
+        return datetime.fromtimestamp(mtime, tz=timezone.utc)
+
     if Path(path).suffix.lower() == '.ld':
         import struct as _s
         try:

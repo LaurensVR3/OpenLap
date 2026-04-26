@@ -49,6 +49,7 @@
       ${_folderRow('AIM Mychron','aim_path',      cfg.aim_path,     'AIM XRK / CSV files')}
       ${_folderRow('MoTeC',       'motec_path',   cfg.motec_path,   'MoTeC .ld binary files')}
       ${_folderRow('GPX',         'gpx_path',     cfg.gpx_path,     '.gpx GPS track files')}
+      ${_folderRow('VBOX',        'vbox_path',    cfg.vbox_path,    'Racelogic VBOX .vbo files')}
     </section>
 
     <!-- Video & output -->

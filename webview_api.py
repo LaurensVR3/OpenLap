@@ -163,7 +163,7 @@ class WebviewAPI:
     def save_config(self, data: dict) -> None:
         # Update string fields
         simple_fields = [
-            'racebox_path', 'aim_path', 'motec_path', 'gpx_path',
+            'racebox_path', 'aim_path', 'motec_path', 'gpx_path', 'vbox_path',
             'telemetry_path', 'video_path', 'export_path', 'racebox_email',
         ]
         for f in simple_fields:
@@ -340,8 +340,8 @@ class WebviewAPI:
             import os
             suffix = os.path.splitext(csv_path)[1].lower()
 
-            # GPX / MoTeC: need a full load but they're usually small
-            if suffix in ('.gpx', '.ld'):
+            # GPX / MoTeC / VBOX: need a full load but they're usually small
+            if suffix in ('.gpx', '.ld', '.vbo'):
                 session = self._load_session(csv_path)
                 if not session:
                     return {'track': '', 'laps': '', 'best': '', 'best_secs': None}
@@ -1184,7 +1184,9 @@ class WebviewAPI:
     # ── Internal helpers ──────────────────────────────────────────────────────
     @staticmethod
     def _load_session(csv_path: str):
-        import gpx_data, aim_data, racebox_data, motec_data
+        import gpx_data, aim_data, racebox_data, motec_data, vbox_data
+        if vbox_data.is_vbox(csv_path):
+            return vbox_data.load_vbo(csv_path)
         if motec_data.is_motec_ld(csv_path):
             return motec_data.load_ld(csv_path)
         if gpx_data.is_gpx(csv_path):
