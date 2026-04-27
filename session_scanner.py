@@ -195,26 +195,41 @@ def convert_xrk_files(folder: str, progress_cb: Optional[Callable[[str], None]] 
     if not pending:
         return []
 
+    import sys as _sys
+
     try:
         import xrk_to_csv as _xrk
     except ImportError:
-        if progress_cb:
-            progress_cb("xrk_to_csv.py not found — XRK conversion skipped")
-        return []
+        _xrk = None
 
-    # Locate (or download) the DLL once for all files
-    if progress_cb:
-        progress_cb("Locating AIM MatLabXRK DLL…")
-    try:
-        dll_path = _xrk._find_dll()
-    except SystemExit as e:
+    # Pick a reader: Windows DLL first (with auto-download), falling back to
+    # libxrk (cross-platform PyPI package). We only invoke _find_dll() on
+    # Windows because its auto-download path can open a Playwright browser
+    # — useless on macOS/Linux where AIM ships no native binary anyway.
+    dll_path = None
+    if _xrk is not None and _sys.platform == 'win32':
         if progress_cb:
-            progress_cb(f"XRK DLL unavailable: {e}")
-        return []
-    except Exception as e:
-        if progress_cb:
-            progress_cb(f"XRK DLL error: {e}")
-        return []
+            progress_cb("Locating AIM MatLabXRK DLL…")
+        try:
+            dll_path = _xrk._find_dll()
+        except SystemExit as e:
+            if progress_cb:
+                progress_cb(f"XRK DLL unavailable, falling back to libxrk: {e}")
+        except Exception as e:
+            if progress_cb:
+                progress_cb(f"XRK DLL error, falling back to libxrk: {e}")
+
+    libxrk_fn = None
+    if not dll_path:
+        try:
+            from xrk_to_csv_libxrk import xrk_to_csv_libxrk as libxrk_fn
+        except ImportError:
+            if progress_cb:
+                progress_cb(
+                    "XRK reader unavailable — install libxrk (`pip install libxrk`) "
+                    "or place a MatLabXRK DLL next to OpenLap (Windows only)."
+                )
+            return []
 
     new_csvs: List[str] = []
     for i, (xrk_path, csv_path) in enumerate(pending):
@@ -224,7 +239,10 @@ def convert_xrk_files(folder: str, progress_cb: Optional[Callable[[str], None]] 
         try:
             buf = _io.StringIO()
             with contextlib.redirect_stdout(buf):
-                _xrk.xrk_to_csv(xrk_path, csv_path, dll_path)
+                if dll_path:
+                    _xrk.xrk_to_csv(xrk_path, csv_path, dll_path)
+                else:
+                    libxrk_fn(xrk_path, csv_path)
             new_csvs.append(csv_path)
         except SystemExit as e:
             if progress_cb:

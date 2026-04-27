@@ -98,9 +98,9 @@
     <!-- AIM Mychron DLL -->
     <section class="settings-section">
       <div class="section-title">AIM Mychron</div>
-      <p class="section-hint">AIM .xrk / .xrz / .drk files are converted to CSV automatically on scan. This requires the MatLabXRK DLL provided free by AIM.</p>
+      <p class="section-hint">AIM .xrk / .xrz / .drk files are converted to CSV automatically on scan.</p>
       <div id="aim-dll-status" class="form-row" style="font-size:10px;color:var(--text3)">Checking…</div>
-      <div class="form-row" style="margin-top:6px">
+      <div class="form-row" id="aim-dll-row" style="margin-top:6px">
         <button class="btn btn-secondary" id="aim-dll-btn">Download DLL</button>
         <span id="aim-dll-msg" class="status-msg"></span>
       </div>
@@ -389,13 +389,26 @@
     // AIM DLL status + download
     function _refreshAimStatus() {
       API.aimDllStatus().then(r => {
-        const el = $('aim-dll-status');
+        const el  = $('aim-dll-status');
+        const row = $('aim-dll-row');
         if (!el) return;
-        if (r && r.found) {
+        const found        = !!(r && r.found);
+        const libxrkOK     = !!(r && r.libxrk_available);
+        const xrkSupported = !!(r && r.xrk_supported);
+        const isWindows    = !!(r && r.is_windows);
+
+        if (found) {
           el.innerHTML = '<span style="color:var(--ok)">● MatLabXRK DLL found — AIM XRK conversion available.</span>';
+        } else if (libxrkOK) {
+          el.innerHTML = '<span style="color:var(--ok)">● libxrk available — AIM XRK conversion available (cross-platform reader).</span>';
+        } else if (isWindows) {
+          el.innerHTML = '<span style="color:var(--text3)">○ MatLabXRK DLL not found — click below to install, or `pip install libxrk` for the cross-platform reader.</span>';
         } else {
-          el.innerHTML = '<span style="color:var(--text3)">○ MatLabXRK DLL not found — AIM XRK conversion unavailable.</span>';
+          el.innerHTML = '<span style="color:var(--text3)">○ XRK reader not installed — run `pip install libxrk` and restart OpenLap.</span>';
         }
+
+        // The DLL-download button only helps on Windows; hide it elsewhere.
+        if (row) row.style.display = isWindows ? '' : 'none';
       }).catch(() => {});
     }
     _refreshAimStatus();

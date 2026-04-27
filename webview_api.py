@@ -996,7 +996,14 @@ class WebviewAPI:
 
     # ── AIM DLL status ────────────────────────────────────────────────────────
     def aim_dll_status(self) -> dict:
-        """Return whether the AIM MatLabXRK DLL is present."""
+        """Return AIM XRK reader availability.
+
+        Two readers exist:
+          - Windows-only MatLabXRK DLL (downloaded from aim-sportline.com)
+          - Cross-platform libxrk (PyPI; ships native wheels for win/mac/linux)
+        Either one is sufficient for XRK conversion. Frontend uses
+        `xrk_supported` to decide whether to show AIM-related UI.
+        """
         import glob as _glob, sys, os
         from pathlib import Path
         # Persistent user directory is checked first so the DLL survives app rebuilds.
@@ -1005,11 +1012,26 @@ class WebviewAPI:
             search_dirs += [sys._MEIPASS, os.path.dirname(sys.executable)]
         else:
             search_dirs.append(os.path.dirname(os.path.abspath(__file__)))
+        dll_path = ''
         for base in search_dirs:
             dlls = _glob.glob(os.path.join(base, 'MatLabXRK*.dll'))
             if dlls:
-                return {'found': True, 'path': dlls[0]}
-        return {'found': False, 'path': ''}
+                dll_path = dlls[0]
+                break
+
+        try:
+            import libxrk  # noqa: F401
+            libxrk_available = True
+        except ImportError:
+            libxrk_available = False
+
+        return {
+            'found': bool(dll_path),
+            'path': dll_path,
+            'libxrk_available': libxrk_available,
+            'xrk_supported': bool(dll_path) or libxrk_available,
+            'is_windows': sys.platform == 'win32',
+        }
 
     def download_aim_dll(self) -> dict:
         """Download the AIM MatLabXRK DLL from aim-sportline.com in a background thread.
@@ -1068,7 +1090,6 @@ class WebviewAPI:
         if not actual_xrk:
             return {'ok': False, 'error': 'XRK source file not found'}
         try:
-            import xrk_to_csv as _xrk
             import glob as _glob, sys
             from pathlib import Path
             search_dirs = [str(Path.home() / '.openlap')]
@@ -1081,7 +1102,12 @@ class WebviewAPI:
                  for d in [_glob.glob(os.path.join(base, 'MatLabXRK*.dll'))] if d),
                 None
             )
-            _xrk.xrk_to_csv(actual_xrk, csv_path, dll_path)
+            if dll_path:
+                import xrk_to_csv as _xrk
+                _xrk.xrk_to_csv(actual_xrk, csv_path, dll_path)
+            else:
+                from xrk_to_csv_libxrk import xrk_to_csv_libxrk
+                xrk_to_csv_libxrk(actual_xrk, csv_path)
             return {'ok': True}
         except Exception as e:
             return {'ok': False, 'error': str(e)}

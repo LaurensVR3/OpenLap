@@ -18,6 +18,10 @@ dependencies = [
     "opencv-python>=4.8",
     "pandas>=2.0",
     "pywebview>=5.0",
+    # AIM XRK reader. Windows has the option of the AIM-distributed MatLabXRK
+    # DLL (downloaded at runtime from aim-sportline.com); macOS/Linux must use
+    # libxrk because AIM does not ship a native binary for those platforms.
+    "libxrk>=0.10; sys_platform != 'win32'",
 ]
 
 [project.optional-dependencies]
