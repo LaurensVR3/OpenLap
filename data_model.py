@@ -51,6 +51,7 @@ class DataPoint:
             gyro_y     = float(row['GyroY']),
             gyro_z     = float(row['GyroZ']),
             lean_angle = -float(row.get('LeanAngle', 0.0)) if is_bike else 0.0,
+            rpm        = float(row['Rpm']),
         )
 
 
