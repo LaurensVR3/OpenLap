@@ -12,6 +12,14 @@ import os
 import sys
 from pathlib import Path
 
+import matplotlib
+# Use the headless Agg backend explicitly
+matplotlib.use('Agg')
+# FORCE WINDOWS-LIKE TEXT SAFETY BOUNDS ON LINUX
+# This tells Matplotlib to render text safely by fallback pathways 
+# rather than passing extreme vector coordinates to your Linux glibc FreeType library.
+matplotlib.rcParams['text.usetex'] = False
+matplotlib.rcParams['svg.fonttype'] = 'path'
 
 def _setup_logging() -> None:
     log_dir = Path.home() / '.openlap' / 'logs'
@@ -72,7 +80,8 @@ def main():
 
     # Use GUI thread blocking call — webview.start() must be on main thread.
     # Disable DevTools in packaged builds; keep enabled when running from source.
-    webview.start(debug=not getattr(sys, 'frozen', False), icon=_icon)
+    # pop-os 24.04 needs "private_mode=False" or user videos are no shown on Data window
+    webview.start(debug=not getattr(sys, 'frozen', False), icon=_icon, private_mode=False)
 
 
 if __name__ == '__main__':
