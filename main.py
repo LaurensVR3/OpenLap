@@ -80,8 +80,7 @@ def main():
 
     # Use GUI thread blocking call — webview.start() must be on main thread.
     # Disable DevTools in packaged builds; keep enabled when running from source.
-    # pop-os 24.04 needs "private_mode=False" or user videos are no shown on Data window
-    webview.start(debug=not getattr(sys, 'frozen', False), icon=_icon, private_mode=False)
+    webview.start(debug=not getattr(sys, 'frozen', False), icon=_icon)
 
 
 if __name__ == '__main__':
