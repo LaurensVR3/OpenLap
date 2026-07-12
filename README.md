@@ -28,6 +28,9 @@ Double-click `OpenLap.exe`.
 
 > **Windows SmartScreen warning?** Windows shows this for all software that isn't commercially signed. OpenLap is open source and safe. Click **More info**, then **Run anyway**.
 
+> **Run-time error?**
+Right-click C:\OpenLab_internal\pythonnet\runtime\Python.Runtime.dll and select Properties. On the General tab there is a Security section at the bottom. Mark Unblock.
+
 **4. Set up your folders (Settings tab)**
 
 When the app opens, go to the **Settings tab first** and tell it where your files live:
