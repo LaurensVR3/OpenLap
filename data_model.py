@@ -51,12 +51,8 @@ class DataPoint:
             gyro_y     = float(row['GyroY']),
             gyro_z     = float(row['GyroZ']),
             lean_angle = -float(row.get('LeanAngle', 0.0)) if is_bike else 0.0,
-            # FIX: Fall back to 0.0 if 'Rpm' is missing (case-insensitive fallback included for safety)
-            #rpm        = float(row.get('Rpm', row.get('rpm', 0.0))),
             # FIX: Only convert to float if raw_rpm is not None/empty string, else default to 0.0
-            # FIX: Safely parse missing keys, empty strings, or None values inline
             rpm        = float(row.get('Rpm') or row.get('rpm')) if (row.get('Rpm') or row.get('rpm')) not in (None, "", "None", 0.0) else 0.0,
-
         )
 
 
