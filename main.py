@@ -69,6 +69,10 @@ def main():
     )
 
     api.set_window(window)
+    
+    # KEEP DEBUG BACKENDS ACTIVE BUT DISABLE AUTOMATIC POPUPS
+    # This leaves F12 and right-click functional without forcing the inspector open on startup
+    webview.settings['OPEN_DEVTOOLS_IN_DEBUG'] = False
 
     # Use GUI thread blocking call — webview.start() must be on main thread.
     # Disable DevTools in packaged builds; keep enabled when running from source.
