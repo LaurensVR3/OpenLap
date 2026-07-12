@@ -56,7 +56,20 @@ def main():
     if sys.platform != 'darwin':
         candidate = str(_BASE / 'frontend' / 'icon.ico')
         if os.path.isfile(candidate):
-            _icon = candidate
+            # FIX: If on Linux, safely convert the compressed .ico container into a clean, 
+            # standard uncompressed temporary PNG file to prevent GDK-Pixbuf crashes.
+            if sys.platform == 'linux':
+                try:
+                    from PIL import Image
+                    linux_png_icon = str(_BASE / 'frontend' / '.icon_linux_runtime.png')
+                    if not os.path.isfile(linux_png_icon):
+                        with Image.open(candidate) as img:
+                            img.save(linux_png_icon, 'PNG')
+                    _icon = linux_png_icon
+                except Exception:
+                    _icon = None  # Fallback to generic system icon if PIL fails
+            else:
+                _icon = candidate
 
     window = webview.create_window(
         title      = 'OpenLap',
