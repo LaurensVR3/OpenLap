@@ -21,6 +21,40 @@ def test_detect_bike_requires_both_conditions():
     assert _detect_bike(cols) is False
 
 
+# ── DataPoint.from_row — RPM (optional field on custom RaceBox-format devices) ──
+
+def _base_row(**overrides):
+    row = {
+        'Record': '0', 'Time': '2024-06-15T10:00:00Z',
+        'Latitude': '50.0', 'Longitude': '4.0', 'Altitude': '100.0',
+        'Speed': '120.0', 'GForceX': '0.1', 'GForceY': '0.2', 'GForceZ': '1.0',
+        'Lap': '1', 'GyroX': '0.0', 'GyroY': '0.0', 'GyroZ': '0.0',
+    }
+    row.update(overrides)
+    return row
+
+
+def test_from_row_rpm_defaults_to_zero_when_column_absent():
+    # Stock RaceBox exports have no Rpm column — must not regress to a crash or non-zero value
+    pt = DataPoint.from_row(_base_row(), is_bike=False)
+    assert pt.rpm == pytest.approx(0.0)
+
+
+def test_from_row_rpm_parses_pascal_case_column():
+    pt = DataPoint.from_row(_base_row(Rpm='8500'), is_bike=False)
+    assert pt.rpm == pytest.approx(8500.0)
+
+
+def test_from_row_rpm_parses_lowercase_column():
+    pt = DataPoint.from_row(_base_row(rpm='7200'), is_bike=False)
+    assert pt.rpm == pytest.approx(7200.0)
+
+
+def test_from_row_rpm_empty_string_defaults_to_zero():
+    pt = DataPoint.from_row(_base_row(Rpm=''), is_bike=False)
+    assert pt.rpm == pytest.approx(0.0)
+
+
 # ── load_csv — basic session shape ─────────────────────────────────────────────
 
 def test_load_csv_car_is_not_bike(racebox_car_session):
