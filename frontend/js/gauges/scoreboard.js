@@ -86,10 +86,12 @@ const GaugeScoreboard = {
       ctx.font      = `${fsLabel}px 'Segoe UI', sans-serif`;
       ctx.fillText(lbl, padL, yLbl);
 
-      // Value (right-aligned, monospace)
+      // Value (right-aligned, monospace) — budget is the right ~55% of the row
+      // so a long value shrinks instead of running under the label column.
+      const fsValueFit = GaugeBase.fitFontSize(ctx, val, fsValue, 'bold', w * 0.55, 8, "'Consolas', monospace");
       ctx.textAlign  = 'right';
       ctx.fillStyle  = col;
-      ctx.font       = `bold ${fsValue}px 'Consolas', monospace`;
+      ctx.font       = `bold ${fsValueFit}px 'Consolas', monospace`;
       ctx.fillText(val, w * 0.97, yVal);
     }
   }

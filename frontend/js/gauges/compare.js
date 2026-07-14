@@ -134,12 +134,13 @@ const GaugeCompare = {
     ctx.font         = `${fsLabel}px 'Segoe UI', sans-serif`;
     ctx.fillText(label, w * 0.04, h * 0.05);
 
-    // Value (right panel, top)
-    const valStr = GaugeBase.fmtValue(value, channel);
+    // Value (right panel, top) — budget is the panel right of the chart area.
+    const valStr   = GaugeBase.fmtValue(value, channel);
+    const fsValFit = GaugeBase.fitFontSize(ctx, valStr, fsVal, 'bold', w * 0.97 - (cX + cW));
     ctx.textBaseline = 'top';
     ctx.textAlign    = 'right';
     ctx.fillStyle    = lineCol;
-    ctx.font         = `bold ${fsVal}px 'Segoe UI', sans-serif`;
+    ctx.font         = `bold ${fsValFit}px 'Segoe UI', sans-serif`;
     ctx.fillText(valStr, w * 0.97, h * 0.08);
 
     if (unit) {

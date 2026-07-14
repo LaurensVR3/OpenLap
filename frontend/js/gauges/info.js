@@ -79,8 +79,9 @@ const GaugeInfo = {
       ctx.font      = `${fsLabel}px 'Segoe UI', sans-serif`;
       ctx.fillText(lbl, padL, yLbl);
 
+      const fsValueFit = GaugeBase.fitFontSize(ctx, val, fsValue, 'bold', w - padL * 2);
       ctx.fillStyle  = theme.text;
-      ctx.font       = `bold ${fsValue}px 'Segoe UI', sans-serif`;
+      ctx.font       = `bold ${fsValueFit}px 'Segoe UI', sans-serif`;
       ctx.fillText(val, padL, yVal);
     }
   }

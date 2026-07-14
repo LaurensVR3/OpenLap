@@ -18,7 +18,7 @@ from matplotlib.patches import FancyBboxPatch
 
 
 def render(data: dict, w: int, h: int):
-    from overlay_utils import fig_to_rgba, scale_factor
+    from overlay_utils import fig_to_rgba, scale_factor, fit_text_to_width
 
     value   = data.get('value',   0.0)
     label   = data.get('label',   '')
@@ -70,9 +70,10 @@ def render(data: dict, w: int, h: int):
     ax.text(0.50, 0.78, label.upper(),
             ha='center', va='center', color=label_col,
             fontsize=fs_label, fontfamily='sans-serif')
-    ax.text(0.50, 0.50, txt,
+    value_text = ax.text(0.50, 0.50, txt,
             ha='center', va='center', color=text_col,
             fontsize=fs_value, fontweight='bold', fontfamily='sans-serif')
+    fit_text_to_width(fig, value_text, w * 0.90)
     ax.text(0.50, 0.24, unit,
             ha='center', va='center', color=unit_col,
             fontsize=fs_unit, fontfamily='sans-serif')

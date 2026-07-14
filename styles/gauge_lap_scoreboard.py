@@ -25,7 +25,7 @@ def _fmt_time(secs: float) -> str:
 
 
 def render(data: dict, w: int, h: int):
-    from overlay_utils import fig_to_rgba
+    from overlay_utils import fig_to_rgba, fit_text_to_width
 
     T         = data.get('_tc', {})
     bg_rgba   = T.get('bg_rgba',      (0.04, 0.06, 0.10, 0.78))
@@ -116,9 +116,12 @@ def render(data: dict, w: int, h: int):
         ax.text(pad_l, y_lbl, lbl,
                 ha='left', va='center', color=label_col,
                 fontsize=fs_label, fontfamily='sans-serif', zorder=4)
-        ax.text(0.97, y_val, val,
+        value_text = ax.text(0.97, y_val, val,
                 ha='right', va='center', color=col,
                 fontsize=fs_value, fontweight='bold',
                 fontfamily='monospace', zorder=4)
+        # Budget is the right ~55% of the row so long values shrink instead of
+        # running under the label column. Mirrors scoreboard.js.
+        fit_text_to_width(fig, value_text, w * 0.55)
 
     return fig_to_rgba(fig, (w, h))

@@ -75,8 +75,9 @@ const GaugeSectorBar = {
       // Delta
       const sign   = s.delta >= 0 ? '+' : '';
       const dStr   = `${sign}${s.delta.toFixed(2)}`;
+      const fsFit  = GaugeBase.fitFontSize(ctx, dStr, fs, 'bold', boxW * 0.90);
       ctx.fillStyle = 'white';
-      ctx.font      = `bold ${fs}px 'Segoe UI', sans-serif`;
+      ctx.font      = `bold ${fsFit}px 'Segoe UI', sans-serif`;
       ctx.fillText(dStr, cursor + boxW / 2, boxY1 + boxH * 0.68);
 
       cursor += boxW + GAP;

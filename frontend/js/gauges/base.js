@@ -184,6 +184,31 @@ function scaleFont(baseSize, w, h, baseW = 120, baseH = 160) {
 }
 
 /**
+ * Shrink a font size so `text` rendered at that size does not exceed maxWidthPx.
+ * Mirrors fit_text_to_width() in overlay_utils.py.
+ *
+ * Sets ctx.font as a side effect (to fontSizePx) so ctx.measureText reflects the
+ * candidate size; caller must re-set ctx.font with the returned size before drawing.
+ *
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {string} text
+ * @param {number} fontSizePx    — candidate size (upper bound) to start from
+ * @param {string} fontWeight    — e.g. '' or 'bold'
+ * @param {number} maxWidthPx    — available width budget in px
+ * @param {number} minFontSizePx — floor for the shrunk size
+ * @param {string} fontFamily    — must match the family the caller will draw with
+ * @returns {number} fontSizePx, shrunk if necessary
+ */
+function fitFontSize(ctx, text, fontSizePx, fontWeight, maxWidthPx, minFontSizePx = 8, fontFamily = "'Segoe UI', sans-serif") {
+  ctx.font = `${fontWeight} ${fontSizePx}px ${fontFamily}`.trim();
+  const width = ctx.measureText(text).width;
+  if (width <= maxWidthPx || width <= 0) return fontSizePx;
+  // Never grow past fontSizePx — if it's already <= minFontSizePx, the best we
+  // can do is leave it alone rather than clamp upward to minFontSizePx.
+  return Math.min(fontSizePx, Math.max(minFontSizePx, Math.floor(fontSizePx * (maxWidthPx / width))));
+}
+
+/**
  * Format a numeric gauge value to a display string.
  * Mirrors the formatting logic in gauge_numeric.py.
  *
@@ -221,4 +246,4 @@ function fmtTime(secs) {
 }
 
 // Export as a namespace object (no ES module build step required)
-const GaugeBase = { getTheme, roundRect, drawBackground, drawAccentBar, scaleFont, fmtValue, fmtTime, THEMES };
+const GaugeBase = { getTheme, roundRect, drawBackground, drawAccentBar, scaleFont, fitFontSize, fmtValue, fmtTime, THEMES };

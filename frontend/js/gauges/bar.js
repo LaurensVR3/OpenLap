@@ -89,11 +89,12 @@ const GaugeBar = {
     }
 
     // Value text (between bar and sparkline)
-    const valStr = unit ? `${value.toFixed(1)} ${unit}` : value.toFixed(1);
+    const valStr    = unit ? `${value.toFixed(1)} ${unit}` : value.toFixed(1);
+    const fsValFit  = GaugeBase.fitFontSize(ctx, valStr, fsVal, 'bold', barW);
     ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle    = fillCol || theme.fillLo;
-    ctx.font         = `bold ${fsVal}px 'Segoe UI', sans-serif`;
+    ctx.font         = `bold ${fsValFit}px 'Segoe UI', sans-serif`;
     ctx.fillText(valStr, w * 0.5, h * 0.25);
 
     // Sparkline (bottom zone: 5%–27% of height)

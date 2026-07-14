@@ -42,8 +42,9 @@ const GaugeDelta = {
     ctx.fillText(label, w * 0.5, h * 0.20);
 
     // Value
+    const fsValueFit = GaugeBase.fitFontSize(ctx, txt, fsValue, 'bold', w * 0.90);
     ctx.fillStyle  = colour;
-    ctx.font       = `bold ${fsValue}px 'Segoe UI', sans-serif`;
+    ctx.font       = `bold ${fsValueFit}px 'Segoe UI', sans-serif`;
     ctx.fillText(txt, w * 0.5, h * 0.54);
 
     // Sparkline (bottom 18% of height)

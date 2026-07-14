@@ -51,7 +51,7 @@ def _sector_colour(delta: float):
 
 
 def render(data: dict, w: int, h: int):
-    from overlay_utils import fig_to_rgba, scale_factor
+    from overlay_utils import fig_to_rgba, scale_factor, fit_text_to_width
 
     sectors = data.get('sectors', [])
     T       = data.get('_tc', {})
@@ -127,11 +127,12 @@ def render(data: dict, w: int, h: int):
 
         # Delta (centre)
         sign = '+' if delta >= 0 else ''
-        ax.text(cursor + box_w / 2, (BOX_Y1 + BOX_Y2) / 2,
+        delta_text = ax.text(cursor + box_w / 2, (BOX_Y1 + BOX_Y2) / 2,
                 f'{sign}{delta:.2f}',
                 ha='center', va='center',
                 color='white', fontweight='bold',
                 fontsize=fs, fontfamily='sans-serif')
+        fit_text_to_width(fig, delta_text, box_w * w * 0.90)
 
         cursor += box_w + GAP
 

@@ -156,10 +156,12 @@ const GaugeMultiline = {
       if (unit) valStr += '\u202f' + unit;
 
       // Combined label + value
-      const combined = `${label.padEnd(6)}  ${valStr}`;
+      const combined  = `${label.padEnd(6)}  ${valStr}`;
+      const textX     = legendX + swatchW + 4;
+      const fsLegFit  = GaugeBase.fitFontSize(ctx, combined, fsLeg, 'bold', w - textX - w * 0.02);
       ctx.fillStyle  = colour;
-      ctx.font       = `bold ${fsLeg}px 'Segoe UI', sans-serif`;
-      ctx.fillText(combined, legendX + swatchW + 4, yCentre);
+      ctx.font       = `bold ${fsLegFit}px 'Segoe UI', sans-serif`;
+      ctx.fillText(combined, textX, yCentre);
     }
   }
 };

@@ -36,7 +36,7 @@ def _delta_colour(delta: float) -> str:
 
 
 def render(data: dict, w: int, h: int):
-    from overlay_utils import fig_to_rgba, scale_factor
+    from overlay_utils import fig_to_rgba, scale_factor, fit_text_to_width
 
     value    = data.get('value', 0.0)
     history  = data.get('history_vals', [0.0])
@@ -80,9 +80,10 @@ def render(data: dict, w: int, h: int):
             ha='center', va='center', color=label_col,
             fontsize=fs_label, fontfamily='sans-serif')
 
-    ax.text(0.50, 0.46, txt,
+    value_text = ax.text(0.50, 0.46, txt,
             ha='center', va='center', color=colour,
             fontsize=fs_value, fontweight='bold', fontfamily='sans-serif')
+    fit_text_to_width(fig, value_text, w * 0.90)
 
     # ── Sparkline (delta history trend) ───────────────────────────────────────
     if len(history) >= 2:

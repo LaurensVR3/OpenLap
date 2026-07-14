@@ -51,7 +51,7 @@ def _delta_colour(value: float) -> str:
 
 
 def render(data: dict, w: int, h: int):
-    from overlay_utils import fig_to_rgba, scale_factor
+    from overlay_utils import fig_to_rgba, scale_factor, fit_text_to_width
 
     entries = data.get('multi_channels', [])
     T       = data.get('_tc', {})
@@ -177,10 +177,12 @@ def render(data: dict, w: int, h: int):
         # Single combined line: "LABEL  val unit"
         short_label = label[:6].upper()
         combined    = f'{short_label:<6}  {val_str}'
-        ax_bg.text(legend_x + 0.032, y_centre,
+        text_x      = legend_x + 0.032
+        combined_text = ax_bg.text(text_x, y_centre,
                    combined,
                    ha='left', va='center', color=colour,
                    fontsize=fs_leg, fontweight='bold', fontfamily='sans-serif',
                    transform=ax_bg.transAxes)
+        fit_text_to_width(fig, combined_text, (1.0 - text_x - 0.02) * w)
 
     return fig_to_rgba(fig, (w, h))

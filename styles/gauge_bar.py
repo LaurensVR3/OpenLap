@@ -19,7 +19,7 @@ from matplotlib.patches import FancyBboxPatch
 
 
 def render(data: dict, w: int, h: int):
-    from overlay_utils import fig_to_rgba, scale_factor
+    from overlay_utils import fig_to_rgba, scale_factor, fit_text_to_width
 
     value     = data.get('value',       0.0)
     hist      = data.get('history_vals', [value])
@@ -101,9 +101,10 @@ def render(data: dict, w: int, h: int):
 
     # Value text (middle zone: 0.34 – 0.48, safely between bar and sparkline)
     val_str = f"{value:.1f} {unit}" if unit else f"{value:.1f}"
-    ax.text(0.50, 0.41, val_str,
+    value_text = ax.text(0.50, 0.41, val_str,
             ha='center', va='center', color=val_col,
             fontsize=fs_val, fontweight='bold', fontfamily='sans-serif')
+    fit_text_to_width(fig, value_text, bar_w * w)
 
     # Sparkline (bottom zone: 0.05 – 0.27, never reaches value text)
     # High values plot at top of zone, low values at bottom — correct orientation.

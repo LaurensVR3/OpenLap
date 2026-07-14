@@ -40,7 +40,8 @@ const GaugeNumeric = {
     ctx.font      = `${fsLabel}px 'Segoe UI', sans-serif`;
     ctx.fillText(label, w * 0.5, h * 0.22);
 
-    // Value (centre)
+    // Value (centre) — shrink to fit so long strings never overflow the gauge
+    fsValue = GaugeBase.fitFontSize(ctx, txt, fsValue, 'bold', w * 0.90);
     ctx.fillStyle  = theme.text;
     ctx.font       = `bold ${fsValue}px 'Segoe UI', sans-serif`;
     ctx.fillText(txt, w * 0.5, h * 0.50);

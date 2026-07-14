@@ -111,10 +111,16 @@ const GaugeLean = {
     const direction = value > 0 ? 'R' : (value < 0 ? 'L' : '');
     const valStr    = `${direction}${absLean.toFixed(1)}${unit}`;
 
+    // Horizontal budget = chord of the background circle at the value text's
+    // vertical offset, so long strings shrink instead of poking outside it.
+    const valueDy   = R * 0.82;
+    const chordHalf = Math.sqrt(Math.max(0, R * R - valueDy * valueDy));
+    const fsValFit  = GaugeBase.fitFontSize(ctx, valStr, fsVal, 'bold', chordHalf * 2 * 0.85);
+
     ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle    = leanCol;
-    ctx.font         = `bold ${fsVal}px 'Segoe UI', sans-serif`;
+    ctx.font         = `bold ${fsValFit}px 'Segoe UI', sans-serif`;
     ctx.fillText(valStr, cx, cy + R * 0.82);
 
     ctx.fillStyle = theme.label;

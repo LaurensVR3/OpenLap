@@ -32,7 +32,7 @@ from matplotlib.patches import FancyBboxPatch, Rectangle
 
 
 def render(data: dict, w: int, h: int):
-    from overlay_utils import fig_to_rgba, scale_factor
+    from overlay_utils import fig_to_rgba, scale_factor, fit_text_to_width
 
     cur_elapsed = data.get('value',   0.0)
     sectors     = data.get('sectors', [])
@@ -64,6 +64,8 @@ def render(data: dict, w: int, h: int):
     fs_title  = max(5, min(int(8 * sc), int(w * 0.09)))
     fs_row    = max(5, min(int(9 * sc), int(w * 0.09)))
     fs_hdr    = max(4, min(int(6 * sc), int(w * 0.075)))
+    # Per-column width budget for shrink-to-fit (columns are ~0.24-0.26 apart)
+    col_budget = w * 0.20
 
     ax.text(0.50, 0.93, 'SPLITS',
             ha='center', va='center', color=label_col,
@@ -111,19 +113,22 @@ def render(data: dict, w: int, h: int):
 
         row_y = y + row_h * 0.5
 
-        ax.text(0.12, row_y, f'S{num}',
+        s_num_text = ax.text(0.12, row_y, f'S{num}',
                 ha='center', va='center', color=text_col,
                 fontsize=fs_row, fontfamily='sans-serif')
+        fit_text_to_width(fig, s_num_text, col_budget)
 
         ref_str = f'{ref_t:.2f}' if ref_t is not None else '\u2014'
-        ax.text(0.38, row_y, ref_str,
+        ref_text = ax.text(0.38, row_y, ref_str,
                 ha='center', va='center', color='#888888',
                 fontsize=fs_row, fontfamily='sans-serif')
+        fit_text_to_width(fig, ref_text, col_budget)
 
         if cur_t is not None:
-            ax.text(0.62, row_y, f'{cur_t:.2f}',
+            cur_text = ax.text(0.62, row_y, f'{cur_t:.2f}',
                     ha='center', va='center', color=text_col,
                     fontsize=fs_row, fontfamily='sans-serif')
+            fit_text_to_width(fig, cur_text, col_budget)
             if delta is not None:
                 if abs(delta) < 0.01:
                     d_col = '#e8e8e8'
@@ -131,9 +136,10 @@ def render(data: dict, w: int, h: int):
                     d_col = '#22dd66'
                 else:
                     d_col = '#ff4444'
-                ax.text(0.87, row_y, f'{delta:+.2f}',
+                delta_text = ax.text(0.87, row_y, f'{delta:+.2f}',
                         ha='center', va='center', color=d_col,
                         fontsize=fs_row, fontweight='bold', fontfamily='sans-serif')
+                fit_text_to_width(fig, delta_text, col_budget)
         else:
             dim = '#444444'
             ax.text(0.62, row_y, '\u2014', ha='center', va='center',

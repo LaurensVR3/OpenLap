@@ -15,6 +15,27 @@ def scale_factor(vw: int, vh: int, base_w: int = 1920, base_h: int = 1080) -> fl
     return math.sqrt((vw * vh) / (base_w * base_h))
 
 
+def fit_text_to_width(fig, text_obj, max_width_px: float, min_fontsize: float = 6) -> float:
+    """
+    Shrink a matplotlib Text artist's fontsize in place so its rendered width
+    does not exceed max_width_px. Mirrors fitFontSize() in frontend/js/gauges/base.js.
+
+    Uses get_window_extent(), which only needs a renderer (via
+    fig.canvas.get_renderer()) to compute real glyph metrics — it does not require
+    a full figure draw, so this is cheap to call once per text item per frame.
+    """
+    renderer = fig.canvas.get_renderer()
+    width = text_obj.get_window_extent(renderer=renderer).width
+    if width <= max_width_px or width <= 0:
+        return text_obj.get_fontsize()
+    fs = text_obj.get_fontsize()
+    # Never grow past fs — if fs is already <= min_fontsize, the best we can do
+    # is leave it alone rather than clamp upward to min_fontsize.
+    new_fs = min(fs, max(min_fontsize, fs * (max_width_px / width)))
+    text_obj.set_fontsize(new_fs)
+    return new_fs
+
+
 def fig_to_rgba(fig, size: Tuple[int, int]) -> np.ndarray:
     """
     Convert a matplotlib figure to an RGBA numpy array at exactly (w, h) pixels.

@@ -111,12 +111,14 @@ const GaugeLine = {
     ctx.font         = `${fsLabel}px 'Segoe UI', sans-serif`;
     ctx.fillText(label, w * 0.04, h * 0.05);
 
-    // Value readout (right panel, upper half)
-    const valStr = GaugeBase.fmtValue(value, channel);
+    // Value readout (right panel, upper half) — budget is the panel right of
+    // the chart area (from cX+cW to the right edge).
+    const valStr   = GaugeBase.fmtValue(value, channel);
+    const fsValFit = GaugeBase.fitFontSize(ctx, valStr, fsVal, 'bold', w * 0.97 - (cX + cW));
     ctx.textBaseline = 'middle';
     ctx.textAlign    = 'right';
     ctx.fillStyle    = lineCol;
-    ctx.font         = `bold ${fsVal}px 'Segoe UI', sans-serif`;
+    ctx.font         = `bold ${fsValFit}px 'Segoe UI', sans-serif`;
     ctx.fillText(valStr, w * 0.97, h * 0.44);
 
     if (unit) {

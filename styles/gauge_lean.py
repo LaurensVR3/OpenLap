@@ -23,7 +23,7 @@ from matplotlib.transforms import Affine2D
 
 
 def render(data: dict, w: int, h: int):
-    from overlay_utils import fig_to_rgba, scale_factor
+    from overlay_utils import fig_to_rgba, scale_factor, fit_text_to_width
 
     value   = data.get('value',   0.0)
     label   = data.get('label',   'Lean')
@@ -106,9 +106,17 @@ def render(data: dict, w: int, h: int):
     direction = 'R' if value > 0 else ('L' if value < 0 else '')
     val_str   = f"{direction}{abs_lean:.1f}{unit}"
 
-    ax.text(0, -0.82, val_str,
+    # Horizontal budget = chord of the background circle at the value text's
+    # vertical offset (axes units converted to px). Mirrors lean.js.
+    value_dy    = 0.82
+    chord_half  = (max(0.0, 0.98 ** 2 - value_dy ** 2)) ** 0.5
+    px_per_unit = w / 2.0  # xlim spans -1..1
+    value_max_width = chord_half * 2 * px_per_unit * 0.85
+
+    value_text = ax.text(0, -0.82, val_str,
             ha='center', va='center', color=val_col,
             fontsize=fs_val, fontweight='bold', fontfamily='sans-serif', zorder=6)
+    fit_text_to_width(fig, value_text, value_max_width)
     ax.text(0, 0.85, label.upper(),
             ha='center', va='center', color=label_col,
             fontsize=fs_label, fontfamily='sans-serif', zorder=6)

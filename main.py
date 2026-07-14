@@ -12,6 +12,13 @@ import os
 import sys
 from pathlib import Path
 
+import matplotlib
+# Force the headless Agg backend before any other import can trigger matplotlib's
+# default backend auto-selection (which may pick a GUI toolkit backend that isn't
+# available in a windowless/Linux environment). Every styles/*.py module also sets
+# this, but setting it here first avoids relying on import order.
+matplotlib.use('Agg')
+
 
 def _setup_logging() -> None:
     log_dir = Path.home() / '.openlap' / 'logs'

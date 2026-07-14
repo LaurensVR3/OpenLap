@@ -136,8 +136,15 @@ const GaugeDial = {
     ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';
 
+    // Horizontal budget = chord of the track ring at the value text's vertical
+    // offset, so long strings shrink instead of poking outside the ring.
+    const valueDy      = R * 0.15;
+    const chordHalf     = Math.sqrt(Math.max(0, R_TRACK * R_TRACK - valueDy * valueDy));
+    const valueMaxWidth = chordHalf * 2 * 0.85;
+    const fsValueFit    = GaugeBase.fitFontSize(ctx, valStr, fsValue, 'bold', valueMaxWidth);
+
     ctx.fillStyle  = theme.text;
-    ctx.font       = `bold ${fsValue}px 'Segoe UI', sans-serif`;
+    ctx.font       = `bold ${fsValueFit}px 'Segoe UI', sans-serif`;
     ctx.fillText(valStr, cx, cy + R * 0.15);
 
     ctx.fillStyle = theme.unit;

@@ -101,13 +101,15 @@ const GaugeGmeter = {
 
     // G readout (bottom of background area)
     const fsVal = Math.max(8, Math.round(dim * 0.065));
-    ctx.fillStyle    = '#ccccdd';
-    ctx.font         = `${fsVal}px 'Segoe UI', sans-serif`;
-    ctx.textAlign    = 'center';
-    ctx.textBaseline = 'bottom';
     const gxStr = (gxNow >= 0 ? '+' : '') + gxNow.toFixed(2);
     const gyStr = (gyNow >= 0 ? '+' : '') + gyNow.toFixed(2);
-    ctx.fillText(`${gxStr}  /  ${gyStr}`, w * 0.5, h * 0.97);
+    const gReadout = `${gxStr}  /  ${gyStr}`;
+    const fsValFit = GaugeBase.fitFontSize(ctx, gReadout, fsVal, '', w * 0.90);
+    ctx.fillStyle    = '#ccccdd';
+    ctx.font         = `${fsValFit}px 'Segoe UI', sans-serif`;
+    ctx.textAlign    = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(gReadout, w * 0.5, h * 0.97);
 
     // History trace (fading alpha)
     const nTrace = Math.min(60, gxHist.length);

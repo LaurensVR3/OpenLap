@@ -20,7 +20,7 @@ from matplotlib.patches import FancyBboxPatch, Arc, FancyArrowPatch
 
 
 def render(data: dict, w: int, h: int):
-    from overlay_utils import fig_to_rgba, scale_factor
+    from overlay_utils import fig_to_rgba, scale_factor, fit_text_to_width
 
     value     = data.get('value',     0.0)
     label     = data.get('label',     '')
@@ -127,9 +127,18 @@ def render(data: dict, w: int, h: int):
     else:
         val_str = f"{value:.2f}"
 
-    ax.text(0, -0.18, val_str,
+    # Horizontal budget = chord of the track ring at the value text's vertical
+    # offset (axes units converted to px), so long strings shrink instead of
+    # poking outside the ring. Mirrors the same calc in dial.js.
+    value_dy    = 0.18
+    chord_half  = (max(0.0, R_TRACK ** 2 - value_dy ** 2)) ** 0.5
+    px_per_unit = w / 2.4  # xlim spans -1.2..1.2
+    value_max_width = chord_half * 2 * px_per_unit * 0.85
+
+    value_text = ax.text(0, -0.18, val_str,
             ha='center', va='center', color=text_col,
             fontsize=fs_value, fontweight='bold', fontfamily='sans-serif', zorder=6)
+    fit_text_to_width(fig, value_text, value_max_width)
     ax.text(0, -0.72, unit,
             ha='center', va='center', color=unit_col,
             fontsize=fs_unit, fontfamily='sans-serif', zorder=6)

@@ -24,7 +24,7 @@ from matplotlib.patches import Circle, FancyBboxPatch
 
 
 def render(data: dict, w: int, h: int):
-    from overlay_utils import fig_to_rgba
+    from overlay_utils import fig_to_rgba, fit_text_to_width
 
     gx_now   = float(data.get('value',       0.0))
     gy_now   = float(data.get('value_gy',    0.0))
@@ -95,11 +95,12 @@ def render(data: dict, w: int, h: int):
 
     # Current G readout — compact, shown at the bottom of the bg area
     fs_val = max(5, int(size * 0.065))
-    ax_bg.text(0.50, 0.06,
+    g_readout_text = ax_bg.text(0.50, 0.06,
                f'{gx_now:+.2f}  /  {gy_now:+.2f}',
                ha='center', va='bottom', color='#ccccdd',
                fontsize=fs_val, fontfamily='sans-serif',
                transform=ax_bg.transAxes)
+    fit_text_to_width(fig, g_readout_text, w * 0.90)
 
     # History trace (fading)
     n_trace = min(60, len(gx_hist))

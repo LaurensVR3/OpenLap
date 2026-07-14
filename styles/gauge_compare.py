@@ -24,7 +24,7 @@ from matplotlib.patches import FancyBboxPatch
 
 
 def render(data: dict, w: int, h: int):
-    from overlay_utils import fig_to_rgba, scale_factor
+    from overlay_utils import fig_to_rgba, scale_factor, fit_text_to_width
 
     value     = data.get('value',            0.0)
     hist      = data.get('history_vals',     [value])
@@ -131,10 +131,12 @@ def render(data: dict, w: int, h: int):
     else:
         val_str = f"{value:.2f}"
 
-    ax_bg.text(0.97, 0.88, val_str,
+    # Budget is the panel right of the chart area (chart occupies x 0.04–0.74).
+    value_text = ax_bg.text(0.97, 0.88, val_str,
                ha='right', va='top', color=line_col,
                fontsize=fs_val, fontweight='bold', fontfamily='sans-serif',
                transform=ax_bg.transAxes)
+    fit_text_to_width(fig, value_text, (0.97 - 0.74) * w)
     if unit:
         ax_bg.text(0.97, 0.60, unit,
                    ha='right', va='center', color=unit_col,

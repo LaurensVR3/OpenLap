@@ -37,6 +37,34 @@ export function loadPage(relPath) {
   new Function(code)();
 }
 
+/**
+ * Load gauges/base.js and return the GaugeBase namespace object.
+ * base.js defines top-level `const GaugeBase = {...}` with no IIFE wrapper,
+ * so we return it directly from the Function body (same trick as loadState).
+ */
+export function loadGaugeBase() {
+  const code = readFileSync(resolve(JS_ROOT, 'gauges/base.js'), 'utf8');
+  return new Function(`${code}; return GaugeBase;`)();
+}
+
+/**
+ * Minimal CanvasRenderingContext2D stand-in for testing font-fit logic.
+ * jsdom does not implement real text metrics, so measureText() here
+ * approximates width from the font-size number embedded in ctx.font
+ * (set as "<weight> <size>px <family>") and the string length — good enough
+ * to unit-test shrink/clamp behaviour, not for pixel-perfect assertions.
+ */
+export function makeFakeCanvasCtx() {
+  return {
+    font: '',
+    measureText(text) {
+      const m = /(\d+(?:\.\d+)?)px/.exec(this.font);
+      const size = m ? parseFloat(m[1]) : 10;
+      return { width: text.length * size * 0.55 };
+    },
+  };
+}
+
 // ── Mock factories ─────────────────────────────────────────────────────────────
 
 /**
