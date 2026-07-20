@@ -1861,7 +1861,10 @@
         </div>
 
         <!-- Export bar — always visible: this is the one place scope/padding/
-             overlay-only are set, and the only way an export gets started. -->
+             overlay-only are set. "Export Now" queues + starts this session
+             immediately; batching several sessions first and starting them
+             together happens via "+ Add to Queue" here, then "Start Export"
+             on the Export tab. -->
         <div style="padding:6px 16px; border-bottom:1px solid var(--border);
                     display:flex; align-items:center; gap:10px; flex-wrap:wrap; flex-shrink:0;
                     background:var(--bg);">

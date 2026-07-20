@@ -11,11 +11,43 @@
 #   - ffmpeg.exe / ffprobe.exe placed next to this spec (or on PATH)
 #   - All Python deps installed in the active environment
 
-import os, sys, shutil
+import json, os, sys, shutil
+from importlib.metadata import version as _pkg_version
 from pathlib import Path
 import playwright as _pw_mod
 
 HERE = Path(SPECPATH)
+
+# ── Locate the Chromium browser build matching the installed Playwright ───────
+# The playwright PyPI package only ships the Node.js driver; the actual browser
+# binary is downloaded separately (`playwright install chromium`) into
+# %LOCALAPPDATA%\ms-playwright, keyed by a revision number pinned in this
+# package's browsers.json. We bundle that exact revision into the exe so end
+# users never need Playwright or a browser installed themselves. racebox_downloader.py
+# launches with channel="chromium" so only this one build (not the separate
+# chromium-headless-shell package) is ever needed, for both headed and headless use.
+def _find_chromium_build():
+    browsers_json = Path(_pw_mod.__file__).parent / 'driver' / 'package' / 'browsers.json'
+    revision = None
+    for b in json.loads(browsers_json.read_text())['browsers']:
+        if b['name'] == 'chromium':
+            revision = b['revision']
+            break
+    if revision is None:
+        raise SystemExit("Could not find 'chromium' entry in playwright's browsers.json")
+
+    cache_root = Path(os.environ.get('PLAYWRIGHT_BROWSERS_PATH')
+                       or (Path(os.environ['LOCALAPPDATA']) / 'ms-playwright'))
+    build_dir = cache_root / f'chromium-{revision}'
+    if not (build_dir / 'INSTALLATION_COMPLETE').is_file():
+        raise SystemExit(
+            f"Chromium revision {revision} (required by the installed "
+            f"playwright=={_pkg_version('playwright')} package) is not installed "
+            f"at {build_dir}.\nRun `playwright install chromium` before building."
+        )
+    return revision, build_dir
+
+_CHROMIUM_REVISION, _CHROMIUM_DIR = _find_chromium_build()
 
 # ── Locate ffmpeg / ffprobe ───────────────────────────────────────────────────
 def _find_bin(name):
@@ -40,6 +72,10 @@ datas = [
     # Playwright — bundle the entire package including its Node.js driver
     # so RaceBox cloud download works without any extra installs.
     (os.path.dirname(_pw_mod.__file__), 'playwright'),
+    # ...and the actual Chromium browser binary (driver alone can't launch
+    # anything). Lands at <exe dir>/ms-playwright/chromium-<rev>/ — see
+    # rthooks/pyi_rth_path.py, which points PLAYWRIGHT_BROWSERS_PATH there.
+    (str(_CHROMIUM_DIR), f'ms-playwright/chromium-{_CHROMIUM_REVISION}'),
 ]
 
 # AIM / DLL files present in the project root

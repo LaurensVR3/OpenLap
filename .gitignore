@@ -22,3 +22,6 @@ pyproject.spec
 
 # Logs
 *.log
+
+# Runtime-generated cache-busted copy of frontend/index.html (see main.py)
+frontend/.index_v*.html

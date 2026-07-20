@@ -1,12 +1,14 @@
 /**
  * export.js — Export page.
  *
- * This page is a pure queue + progress monitor. The "what to export" decision
+ * This page is a queue + progress monitor. The "what to export" decision
  * (scope, padding, overlay-only) is made once per session on the Overlay tab
  * (see editor.js's export menu) and travels with each queued item — Export
- * has no configuration controls of its own, and no Start button: exports are
- * always triggered from the Overlay tab's "Export Now", which navigates here
- * to watch it run.
+ * has no configuration controls of its own. Exports can be started two ways:
+ * this page's own "Start Export" (runs whatever's already queued, possibly
+ * built up across several sessions via the Overlay tab's "+ Add to Queue"),
+ * or the Overlay tab's "Export Now" (queues the current session and starts
+ * immediately, navigating here to watch it run).
  *
  * Reads queued items from State.get('selectedItems').
  * Receives progress via openlap CustomEvents: export_progress, export_log, export_done.
@@ -109,6 +111,7 @@
       <span class="page-title">Export</span>
     </div>
     <div class="toolbar-right">
+      <button class="btn btn-accent hidden" id="exp-start-btn">▶ Start Export</button>
       <button class="btn btn-secondary hidden" id="exp-cancel-btn">Cancel</button>
     </div>
   </div>
@@ -161,6 +164,26 @@
       await API.cancelExport();
       _setExporting(false);
     });
+    $('exp-start-btn').addEventListener('click', _startExport);
+  }
+
+  // "▶ Start Export": runs whatever is already queued (built via the Overlay
+  // tab's "+ Add to Queue", possibly across several sessions/laps) without
+  // navigating away — the counterpart to editor.js's "Export Now", which
+  // queues-and-starts a single session in one step from the Overlay tab.
+  async function _startExport() {
+    const items = State.get('selectedItems') || [];
+    if (!items.length || _exporting) return;
+
+    const btn = _container?.querySelector('#exp-start-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
+    try {
+      const [cfg, layout] = await Promise.all([API.getConfig(), API.getOverlay()]);
+      const params = ExportParams.buildExportParams({ items, cfg, layout });
+      await API.startExport(params);
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = '▶ Start Export'; }
+    }
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -188,6 +211,7 @@
     if (!list) return;
 
     badge.textContent = items.length;
+    _updateStartBtn(items);
 
     if (!items.length) {
       list.innerHTML = `
@@ -246,9 +270,9 @@
   // ── Event handlers ────────────────────────────────────────────────────────────
 
   function _onProgress(detail) {
-    // Exports are triggered from the Overlay tab (see editor.js's "Export Now"),
-    // possibly before this page has ever mounted — the first progress tick is
-    // what tells this page an export is actually running.
+    // An export can start via the Overlay tab's "Export Now" before this page
+    // has ever mounted — the first progress tick is what tells this page an
+    // export is actually running.
     if (!_exporting) { _setExporting(true); _setBadge('Running', 'badge-run'); }
     // Python progress_cb sends 0–100 directly; clamp to avoid display glitches
     const pct = Math.min(100, Math.max(0, Math.round(detail.value || 0)));
@@ -290,6 +314,13 @@
     if (!_container) return;
     const cancel = _container.querySelector('#exp-cancel-btn');
     if (cancel) cancel.classList.toggle('hidden', !active);
+    _updateStartBtn(State.get('selectedItems') || []);
+  }
+
+  function _updateStartBtn(items) {
+    if (!_container) return;
+    const btn = _container.querySelector('#exp-start-btn');
+    if (btn) btn.classList.toggle('hidden', _exporting || !items.length);
   }
 
   function _setProgress(pct, msg) {
@@ -342,8 +373,9 @@
   // Registered once when the module loads — NOT tied to the Export tab being
   // visible. This ensures progress, log lines, and done state are captured even
   // when the user is on the Data, Overlay, or Settings tab during an export.
-  // Exports are started from the Overlay tab's "Export Now" (see editor.js),
-  // which sets _exporting-equivalent state here via these same push events.
+  // Whichever button starts an export (this page's "Start Export" or the
+  // Overlay tab's "Export Now"), _exporting-equivalent state here is set via
+  // these same push events, not directly by the click handler.
   API.on('export_progress', _onProgress);
   API.on('export_log',      _onLog);
   API.on('export_done',     _onDone);

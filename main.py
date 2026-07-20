@@ -50,6 +50,41 @@ if not FRONTEND_HTML.exists():
     sys.exit(f'Frontend not found at {FRONTEND_HTML}')
 
 
+def _cache_busted_html() -> Path:
+    """Return a copy of index.html with every local script/link URL suffixed
+    ?v=<app version>.
+
+    pywebview's WebView2 profile (%APPDATA%\\pywebview\\EBWebView) is shared by
+    every pywebview app on the machine and reused at the exact same install
+    path across rebuilds/updates — its V8 code cache is keyed by URL, not
+    content, and does not reliably invalidate just because a file's mtime or
+    contents changed underneath the same path. Without a version-varying
+    query string, an updated build can keep serving pre-update JS from cache
+    indefinitely. Written next to the real index.html so relative asset paths
+    (js/..., css/...) keep resolving through pywebview's local static server.
+    Falls back to the unmodified file if the install location isn't writable
+    (e.g. a read-only Program Files install without elevation) — no worse
+    than the pre-existing behavior in that case.
+    """
+    import re
+    from _version import __version__
+
+    try:
+        html = FRONTEND_HTML.read_text(encoding='utf-8')
+
+        def _bust(m: re.Match) -> str:
+            attr, url = m.group(1), m.group(2)
+            sep = '&' if '?' in url else '?'
+            return f'{attr}="{url}{sep}v={__version__}"'
+
+        busted = re.sub(r'(src|href)="((?:js|css)/[^"]+)"', _bust, html)
+        out_path = FRONTEND_DIR / f'.index_v{__version__}.html'
+        out_path.write_text(busted, encoding='utf-8')
+        return out_path
+    except OSError:
+        return FRONTEND_HTML
+
+
 def main():
     import webview
     from webview_api import WebviewAPI
@@ -80,7 +115,7 @@ def main():
 
     window = webview.create_window(
         title      = 'OpenLap',
-        url        = str(FRONTEND_HTML),
+        url        = str(_cache_busted_html()),
         js_api     = api,
         width      = 1280,
         height     = 840,

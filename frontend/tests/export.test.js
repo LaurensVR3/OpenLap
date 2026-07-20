@@ -6,12 +6,14 @@
  * "Open in Overlay").  Without this wiring the Queued Laps count
  * would always show 0 even though the user selected a session.
  *
- * The Export page has no scope/padding/Start Export controls of its own —
- * those live on the Overlay tab (editor.js) and travel with each queued item.
+ * The Export page has no scope/padding controls of its own — those live on
+ * the Overlay tab (editor.js) and travel with each queued item. It does have
+ * its own "Start Export" button (runs whatever is already queued) — see the
+ * "Start Export button" describe block below.
  * See export_params.test.js for the params-building logic that page uses.
  */
 import {
-  loadState, loadPage, makeRouter, makeAPI,
+  loadState, loadPage, loadExportParams, makeRouter, makeAPI,
   makeContainer, cleanupContainer, flushAsync,
 } from './helpers.js';
 
@@ -222,5 +224,99 @@ describe('Export page — previewSession → selectedItems wiring', () => {
 
     // selectedItems should not have changed after unmount
     expect(State.get('selectedItems')).toEqual(before);
+  });
+});
+
+describe('Export page — Start Export button', () => {
+  let router, api, container, page;
+
+  beforeEach(() => {
+    loadState();
+    loadExportParams();
+
+    router = makeRouter();
+    api    = makeAPI();
+    globalThis.Router = router;
+    globalThis.API    = api;
+
+    loadPage('pages/export.js');
+    container = makeContainer();
+    page      = router.getPage('export');
+  });
+
+  afterEach(async () => {
+    page?.unmount();
+    cleanupContainer(container);
+  });
+
+  test('is hidden when the queue is empty', async () => {
+    State.set('previewSession', null);
+    await page.mount(container);
+
+    const btn = container.querySelector('#exp-start-btn');
+    expect(btn?.classList.contains('hidden')).toBe(true);
+  });
+
+  test('is visible once an item is queued', async () => {
+    State.set('previewSession', PREVIEW);
+    await page.mount(container);
+
+    const btn = container.querySelector('#exp-start-btn');
+    expect(btn?.classList.contains('hidden')).toBe(false);
+  });
+
+  test('clicking it starts export with the whole queue, not just the last-added item', async () => {
+    State.set('previewSession', PREVIEW);
+    await page.mount(container);
+    State.set('selectedItems', [
+      ...State.get('selectedItems'),
+      { csv_path: '/data/other.csv', lap_idx: 0, video_paths: ['/other.mp4'], sync_offset: 0, scope: 'selected_lap' },
+    ]);
+
+    const btn = container.querySelector('#exp-start-btn');
+    btn.click();
+    await flushAsync();
+
+    expect(api.getConfig).toHaveBeenCalled();
+    expect(api.getOverlay).toHaveBeenCalled();
+    expect(api.startExport).toHaveBeenCalledTimes(1);
+    const params = api.startExport.mock.calls[0][0];
+    expect(params.items).toHaveLength(2);
+    expect(params.items.map(i => i.csv_path)).toEqual(
+      expect.arrayContaining([PREVIEW.csv_path, '/data/other.csv']));
+  });
+
+  test('does nothing when the queue is empty', async () => {
+    State.set('previewSession', null);
+    await page.mount(container);
+
+    const btn = container.querySelector('#exp-start-btn');
+    btn.click();
+    await flushAsync();
+
+    expect(api.startExport).not.toHaveBeenCalled();
+  });
+
+  test('hides again once export_progress reports the run has started', async () => {
+    const onCalls = [];
+    api = makeAPI({ on: vi.fn((event, cb) => { onCalls.push({ event, cb }); return () => {}; }) });
+    globalThis.API = api;
+    const freshRouter = makeRouter();
+    globalThis.Router = freshRouter;
+    loadPage('pages/export.js');
+    const freshPage = freshRouter.getPage('export');
+    const freshContainer = makeContainer();
+
+    State.set('previewSession', PREVIEW);
+    await freshPage.mount(freshContainer);
+    expect(freshContainer.querySelector('#exp-start-btn')?.classList.contains('hidden')).toBe(false);
+
+    const progressCb = onCalls.find(c => c.event === 'export_progress')?.cb;
+    progressCb({ value: 5, message: 'Rendering…' });
+
+    expect(freshContainer.querySelector('#exp-start-btn')?.classList.contains('hidden')).toBe(true);
+
+    freshPage.unmount();
+    cleanupContainer(freshContainer);
   });
 });

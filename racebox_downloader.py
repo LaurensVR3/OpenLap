@@ -169,7 +169,7 @@ class RaceBoxSource(DataSource):
         with sync_playwright() as pw:
             if self.is_authenticated():
                 log("Validating saved login…")
-                browser = pw.chromium.launch(headless=True)
+                browser = pw.chromium.launch(headless=True, channel="chromium")
                 ctx = browser.new_context(storage_state=self.auth_file)
                 page = ctx.new_page()
                 try:
@@ -186,7 +186,7 @@ class RaceBoxSource(DataSource):
 
             # Manual login
             log("Opening browser — please log in to racebox.pro…")
-            browser = pw.chromium.launch(headless=False)
+            browser = pw.chromium.launch(headless=False, channel="chromium")
             ctx     = browser.new_context()
             page    = ctx.new_page()
             page.goto(RACEBOX_SESSIONS)
@@ -221,7 +221,7 @@ class RaceBoxSource(DataSource):
         sessions: List[RemoteSession] = []
 
         with sync_playwright() as pw:
-            browser = pw.chromium.launch(headless=True)
+            browser = pw.chromium.launch(headless=True, channel="chromium")
             ctx     = browser.new_context(storage_state=self.auth_file)
             page    = ctx.new_page()
 

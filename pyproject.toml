@@ -27,7 +27,11 @@ dependencies = [
 [project.optional-dependencies]
 racebox-download = [
     "requests>=2.31",
-    "playwright>=1.40",
+    # Pinned exact: the packaged .exe bundles the matching Chromium browser
+    # binary at build time (see OpenLap.spec), keyed off this driver version's
+    # browsers.json revision. An unpinned range lets CI silently pick up a
+    # newer Playwright that expects a browser revision we never bundled.
+    "playwright==1.58.0",
 ]
 package = [
     "pyinstaller>=6.0",

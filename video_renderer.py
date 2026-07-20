@@ -215,15 +215,17 @@ def mux_audio(raw_video: str, audio_source: str,
         proc.wait()
         t.join()
         if proc.returncode != 0:
-            err = b''.join(stderr_buf).decode(errors='replace')
-            logger.error('FFmpeg mux failed:\n%s', err)
+            err = b''.join(stderr_buf).decode(errors='replace').strip() or \
+                f'(ffmpeg exited {proc.returncode} with no stderr output)'
+            logger.error('FFmpeg mux failed (cmd: %s):\n%s', ' '.join(cmd), err)
             raise VideoMuxError(err[-600:])
     else:
         cmd = base_cmd + [output]
         r = _run(cmd)
         if r.returncode != 0:
-            err = r.stderr.decode(errors='replace')
-            logger.error('FFmpeg mux failed:\n%s', err)
+            err = r.stderr.decode(errors='replace').strip() or \
+                f'(ffmpeg exited {r.returncode} with no stderr output)'
+            logger.error('FFmpeg mux failed (cmd: %s):\n%s', ' '.join(cmd), err)
             raise VideoMuxError(err[-600:])
 
 
@@ -762,20 +764,56 @@ def render_lap(
         cap.release()
         writer.release()
 
+        if processed == 0:
+            # Source video ended (or never reached) this lap's time range —
+            # e.g. recording cut short mid-lap. tmp_raw is a 0-frame file;
+            # muxing it would only fail uninformatively, so skip straight to
+            # a clear error instead of a confusing empty "Mux failed:".
+            if os.path.exists(tmp_raw):
+                os.remove(tmp_raw)
+            raise LapOutOfRangeError(
+                "No video frames could be decoded for this lap's time range — "
+                "the source video ended before (or never reached) this point, "
+                "e.g. the recording was cut short."
+            )
+
         prog(87, "Muxing audio…")
         log("  Muxing audio…")
-        mux_dur_s = n_frames / fps if fps else 0.0
-        try:
-            mux_audio(tmp_raw, video_path, out_path, encoder, crf,
-                      audio_start=audio_start,
-                      total_s=mux_dur_s,
-                      prog_start=87.0, prog_end=100.0,
-                      progress_cb=progress_cb)
+        # Use the frame count actually written, not the originally requested
+        # n_frames — if the source video ran out early (recording cut short
+        # partway through the lap), processed < n_frames and telling ffmpeg
+        # about the larger, never-written duration only skews the progress %.
+        mux_dur_s = processed / fps if fps else 0.0
+        if processed < n_frames:
+            log(f"  Note: video only covered {processed}/{n_frames} frames "
+                f"of this lap — source video ended early.")
+
+        # Retry once with libx264 (software) if the hardware encoder mux
+        # fails — hardware encoders (nvenc/amf/qsv) can fail for reasons
+        # unrelated to the video/audio data itself (driver state, concurrent
+        # session limits), and libx264 is always available as a fallback.
+        mux_attempts = [encoder] if encoder == 'libx264' else [encoder, 'libx264']
+        last_err = None
+        for i, enc in enumerate(mux_attempts):
+            try:
+                if i > 0:
+                    log(f"  Retrying mux with {enc} (software)…")
+                mux_audio(tmp_raw, video_path, out_path, enc, crf,
+                          audio_start=audio_start,
+                          total_s=mux_dur_s,
+                          prog_start=87.0, prog_end=100.0,
+                          progress_cb=progress_cb)
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+
+        if last_err is None:
             os.remove(tmp_raw)
             prog(100, "")
             log(f"  ✓ Saved: {out_path}")
-        except Exception as e:
-            log(f"  ✗ Mux failed: {e}")
+        else:
+            log(f"  ✗ Mux failed: {last_err}")
             fallback = os.path.splitext(out_path)[0] + '_raw.avi'
             if os.path.exists(tmp_raw):
                 os.rename(tmp_raw, fallback)
