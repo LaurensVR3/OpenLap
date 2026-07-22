@@ -13,7 +13,11 @@ const GaugeGmeter = {
     const gyNow  = data.value_gy  ?? 0;
     const gxHist = data.history_vals || [gxNow];
     const gyHist = data.history_gy   || [gyNow];
-    const gRange = data.max_val  ?? 3;
+    // `?? 3` alone only catches null/undefined, not an explicit 0 — an
+    // explicit max_val: 0 would otherwise divide-by-zero below (scale =
+    // Infinity), unlike every other gauge's min/max range calc which already
+    // guards a zero range (e.g. bar.js/line.js's `mx !== mn ? mx-mn : 1`).
+    const gRange = data.max_val || 3;
 
     GaugeBase.drawBackground(ctx, w, h, theme);
 

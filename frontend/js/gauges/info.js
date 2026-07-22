@@ -61,10 +61,12 @@ const GaugeInfo = {
 
     // Font sizes derived from row height, matching gauge_info.py formula:
     // fs = max(4, int(h * row_h * ratio / 1.39))
-    // row_h is the fraction 1/n, so row height in px = h/n
-    const rowPx   = h / n;
-    const fsLabel = Math.max(8,  Math.round(rowPx * 0.26));
-    const fsValue = Math.max(10, Math.round(rowPx * 0.48));
+    // row_h is the fraction (y_top-y_bottom)/n, NOT 1/n — rowH above already
+    // is that pixel row height (yTop/yBottom are themselves in px), so reuse
+    // it directly rather than the naive h/n (which omits the ~0.88 factor and
+    // renders text ~14% too large vs. the exported video frame).
+    const fsLabel = Math.max(8,  Math.round(rowH * 0.26));
+    const fsValue = Math.max(10, Math.round(rowH * 0.48));
 
     ctx.textBaseline = 'middle';
     ctx.textAlign    = 'left';

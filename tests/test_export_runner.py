@@ -208,6 +208,193 @@ class TestProgressRange:
         assert callable(load_any_session)
 
 
+# ── load_any_session format dispatch ──────────────────────────────────────────
+
+class TestLoadAnySessionDispatch:
+    """
+    load_any_session's format dispatch is a hardcoded if/elif chain of
+    is_X(path) checks — every format session_scanner can detect must have a
+    branch here, or exporting that format silently misroutes to the
+    RaceBox CSV parser at the bottom (this happened for real: VBOX support
+    was added to session_scanner/webview_api/auto_sync but load_any_session
+    was never updated, so exporting a VBOX session would fail).
+    """
+
+    @pytest.mark.parametrize('is_check,module,load_fn', [
+        ('is_motec_ld',    'motec_data',   'load_ld'),
+        ('is_vbox',        'vbox_data',    'load_vbo'),
+        ('is_gpx',         'gpx_data',     'load_gpx'),
+        ('is_unipro_tsv',  'unipro_data',  'load_tsv'),
+        ('is_unipro_uni',  'unipro_data',  'load_uni'),
+        ('is_aim_csv',     'aim_data',     'load_csv'),
+    ])
+    def test_dispatches_to_correct_loader(self, is_check, module, load_fn, monkeypatch):
+        import importlib
+        from export_runner import load_any_session
+
+        # Every format's is_X check defaults to False (path doesn't match),
+        # except the one under test.
+        for mod_name in ('motec_data', 'vbox_data', 'gpx_data', 'unipro_data', 'aim_data'):
+            mod = importlib.import_module(mod_name)
+            for fn_name in dir(mod):
+                if fn_name.startswith('is_') and callable(getattr(mod, fn_name)):
+                    monkeypatch.setattr(mod, fn_name, lambda p: False)
+
+        target_mod = importlib.import_module(module)
+        monkeypatch.setattr(target_mod, is_check, lambda p: True)
+        sentinel = object()
+        monkeypatch.setattr(target_mod, load_fn, lambda p: sentinel)
+
+        assert load_any_session('/fake/path') is sentinel
+
+    def test_falls_back_to_racebox_csv_when_nothing_else_matches(self, monkeypatch):
+        import importlib
+        from export_runner import load_any_session
+
+        for mod_name in ('motec_data', 'vbox_data', 'gpx_data', 'unipro_data', 'aim_data'):
+            mod = importlib.import_module(mod_name)
+            for fn_name in dir(mod):
+                if fn_name.startswith('is_') and callable(getattr(mod, fn_name)):
+                    monkeypatch.setattr(mod, fn_name, lambda p: False)
+
+        import racebox_data
+        sentinel = object()
+        monkeypatch.setattr(racebox_data, 'load_csv', lambda p: sentinel)
+
+        assert load_any_session('/fake/path') is sentinel
+
+
+# ── Overlay-only export without a source video ───────────────────────────────
+
+class TestOverlayOnlyWithoutVideo:
+    """
+    An overlay-only export draws onto a blank transparent canvas (see
+    video_renderer.render_lap) and never reads pixels from a source video, so
+    it must not be skipped just because no video is attached. A non-overlay
+    export with no video has nothing to render onto and must still be skipped.
+    """
+
+    def test_overlay_only_proceeds_without_video(self, racebox_car_csv_path):
+        with patch('video_renderer.render_lap') as mock_render:
+            log_cb, _, done_cb = _run(
+                items=[{'csv_path': racebox_car_csv_path, 'video_paths': [],
+                        'sync_offset': 0.0, 'overlay_only': True}],
+                scope='fastest',
+            )
+        mock_render.assert_called_once()
+        logged = ' '.join(str(c) for c in log_cb.call_args_list)
+        assert 'No video file' not in logged
+        done_cb.assert_called_once()
+
+    def test_non_overlay_export_is_skipped_without_video(self, racebox_car_csv_path):
+        with patch('video_renderer.render_lap') as mock_render:
+            log_cb, _, done_cb = _run(
+                items=[{'csv_path': racebox_car_csv_path, 'video_paths': [],
+                        'sync_offset': 0.0, 'overlay_only': False}],
+                scope='fastest',
+            )
+        mock_render.assert_not_called()
+        logged = ' '.join(str(c) for c in log_cb.call_args_list)
+        assert 'No video file' in logged
+        done_cb.assert_called_once()
+
+
+# ── Multi-clip join phase ─────────────────────────────────────────────────────
+
+class TestJoinPhase:
+    """
+    A session matched to more than one video clip goes through a join
+    (concat_videos) before rendering. Two things must hold:
+      - an unreachable clip (e.g. a dropped network share) fails that item
+        gracefully instead of crashing the whole export thread with an
+        unhandled OSError from os.path.getmtime;
+      - concat_videos is given a progress_cb, so a large/slow join reports
+        progress instead of sitting at a static 0% (previously indistin-
+        guishable from a genuine hang — see video_renderer.concat_videos).
+    """
+
+    def test_unreachable_clip_is_skipped_not_crashed(self, racebox_car_csv_path):
+        """getmtime on a vanished network path must not crash the export thread."""
+        log_cb, _, done_cb = _run(
+            items=[{'csv_path': racebox_car_csv_path,
+                    'video_paths': ['//unreachable-share/a.mp4', '//unreachable-share/b.mp4'],
+                    'sync_offset': 0.0}],
+            scope='fastest',
+        )
+        logged = ' '.join(str(c) for c in log_cb.call_args_list)
+        assert 'Join failed' in logged
+        done_cb.assert_called_once()   # export finishes (with an error), doesn't hang/crash
+
+    def test_concat_videos_receives_a_progress_callback(self, racebox_car_csv_path, tmp_path):
+        """The join phase must wire progress_cb through to concat_videos so
+        the UI shows real progress instead of a static 0% for however long
+        the ffmpeg join takes."""
+        v1 = tmp_path / 'a.mp4'
+        v2 = tmp_path / 'b.mp4'
+        v1.write_bytes(b'fake')
+        v2.write_bytes(b'fake')
+
+        with patch('video_renderer.concat_videos') as mock_concat, \
+             patch('video_renderer.render_lap'):
+            _run(
+                items=[{'csv_path': racebox_car_csv_path,
+                        'video_paths': [str(v1), str(v2)],
+                        'sync_offset': 0.0}],
+                scope='fastest',
+            )
+        mock_concat.assert_called_once()
+        assert 'progress_cb' in mock_concat.call_args.kwargs
+        assert callable(mock_concat.call_args.kwargs['progress_cb'])
+
+
+# ── render_lap call-site / signature compatibility ────────────────────────────
+
+class TestRenderLapCallCompatibility:
+    """
+    export_runner.py calls video_renderer.render_lap(...) from 7 different
+    scope branches, each hand-written with its own keyword-argument list.
+    render_lap is never called for real anywhere else in this suite (every
+    other test mocks it away), so a keyword export_runner passes that
+    render_lap's signature doesn't accept would crash every real export with
+    a TypeError and nothing here would notice. Guard against that class of
+    drift directly by checking every call actually made is signature-valid,
+    across every scope.
+    """
+
+    @pytest.mark.parametrize('scope', ['selected_lap', 'fastest', 'all_laps', 'lap_range', 'full'])
+    def test_call_kwargs_are_all_accepted_by_render_lap(self, racebox_car_csv_path, scope):
+        import inspect
+        from video_renderer import render_lap as real_render_lap
+        accepted = set(inspect.signature(real_render_lap).parameters.keys())
+
+        with patch('video_renderer.render_lap') as mock_render:
+            _run(
+                items=[{'csv_path': racebox_car_csv_path, 'video_paths': ['/fake/video.mp4'],
+                        'sync_offset': 0.0, 'lap_idx': 0}],
+                scope=scope,
+            )
+
+        assert mock_render.called, f"render_lap was never called for scope={scope!r}"
+        for c in mock_render.call_args_list:
+            unexpected = set(c.kwargs.keys()) - accepted
+            assert not unexpected, (
+                f"export_runner passed keyword(s) {unexpected} for scope={scope!r} "
+                f"that render_lap's real signature does not accept")
+
+    def test_is_cancelled_is_threaded_through(self, racebox_car_csv_path):
+        """is_cancelled must reach render_lap, not just be checked between items —
+        otherwise Cancel does nothing until the current render finishes."""
+        sentinel = MagicMock(return_value=False)
+        with patch('video_renderer.render_lap') as mock_render:
+            _run(
+                items=[{'csv_path': racebox_car_csv_path, 'video_paths': ['/fake/video.mp4'],
+                        'sync_offset': 0.0, 'lap_idx': 0}],
+                scope='fastest',
+                is_cancelled=sentinel,
+            )
+        assert mock_render.call_args.kwargs.get('is_cancelled') is sentinel
+
+
 # ── Cancellation ────────────────────────────────────────────────────────────────
 
 class TestCancellation:

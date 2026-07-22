@@ -48,6 +48,29 @@ export function loadGaugeBase() {
 }
 
 /**
+ * Load any other gauges/*.js file (e.g. 'bar.js' → GaugeBar) and return its
+ * top-level export. These files reference `GaugeBase` as a free global (the
+ * same way page IIFEs reference State/API/Router), so pin loadGaugeBase()'s
+ * result to globalThis.GaugeBase before calling this.
+ */
+export function loadGauge(fileName, exportName) {
+  const code = readFileSync(resolve(JS_ROOT, `gauges/${fileName}`), 'utf8');
+  return new Function(`${code}; return ${exportName};`)();
+}
+
+/**
+ * Load the real router.js and return the Router namespace object.
+ * Like gauges/base.js, it defines a top-level `const Router = (() => {...})()`
+ * with no IIFE-registers-itself wrapper, so we return it directly (same
+ * trick as loadGaugeBase). Page tests use the makeRouter() *mock* instead —
+ * this loader is for testing router.js's own behaviour.
+ */
+export function loadRouter() {
+  const code = readFileSync(resolve(JS_ROOT, 'router.js'), 'utf8');
+  return new Function(`${code}; return Router;`)();
+}
+
+/**
  * Load export_params.js and pin ExportParams to globalThis.
  * Like gauges/base.js, it defines a top-level `const ExportParams = {...}`
  * with no IIFE wrapper. Page modules (editor.js) reference `ExportParams` as
@@ -76,6 +99,49 @@ export function makeFakeCanvasCtx() {
       return { width: text.length * size * 0.55 };
     },
   };
+}
+
+/**
+ * A permissive CanvasRenderingContext2D stand-in that supports a *full*
+ * gauge render(ctx, data, w, h) call — every drawing method the 15 gauge
+ * files use (fillRect, beginPath, moveTo/lineTo, arc, stroke, fill, save/
+ * restore, clip, translate, rotate, createLinearGradient, …) is a harmless
+ * no-op via a Proxy, and any property (fillStyle, textAlign, lineWidth, …)
+ * is freely settable. Only `fillText` is a real spy — recorded in the
+ * returned `._fillTextCalls` array as {text, x, y} — since that's what
+ * gauge-formatting regression tests need to assert against; nothing else
+ * about the render's actual pixel output is verified this way.
+ */
+export function makeFullCanvasCtx() {
+  const fillTextCalls = [];
+  const base = {
+    font: '',
+    measureText(text) {
+      const m = /(\d+(?:\.\d+)?)px/.exec(this.font);
+      const size = m ? parseFloat(m[1]) : 10;
+      return { width: text.length * size * 0.55 };
+    },
+    fillText(text, x, y) {
+      fillTextCalls.push({ text, x, y, font: base.font });
+    },
+    createLinearGradient()  { return { addColorStop() {} }; },
+    createRadialGradient()  { return { addColorStop() {} }; },
+    getWindowExtent: undefined,
+    _fillTextCalls: fillTextCalls,
+  };
+  return new Proxy(base, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      // Any other canvas method call this gauge code makes (fillRect,
+      // strokeRect, beginPath, moveTo, lineTo, arc, stroke, fill, save,
+      // restore, clip, translate, rotate, setLineDash, …) — harmless no-op.
+      return () => {};
+    },
+    set(target, prop, value) {
+      target[prop] = value;
+      return true;
+    },
+  });
 }
 
 // ── Mock factories ─────────────────────────────────────────────────────────────
@@ -116,6 +182,7 @@ export function makeAPI(overrides = {}) {
     saveConfig:        vi.fn(async () => null),
     startExport:       vi.fn(async () => null),
     cancelExport:      vi.fn(async () => null),
+    confirmClearQueue: vi.fn(async () => true),
     openFolderDialog:  vi.fn(async () => null),
     getSessionMeta:    vi.fn(async () => ({ track: '', laps: '', best: '', best_secs: null })),
     getVideoServerPort: vi.fn(async () => 0),

@@ -39,9 +39,9 @@ _PATTERNS: dict[str, list[str]] = {
     'lon':      ['gps_longitude', 'longitude', 'gps_lon'],
     'alt':      ['gps_altitude', 'altitude', 'gps_alt'],
     # Prefer GPS-computed accelerations; fall back to raw accelerometer channels
-    'gforce_x': ['gps_lonacc', 'lonacc', 'lon_acc', 'accelerometerx', 'accelerx', 'accel_x'],
-    'gforce_y': ['gps_latacc', 'latacc', 'lat_acc', 'accelerometery', 'accelery', 'accel_y'],
-    'gforce_z':    ['accelerometerz', 'accelerz', 'accel_z', 'vertaccel'],
+    'gforce_x': ['gps_lonacc', 'lonacc', 'lon_acc', 'accelerometerx', 'accelerx', 'accel_x', 'accelx'],
+    'gforce_y': ['gps_latacc', 'latacc', 'lat_acc', 'accelerometery', 'accelery', 'accel_y', 'accely'],
+    'gforce_z':    ['accelerometerz', 'accelerz', 'accel_z', 'accelz', 'vertaccel'],
     'lap':         ['gps_lapbeacon', 'lapbeacon', 'gps_lap', 'lap_beacon', 'lap'],
     'rpm':         ['rpm'],
     'exhaust_temp':['exhaust_temp', 'exhaust', 'egt', 'exh_temp'],

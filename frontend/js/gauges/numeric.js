@@ -9,7 +9,10 @@
 const GaugeNumeric = {
   render(ctx, data, w, h) {
     const theme = GaugeBase.getTheme(data.theme || 'Dark');
-    const value   = data.value   ?? 0;
+    // No `?? 0` default here: numeric.js has no math dependency on value (it
+    // only feeds fmtValue), so pass the real value through and let fmtValue's
+    // null guard render "—" for genuinely-missing telemetry.
+    const value   = data.value;
     const label   = (data.label  || '').toUpperCase();
     const unit    = data.unit    || '';
     const channel = data.channel || '';

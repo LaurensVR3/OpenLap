@@ -46,15 +46,24 @@
   // be silently replaced when previewSession changes — a manually-built queue
   // must never be clobbered just by looking at a different lap elsewhere.
   let _autoItemKey = null;
-  function _itemKey(item) { return `${item.csv_path}::${item.lap_idx}`; }
+
+  // Canonical per-item key covering every scope (mirrors editor.js's
+  // _queueItemKey) — used both to recognise the auto-derived preview item
+  // (below) and to tell which queued items belong to a just-finished export
+  // batch, so only those get cleared on success (see _onDone).
+  function _queueItemKey(item) {
+    if (item.scope === 'lap_range') return `${item.csv_path}::lap_range::${item.lap_range_start}-${item.lap_range_end}`;
+    if (item.scope === 'selected_lap' || !item.scope) return `${item.csv_path}::selected_lap::${item.lap_idx}`;
+    return `${item.csv_path}::${item.scope}`;
+  }
 
   function _syncSelectedFromPreview(ps) {
     const current = State.get('selectedItems') || [];
     const isAutoOnly = current.length === 0 ||
-      (current.length === 1 && _autoItemKey !== null && _itemKey(current[0]) === _autoItemKey);
+      (current.length === 1 && _autoItemKey !== null && _queueItemKey(current[0]) === _autoItemKey);
     if (!isAutoOnly || !ps) return;
     const item = _itemFromPreview(ps);
-    _autoItemKey = _itemKey(item);
+    _autoItemKey = _queueItemKey(item);
     State.set('selectedItems', [item]);
   }
 
@@ -111,6 +120,7 @@
       <span class="page-title">Export</span>
     </div>
     <div class="toolbar-right">
+      <button class="btn btn-secondary hidden" id="exp-clear-btn">Clear Queue</button>
       <button class="btn btn-accent hidden" id="exp-start-btn">▶ Start Export</button>
       <button class="btn btn-secondary hidden" id="exp-cancel-btn">Cancel</button>
     </div>
@@ -165,6 +175,10 @@
       _setExporting(false);
     });
     $('exp-start-btn').addEventListener('click', _startExport);
+    $('exp-clear-btn').addEventListener('click', async () => {
+      const ok = await API.confirmClearQueue();
+      if (ok) State.set('selectedItems', []);
+    });
   }
 
   // "▶ Start Export": runs whatever is already queued (built via the Overlay
@@ -180,6 +194,7 @@
     try {
       const [cfg, layout] = await Promise.all([API.getConfig(), API.getOverlay()]);
       const params = ExportParams.buildExportParams({ items, cfg, layout });
+      State.set('exportPendingKeys', items.map(_queueItemKey));
       await API.startExport(params);
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = '▶ Start Export'; }
@@ -211,7 +226,7 @@
     if (!list) return;
 
     badge.textContent = items.length;
-    _updateStartBtn(items);
+    _updateToolbarButtons(items);
 
     if (!items.length) {
       list.innerHTML = `
@@ -300,6 +315,19 @@
     _setProgress(ok ? 100 : 0, msg);
     _setExporting(false);
     _setBadge(ok ? 'Done' : 'Error', ok ? 'badge-ok' : 'badge-err');
+
+    // Drop the items that just finished exporting from the queue — but only
+    // those, since more may have been queued (e.g. from the Data page) while
+    // this export was still running. Whichever page started the export
+    // (this one's "Start Export" or the Overlay tab's "Export Now") records
+    // the batch here via State.set('exportPendingKeys', ...) beforehand.
+    const pendingKeys = State.get('exportPendingKeys');
+    if (ok && pendingKeys) {
+      const done = new Set(pendingKeys);
+      State.set('selectedItems', (State.get('selectedItems') || []).filter(i => !done.has(_queueItemKey(i))));
+    }
+    State.set('exportPendingKeys', null);
+
     // Export finished — offer auto-sync the chance to run now.
     // Python's start_auto_sync skips sessions already synced or failed, so
     // it is safe to call with all matched sessions (it filters internally).
@@ -314,13 +342,15 @@
     if (!_container) return;
     const cancel = _container.querySelector('#exp-cancel-btn');
     if (cancel) cancel.classList.toggle('hidden', !active);
-    _updateStartBtn(State.get('selectedItems') || []);
+    _updateToolbarButtons(State.get('selectedItems') || []);
   }
 
-  function _updateStartBtn(items) {
+  function _updateToolbarButtons(items) {
     if (!_container) return;
     const btn = _container.querySelector('#exp-start-btn');
     if (btn) btn.classList.toggle('hidden', _exporting || !items.length);
+    const clearBtn = _container.querySelector('#exp-clear-btn');
+    if (clearBtn) clearBtn.classList.toggle('hidden', _exporting || !items.length);
   }
 
   function _setProgress(pct, msg) {

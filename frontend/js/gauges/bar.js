@@ -3,7 +3,7 @@
  *
  * Mirrors styles/gauge_bar.py
  *
- * data keys: value, history_vals, label, unit, min_val, max_val, symmetric
+ * data keys: value, history_vals, label, unit, min_val, max_val, symmetric, channel
  * theme keys: bg, bgEdge, track, fillPos, fillNeg, fillLo, fillHi, label, trace
  */
 const GaugeBar = {
@@ -12,7 +12,11 @@ const GaugeBar = {
 
     GaugeBase.drawBackground(ctx, w, h, theme);
 
-    const value     = data.value      ?? 0;
+    // rawValue is routed to fmtValue (for channels it special-cases) so
+    // missing telemetry renders as "—"; value (defaulted to 0) is only for
+    // the fill-fraction/sparkline MATH below, which needs a real number.
+    const rawValue  = data.value;
+    const value     = rawValue ?? 0;
     const hist      = data.history_vals || [value];
     const label     = (data.label     || '').toUpperCase();
     const unit      = data.unit       || '';
@@ -81,6 +85,9 @@ const GaugeBar = {
       ctx.stroke();
     } else {
       const frac  = Math.max(0, Math.min(1, (value - mn) / rng));
+      // NOTE: 0.75 matches styles/gauge_bar.py's own "hot" threshold, but
+      // intentionally differs from dial.js/line.js/compare.js (0.80) — keep
+      // in sync with the Python mirror, don't unify across gauge types.
       fillCol = frac < 0.75 ? theme.fillLo : theme.fillHi;
       ctx.fillStyle   = fillCol;
       ctx.globalAlpha = 0.9;
@@ -88,8 +95,16 @@ const GaugeBar = {
       ctx.globalAlpha = 1;
     }
 
-    // Value text (between bar and sparkline)
-    const valStr    = unit ? `${value.toFixed(1)} ${unit}` : value.toFixed(1);
+    // Value text (between bar and sparkline). Channels that fmtValue
+    // special-cases (gear, lap_time, delta_time, lean) are routed through it
+    // so e.g. a lap_time value renders "2:05.300" like every other gauge
+    // instead of a bare "125.3 s", and a missing value renders "—". Plain
+    // numeric channels (speed/rpm/altitude/g-force/...) keep the existing
+    // unit-suffix fallback exactly as before.
+    const FMT_SPECIAL_CHANNELS = new Set(['gear', 'lap_time', 'delta_time', 'lean']);
+    const valStr    = FMT_SPECIAL_CHANNELS.has(data.channel)
+      ? GaugeBase.fmtValue(rawValue, data.channel)
+      : (unit ? `${value.toFixed(1)} ${unit}` : value.toFixed(1));
     const fsValFit  = GaugeBase.fitFontSize(ctx, valStr, fsVal, 'bold', barW);
     ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';

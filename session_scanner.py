@@ -39,6 +39,8 @@ CSV_EXTENSIONS   = {'.csv', '.CSV'}
 GPX_EXTENSIONS   = {'.gpx', '.GPX'}
 LD_EXTENSIONS    = {'.ld',  '.LD'}
 VBO_EXTENSIONS   = {'.vbo', '.VBO'}
+UNI_EXTENSIONS   = {'.uni', '.UNI'}
+TSV_EXTENSIONS   = {'.tsv', '.TSV'}
 MAX_GAP          = 120.0    # seconds between consecutive segments of one recording
 MATCH_WINDOW     = 3600.0   # max seconds between CSV start and video group start
 CAMERA_OFFSET_WINDOW = 300.0
@@ -68,8 +70,8 @@ class VideoFile:
         return os.path.getmtime(self.path)
 
 
-def _ffprobe_creation_time(path: str) -> Optional[datetime]:
-    """Extract creation_time from video metadata via ffprobe."""
+def _ffprobe_creation_time(path: str) -> Tuple[Optional[datetime], float]:
+    """Extract (creation_time, duration_seconds) from video metadata via ffprobe."""
     try:
         r = _run(['ffprobe', '-v', 'quiet', '-print_format', 'json',
              '-show_entries', 'format_tags=creation_time:format=duration',
@@ -394,6 +396,14 @@ def _sniff_candidate(path: str, suffix: str) -> bool:
     if suffix in LD_EXTENSIONS:
         return _motec.is_motec_ld(path)
 
+    if suffix in UNI_EXTENSIONS:
+        import unipro_data as _unipro
+        return _unipro.is_unipro_uni(path)
+
+    if suffix in TSV_EXTENSIONS:
+        import unipro_data as _unipro
+        return _unipro.is_unipro_tsv(path)
+
     try:
         with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
             content = f.read(2000)
@@ -406,7 +416,8 @@ def _sniff_candidate(path: str, suffix: str) -> bool:
 
 
 def scan_csvs(folder: str, cache: Optional[Dict[str, dict]] = None) -> List[str]:
-    """Recursively find all RaceBox, AIM Mychron CSV, GPX, MoTeC .ld, and VBOX .vbo files.
+    """Recursively find all RaceBox, AIM Mychron CSV, GPX, MoTeC .ld, VBOX .vbo,
+    and Unipro .uni/.tsv files.
 
     *cache* is the 'csvs' namespace of the file-meta cache (path -> {size, mtime,
     valid}), mutated in place. Files whose (size, mtime) still match a cache entry
@@ -420,7 +431,8 @@ def scan_csvs(folder: str, cache: Optional[Dict[str, dict]] = None) -> List[str]
         for root, _, files in os.walk(folder)
         for fname in sorted(files)
         if (Path(fname).suffix in VBO_EXTENSIONS or Path(fname).suffix in GPX_EXTENSIONS or
-            Path(fname).suffix in LD_EXTENSIONS or Path(fname).suffix in CSV_EXTENSIONS)
+            Path(fname).suffix in LD_EXTENSIONS or Path(fname).suffix in UNI_EXTENSIONS or
+            Path(fname).suffix in TSV_EXTENSIONS or Path(fname).suffix in CSV_EXTENSIONS)
     ]
 
     valid: List[Optional[bool]] = [None] * len(candidates)
@@ -487,6 +499,10 @@ def _csv_source(path: str) -> str:
         return 'GPX'
     if suffix == '.ld':
         return 'MoTeC'
+    if suffix == '.uni':
+        return 'Unipro'
+    if suffix == '.tsv':
+        return 'Unipro'
     try:
         with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
             head = f.read(300)
@@ -613,6 +629,42 @@ def _read_csv_start_time(path: str) -> Optional[datetime]:
                 return dt
         except Exception:
             pass
+        mtime = os.path.getmtime(path)
+        return datetime.fromtimestamp(mtime, tz=timezone.utc)
+
+    if Path(path).suffix.lower() == '.uni':
+        import unipro_data as _unipro
+        try:
+            with open(path, 'rb') as f:
+                head = f.read(4096)  # RECRDATE is always the first chunk
+            for tag, _version, pstart, length in _unipro._iter_chunks(head):
+                if tag == b'RECRDATE':
+                    dt = _unipro._parse_date(head[pstart:pstart + length])
+                    if dt:
+                        return dt
+                    break
+        except Exception:
+            logger.debug('Could not read Unipro start time from %s', path, exc_info=True)
+        mtime = os.path.getmtime(path)
+        return datetime.fromtimestamp(mtime, tz=timezone.utc)
+
+    if Path(path).suffix.lower() == '.tsv':
+        # Real .tsv exports (see unipro_data.py) can contain a stray extra
+        # block of unrelated session data alongside the real one, so a full
+        # parse (unipro_data.load_tsv) is needed to reliably tell them apart
+        # — too expensive for a quick scan-time peek. Unipro's own filenames
+        # encode the session as YYMMDD_HHMM_..., which is exactly the ground
+        # truth load_tsv() itself uses to disambiguate, so it's a reliable
+        # cheap stand-in here too.
+        import unipro_data as _unipro
+        m = _unipro._FILENAME_STAMP_RE.match(os.path.basename(path))
+        if m:
+            yy, mm, dd, hh, mi = m.groups()
+            try:
+                return datetime(2000 + int(yy), int(mm), int(dd), int(hh), int(mi),
+                                 tzinfo=timezone.utc)
+            except ValueError:
+                pass
         mtime = os.path.getmtime(path)
         return datetime.fromtimestamp(mtime, tz=timezone.utc)
 

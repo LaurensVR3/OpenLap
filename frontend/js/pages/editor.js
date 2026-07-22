@@ -47,6 +47,7 @@
     lap_info:    ['Scoreboard'],
     multi:       ['Multi-Line'],
     image:       ['Image'],
+    gear:        ['Numeric', 'Bar', 'Dial'],
   };
 
   const ALL_CHANNELS = [
@@ -65,6 +66,7 @@
     { value: 'lap_info',    label: 'Lap Info' },
     { value: 'multi',       label: 'Multi-Line' },
     { value: 'image',       label: 'Image / Logo' },
+    { value: 'gear',        label: 'Gear' },
   ];
 
   // Channels that can appear inside a Multi-Line gauge
@@ -202,6 +204,7 @@
           altitude:    {label:'Altitude',  unit:'m',    min:0,   max:500, sym:false, val:220},
           lap_time:    {label:'Lap Time',  unit:'',     min:0,   max:120, sym:false, val:84.5},
           delta_time:  {label:'Delta',     unit:'s',    min:-30, max:30,  sym:true,  val:-0.234},
+          gear:        {label:'Gear',      unit:'',     min:0,   max:6,   sym:false, val:3},
         }[channel] || {label:'Value', unit:'', min:0, max:100, sym:false, val:42};
 
         const hist = Array.from({length:40}, (_,i) => {
@@ -241,6 +244,7 @@
       altitude:    { key:'alt',         label:'Altitude', unit:'m',    min:0,   max:500,   sym:false },
       lean:        { key:'lean',        label:'Lean',     unit:'°',    min:-60, max:60,    sym:true  },
       lap_time:    { key:'t',           label:'Lap Time', unit:'',     min:0,   max:300,   sym:false },
+      gear:        { key:'gear',        label:'Gear',     unit:'',     min:0,   max:6,     sym:false },
     };
   }
 
@@ -747,6 +751,7 @@
     if (btn) { btn.disabled = true; btn.textContent = 'Starting…'; }
     try {
       const params = ExportParams.buildExportParams({ items, cfg: _appConfig, layout: _layout });
+      State.set('exportPendingKeys', items.map(_queueItemKey));
       await API.startExport(params);
     } finally {
       if (btn) { btn.disabled = false; btn.textContent = '▶ Export Now'; }
@@ -1042,9 +1047,26 @@
   }
 
   // ── Mouse events ────────────────────────────────────────────────────────────
+  // document-level mousemove/mouseup handlers, so they must be explicitly torn
+  // down in unmount() (mirrors data.js's initResizer()/_resizerCleanup pattern) —
+  // otherwise every Data→Overlay round trip adds another permanent pair of
+  // listeners sharing the same module-level _drag state, and a stray mouseup
+  // after N visits would fire saveLayout() (→ API.saveOverlay) N times.
+  let _onDocMouseMove = null;
+  let _onDocMouseUp   = null;
+
+  function _teardownMouseEvents() {
+    if (_onDocMouseMove) { document.removeEventListener('mousemove', _onDocMouseMove); _onDocMouseMove = null; }
+    if (_onDocMouseUp)   { document.removeEventListener('mouseup',   _onDocMouseUp);   _onDocMouseUp   = null; }
+  }
+
   function setupMouseEvents() {
     const area = getPreviewEl();
     if (!area) return;
+
+    // Defense in depth: if a prior mount's listeners were somehow never torn
+    // down (unmount skipped), don't stack a second pair on top of them.
+    _teardownMouseEvents();
 
     area.addEventListener('mousedown', e => {
       const canvas = e.target.closest('.gauge-canvas');
@@ -1086,7 +1108,7 @@
       selectGauge(null);
     });
 
-    document.addEventListener('mousemove', e => {
+    _onDocMouseMove = e => {
       if (!_drag) return;
       const {w, h} = previewDims();
       const dx = (e.clientX - _drag.startMx) / w;
@@ -1122,15 +1144,18 @@
         rHandle.style.top  = `${(g.y + g.h) * 100}%`;
       }
       updatePropPanel();
-    });
+    };
 
-    document.addEventListener('mouseup', e => {
+    _onDocMouseUp = e => {
       if (!_drag) return;
       _drag = null;
       _clearGuides();
       rebuildGaugeCanvases();   // re-render at correct size after resize
       saveLayout();
-    });
+    };
+
+    document.addEventListener('mousemove', _onDocMouseMove);
+    document.addEventListener('mouseup',   _onDocMouseUp);
   }
 
   // ── Selection ───────────────────────────────────────────────────────────────
@@ -1390,7 +1415,7 @@
             const badge      = isAuto && !selected_osm_id
               ? '<span style="background:#2255aa;color:#fff;border-radius:2px;padding:0 3px;font-size:8px;margin-left:4px;">auto</span>'
               : '';
-            return `<div class="osm-cand-row" data-osm-id="${c.osm_id}"
+            return `<div class="osm-cand-row" data-osm-id="${_esc(c.osm_id)}"
                 style="padding:5px 7px;border-radius:4px;cursor:pointer;margin-bottom:2px;font-size:10px;
                        background:${isSelected ? 'var(--acc)' : 'var(--bg2)'};
                        color:${isSelected ? '#fff' : 'var(--text)'};
@@ -1768,8 +1793,10 @@
     const sel = _container?.querySelector('#theme-select');
     if (!sel || !_layout) return;
     ['Dark', 'Light', 'Colorful', 'Monochrome', 'Minimal'].forEach(t => {
-      sel.querySelector(`option[value="${t}"]`)?.setAttribute(
-        'selected', t === _layout.theme ? '' : null);
+      const opt = sel.querySelector(`option[value="${t}"]`);
+      if (!opt) return;
+      if (t === _layout.theme) opt.setAttribute('selected', '');
+      else opt.removeAttribute('selected');
     });
     sel.value = _layout.theme;
   }
@@ -1999,12 +2026,6 @@
     const refSel    = container.querySelector('#ref-mode-sel');
     const refPicker = container.querySelector('#ref-manual-picker');
 
-    function _fmtLapTime(secs) {
-      if (!secs && secs !== 0) return '—';
-      const m = Math.floor(secs / 60);
-      return m + ':' + (secs % 60).toFixed(3).padStart(6, '0');
-    }
-
     async function refreshManualPicker() {
       if (!refPicker) return;
       const isManual = _layout.ref_mode === 'manual';
@@ -2038,7 +2059,7 @@
           for (const lap of g.laps) {
             const sel = (g.csv_path === selCsv && lap.lap_num === selNum);
             const dur = _fmtLapTime(lap.duration);
-            html += `<div class="ref-lap-row" data-csv="${lap.csv_path||g.csv_path}"
+            html += `<div class="ref-lap-row" data-csv="${_esc(lap.csv_path||g.csv_path)}"
                           data-num="${lap.lap_num}"
                           style="padding:2px 4px;cursor:pointer;border-radius:2px;display:flex;
                                  justify-content:space-between;font-size:10px;
@@ -2185,6 +2206,7 @@
     if (_animFrame) { cancelAnimationFrame(_animFrame); _animFrame = null; }
     _stopLiveRaf();
     if (_resizeObserver) { _resizeObserver.disconnect(); _resizeObserver = null; }
+    _teardownMouseEvents();
     _container = null;
     // Live session state (_livePoints, _liveLaps, _liveSession, etc.) is intentionally
     // preserved so that returning to this page skips all Python round-trips.

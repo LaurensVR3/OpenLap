@@ -34,6 +34,7 @@ def _setup_logging() -> None:
 
 
 _setup_logging()
+logger = logging.getLogger(__name__)
 
 # ── Locate frontend assets ────────────────────────────────────────────────────
 # When running from source:  frontend/ is next to main.py
@@ -80,9 +81,30 @@ def _cache_busted_html() -> Path:
         busted = re.sub(r'(src|href)="((?:js|css)/[^"]+)"', _bust, html)
         out_path = FRONTEND_DIR / f'.index_v{__version__}.html'
         out_path.write_text(busted, encoding='utf-8')
+        _cleanup_stale_cache_busted_html(out_path)
         return out_path
     except OSError:
         return FRONTEND_HTML
+
+
+def _cleanup_stale_cache_busted_html(current: Path) -> None:
+    """Remove .index_v*.html copies left behind by previous releases.
+
+    _cache_busted_html() writes a new versioned copy on every launch but never
+    removed the old ones, so they accumulate forever across updates. Wrapped
+    in a broad try/except per-file so one permission error (e.g. AV scanner
+    holding a handle) can't block startup or stop the rest from being cleaned.
+    """
+    try:
+        for stale in FRONTEND_DIR.glob('.index_v*.html'):
+            if stale == current:
+                continue
+            try:
+                stale.unlink()
+            except OSError:
+                logger.debug('Could not remove stale cache-busted HTML %s', stale, exc_info=True)
+    except OSError:
+        logger.debug('Could not glob for stale cache-busted HTML', exc_info=True)
 
 
 def main():

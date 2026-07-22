@@ -6,6 +6,12 @@
  * data keys: sectors (list of {num, delta, done})
  */
 const GaugeSectorBar = {
+  // NOTE: delta color-coding intentionally differs by gauge type (4-tier
+  // purple/green/yellow/red here, matching multiline.js — vs. delta.js's
+  // 3-tier +/-0.10 band, scoreboard.js's 2-tier/no-neutral-band, splits.js's
+  // 3-tier +/-0.01 band). Matches styles/gauge_sector_bar.py exactly — keep
+  // in sync with it, do not unify across files without updating the Python
+  // mirror too.
   _colour(delta) {
     if (delta <= -0.10) return 'rgba(153, 38, 217, 0.95)';   // purple
     if (delta <   0.00) return 'rgba(13,  184, 71,  0.95)';  // green

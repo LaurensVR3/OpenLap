@@ -200,3 +200,37 @@ def test_load_csv_no_data_rows_raises(tmp_path):
     bad.write_text("Record,Time,Latitude,Longitude,Altitude,Speed,GForceX,GForceY,GForceZ,Lap,GyroX,GyroY,GyroZ\n")
     with pytest.raises(NoDataRowsError):
         load_csv(str(bad))
+
+
+# ── One malformed row must not abort the whole session load ───────────────────
+
+def test_load_csv_skips_single_malformed_row(tmp_path):
+    # Row 2 has a blank Latitude — a realistic truncated-write failure mode.
+    # This must be skipped, not crash the whole load.
+    bad = tmp_path / "one_bad_row.csv"
+    bad.write_text(
+        "Data Source,RaceBox Mini\n"
+        "Date UTC,2024-06-15T10:00:00Z\n"
+        "Track,Spa-Francorchamps\n"
+        "Configuration,Full\n"
+        "Session Type,Practice\n"
+        "Best Lap Time,120.5\n"
+        "Record,Time,Latitude,Longitude,Altitude,Speed,GForceX,GForceY,GForceZ,Lap,GyroX,GyroY,GyroZ\n"
+        "1,2024-06-15T10:00:00Z,50.4372,5.9719,400.0,0.0,0.0,0.0,1.0,0,0.0,0.0,0.0\n"
+        "2,2024-06-15T10:00:01Z,,5.9720,400.0,50.0,0.1,0.2,1.0,0,0.0,0.0,0.0\n"
+        "3,2024-06-15T10:00:02Z,50.4374,5.9721,400.0,100.0,0.2,0.3,1.0,0,0.0,0.0,0.0\n"
+    )
+    session = load_csv(str(bad))
+    # Bad row (Record=2) skipped; the other two good rows load fine.
+    assert len(session.all_points) == 2
+    assert [p.record for p in session.all_points] == [1, 3]
+
+
+def test_load_csv_all_rows_malformed_raises(tmp_path):
+    bad = tmp_path / "all_bad.csv"
+    bad.write_text(
+        "Record,Time,Latitude,Longitude,Altitude,Speed,GForceX,GForceY,GForceZ,Lap,GyroX,GyroY,GyroZ\n"
+        "1,2024-06-15T10:00:00Z,,5.9719,400.0,0.0,0.0,0.0,1.0,0,0.0,0.0,0.0\n"
+    )
+    with pytest.raises(NoDataRowsError):
+        load_csv(str(bad))

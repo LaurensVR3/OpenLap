@@ -6,7 +6,7 @@ import pytest
 from session_scanner import (
     VideoFile, VideoGroup,
     group_videos, _make_group,
-    _read_csv_start_time, _csv_source,
+    _read_csv_start_time, _csv_source, _sniff_candidate,
     match_sessions, MatchedSession,
     solve_camera_offset,
     MAX_GAP, MATCH_WINDOW,
@@ -95,6 +95,53 @@ def test_csv_source_aim(aim_csv_path):
 
 def test_csv_source_racebox(racebox_car_csv_path):
     assert _csv_source(racebox_car_csv_path) == 'RaceBox'
+
+
+def test_csv_source_unipro_tsv(tmp_path):
+    p = tmp_path / 'session.tsv'
+    p.write_text('dummy', encoding='utf-8')
+    assert _csv_source(str(p)) == 'Unipro'
+
+
+def test_csv_source_unipro_uni(tmp_path):
+    p = tmp_path / 'session.uni'
+    p.write_text('dummy', encoding='utf-8')
+    assert _csv_source(str(p)) == 'Unipro'
+
+
+# ── Unipro .tsv scan integration ───────────────────────────────────────────────
+
+class TestUniproTsvScanning:
+    _HEADER = ('"Start Date"\t"Start Time"\t"Lap Number"\t"Session Time"\t'
+               '"Latitude"\t"Longitude"\n')
+
+    def test_sniff_candidate_accepts_real_header(self, tmp_path):
+        p = tmp_path / 'session.tsv'
+        p.write_text(self._HEADER + '2026-07-20\t12:40:56\t0\t0\t50.09\t4.50\n',
+                     encoding='utf-8')
+        assert _sniff_candidate(str(p), '.tsv') is True
+
+    def test_sniff_candidate_rejects_unrelated_tsv(self, tmp_path):
+        p = tmp_path / 'not_unipro.tsv'
+        p.write_text('"Foo"\t"Bar"\n1\t2\n', encoding='utf-8')
+        assert _sniff_candidate(str(p), '.tsv') is False
+
+    def test_read_csv_start_time_from_filename_pattern(self, tmp_path):
+        """.tsv start time comes from the YYMMDD_HHMM filename stamp — the
+        file itself isn't cheap to fully parse (see unipro_data.load_tsv's
+        stray-block docstring), so this must not require reading the body."""
+        p = tmp_path / '260720_1240_Marienbourg GPS_Lowie.tsv'
+        p.write_text(self._HEADER, encoding='utf-8')  # header only, no data rows
+        dt = _read_csv_start_time(str(p))
+        assert dt is not None
+        assert (dt.year, dt.month, dt.day, dt.hour, dt.minute) == (2026, 7, 20, 12, 40)
+
+    def test_read_csv_start_time_falls_back_to_mtime_without_filename_pattern(self, tmp_path):
+        p = tmp_path / 'not_a_recognised_pattern.tsv'
+        p.write_text(self._HEADER, encoding='utf-8')
+        dt = _read_csv_start_time(str(p))
+        assert dt is not None
+        assert dt.tzinfo is not None
 
 
 # ── match_sessions ─────────────────────────────────────────────────────────────

@@ -320,3 +320,140 @@ describe('Export page — Start Export button', () => {
     cleanupContainer(freshContainer);
   });
 });
+
+describe('Export page — Clear Queue button', () => {
+  let router, api, container, page;
+
+  beforeEach(() => {
+    loadState();
+    loadExportParams();
+
+    router = makeRouter();
+    api    = makeAPI();
+    globalThis.Router = router;
+    globalThis.API    = api;
+
+    loadPage('pages/export.js');
+    container = makeContainer();
+    page      = router.getPage('export');
+  });
+
+  afterEach(async () => {
+    page?.unmount();
+    cleanupContainer(container);
+  });
+
+  test('is hidden when the queue is empty', async () => {
+    State.set('previewSession', null);
+    await page.mount(container);
+
+    const btn = container.querySelector('#exp-clear-btn');
+    expect(btn?.classList.contains('hidden')).toBe(true);
+  });
+
+  test('is visible once an item is queued', async () => {
+    State.set('previewSession', PREVIEW);
+    await page.mount(container);
+
+    const btn = container.querySelector('#exp-clear-btn');
+    expect(btn?.classList.contains('hidden')).toBe(false);
+  });
+
+  test('clears the queue after the user confirms', async () => {
+    api = makeAPI({ confirmClearQueue: vi.fn(async () => true) });
+    globalThis.API = api;
+    loadPage('pages/export.js');
+    page = router.getPage('export');
+
+    State.set('previewSession', PREVIEW);
+    await page.mount(container);
+    expect(State.get('selectedItems')).toHaveLength(1);
+
+    container.querySelector('#exp-clear-btn').click();
+    await flushAsync();
+
+    expect(api.confirmClearQueue).toHaveBeenCalled();
+    expect(State.get('selectedItems')).toEqual([]);
+  });
+
+  test('leaves the queue untouched when the user cancels the confirmation', async () => {
+    api = makeAPI({ confirmClearQueue: vi.fn(async () => false) });
+    globalThis.API = api;
+    loadPage('pages/export.js');
+    page = router.getPage('export');
+
+    State.set('previewSession', PREVIEW);
+    await page.mount(container);
+    expect(State.get('selectedItems')).toHaveLength(1);
+
+    container.querySelector('#exp-clear-btn').click();
+    await flushAsync();
+
+    expect(State.get('selectedItems')).toHaveLength(1);
+  });
+});
+
+describe('Export page — export_done only clears the finished batch', () => {
+  // Regression coverage: an earlier version cleared the *entire* queue on a
+  // successful export_done. That silently dropped items queued (e.g. from
+  // the Data page) after "Start Export" was clicked but before the render
+  // finished — a real risk since start_export returns immediately and the
+  // render can take minutes. Only the items sent to that specific export
+  // batch (tracked via State's 'exportPendingKeys') should be removed.
+
+  let router, api, container, page, onCalls;
+
+  beforeEach(() => {
+    loadState();
+    loadExportParams();
+
+    onCalls = [];
+    api = makeAPI({ on: vi.fn((event, cb) => { onCalls.push({ event, cb }); return () => {}; }) });
+    router = makeRouter();
+    globalThis.Router = router;
+    globalThis.API    = api;
+
+    loadPage('pages/export.js');
+    container = makeContainer();
+    page      = router.getPage('export');
+  });
+
+  afterEach(async () => {
+    page?.unmount();
+    cleanupContainer(container);
+  });
+
+  test('removes only the batch that was started, keeping items queued afterward', async () => {
+    State.set('previewSession', PREVIEW);
+    await page.mount(container);
+
+    container.querySelector('#exp-start-btn').click();
+    await flushAsync();
+
+    // Simulate a second lap being queued (e.g. from the Data page) while the
+    // first export is still rendering.
+    const laterItem = { csv_path: '/data/other.csv', lap_idx: 0, video_paths: ['/other.mp4'], sync_offset: 0, scope: 'selected_lap' };
+    State.set('selectedItems', [...State.get('selectedItems'), laterItem]);
+    expect(State.get('selectedItems')).toHaveLength(2);
+
+    const doneCb = onCalls.find(c => c.event === 'export_done')?.cb;
+    doneCb({ ok: true });
+
+    const remaining = State.get('selectedItems');
+    expect(remaining).toHaveLength(1);
+    expect(remaining[0].csv_path).toBe('/data/other.csv');
+  });
+
+  test('does not remove any items when the export failed', async () => {
+    State.set('previewSession', PREVIEW);
+    await page.mount(container);
+
+    container.querySelector('#exp-start-btn').click();
+    await flushAsync();
+
+    const doneCb = onCalls.find(c => c.event === 'export_done')?.cb;
+    doneCb({ ok: false });
+
+    expect(State.get('selectedItems')).toHaveLength(1);
+  });
+});

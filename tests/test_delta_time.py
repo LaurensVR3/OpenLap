@@ -270,7 +270,5 @@ def test_gauge_delta_renders_neutral():
 
 
 def test_gauge_delta_in_styles_list():
-    from gauge_channels import GAUGE_STYLES, GAUGE_STYLES_BIKE, GAUGE_STYLES_CAR
-    assert 'Delta' in GAUGE_STYLES
-    assert 'Delta' in GAUGE_STYLES_BIKE
-    assert 'Delta' in GAUGE_STYLES_CAR
+    from gauge_channels import get_channel_styles
+    assert 'Delta' in get_channel_styles('delta_time')

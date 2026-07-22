@@ -95,6 +95,12 @@ const GaugeSplits = {
         ctx.fillText(curTxt, COL_CUR, rowY);
 
         // Delta
+        // NOTE: delta color-coding intentionally differs by gauge type
+        // (3-tier, +/-0.01 neutral band, here — vs. delta.js's +/-0.10 band,
+        // scoreboard.js's 2-tier/no-neutral-band, and multiline.js/
+        // sector_bar.js's 4-tier scheme). Matches styles/gauge_splits.py
+        // exactly — keep in sync with it, do not unify across files without
+        // updating the Python mirror too.
         if (s.delta != null) {
           let dCol;
           if (Math.abs(s.delta) < 0.01)  dCol = '#e8e8e8';

@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import math
 import xml.etree.ElementTree as ET
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 import numpy as np
@@ -200,7 +200,7 @@ def load_gpx(path: str) -> Session:
         logger.warning('GPX file %s has no timestamps — assuming 1 Hz', path)
         t0 = datetime(2000, 1, 1, tzinfo=timezone.utc)
         for i, r in enumerate(raw):
-            r['time'] = t0.replace(second=0) if i == 0 else raw[0]['time']
+            r['time'] = t0 + timedelta(seconds=i)
         # Re-use raw unchanged
         timed = raw
 

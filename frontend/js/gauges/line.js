@@ -12,7 +12,11 @@ const GaugeLine = {
 
     GaugeBase.drawBackground(ctx, w, h, theme);
 
-    const value     = data.value      ?? 0;
+    // rawValue is passed to fmtValue untouched so missing telemetry renders as
+    // "—"; value (defaulted to 0) is only for the fill-fraction/line-colour
+    // MATH below, which needs a real number.
+    const rawValue  = data.value;
+    const value     = rawValue ?? 0;
     const hist      = data.history_vals || [value];
     const label     = (data.label     || '').toUpperCase();
     const unit      = data.unit       || '';
@@ -45,6 +49,9 @@ const GaugeLine = {
       lineCol = value >= 0 ? theme.fillPos : theme.fillNeg;
     } else {
       const frac = Math.max(0, Math.min(1, (value - mn) / rng));
+      // NOTE: 0.80 intentionally differs from bar.js (0.75, matching
+      // styles/gauge_bar.py) — keep consistent with dial.js/compare.js,
+      // don't unify across gauge types without checking each Python mirror.
       lineCol = frac > 0.80 ? theme.fillHi : theme.fillLo;
     }
 
@@ -113,7 +120,7 @@ const GaugeLine = {
 
     // Value readout (right panel, upper half) — budget is the panel right of
     // the chart area (from cX+cW to the right edge).
-    const valStr   = GaugeBase.fmtValue(value, channel);
+    const valStr   = GaugeBase.fmtValue(rawValue, channel);
     const fsValFit = GaugeBase.fitFontSize(ctx, valStr, fsVal, 'bold', w * 0.97 - (cX + cW));
     ctx.textBaseline = 'middle';
     ctx.textAlign    = 'right';

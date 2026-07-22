@@ -23,11 +23,16 @@ def render(data: dict, w: int, h: int):
     n       = max(len(lats), 1)
     pct     = min(1.0, max(0.0, cur_idx / n))
 
-    # Colours from theme
-    bg_col    = _hex_to_rgb(T.get('gauge_bg',   '#1a1d2e'))
-    fill_col  = _hex_to_rgb(T.get('gauge_acc',  '#4f8ef7'))
-    track_col = _hex_to_rgb(T.get('gauge_track','#21253a'))
-    text_col  = _hex_to_rgb(T.get('gauge_text', '#e8eaf6'))
+    # Colours from theme. There's no dedicated hex-format "map background"
+    # token in overlay_themes.py (map_bg_rgba is a 0-1 float RGBA tuple for
+    # matplotlib, not compatible with _hex_to_rgb's hex-string input), so the
+    # background stays a fixed default; fill/track/text reuse the same map_*
+    # tokens map_circuit.py already reads, so this style responds to theme
+    # selection instead of always rendering fixed colours.
+    bg_col    = _hex_to_rgb('#1a1d2e')
+    fill_col  = _hex_to_rgb(T.get('map_dot',         '#4f8ef7'))
+    track_col = _hex_to_rgb(T.get('map_track_outer', '#21253a'))
+    text_col  = _hex_to_rgb(T.get('text',            '#e8eaf6'))
 
     canvas = np.zeros((h, w, 4), dtype=np.uint8)
 

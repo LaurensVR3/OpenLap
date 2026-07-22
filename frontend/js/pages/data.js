@@ -853,7 +853,9 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
 
   async function doScan(auto = false) {
     if (_scanning) return;
-    _config = _config || await API.getConfig();
+    // Always re-fetch config (not just on first load) so a folder just added
+    // in Settings is picked up without needing an app restart.
+    _config = await API.getConfig();
     const paths = _config?.all_telemetry_paths || [];
     if (!paths.length) {
       setStatus('No telemetry folders configured — go to Settings first.');

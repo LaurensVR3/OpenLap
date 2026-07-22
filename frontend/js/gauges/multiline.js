@@ -12,6 +12,12 @@ const GAUGE_COLOURS = [
   '#c084fc', '#fb923c',
 ];
 
+// NOTE: delta color-coding intentionally differs by gauge type (4-tier
+// purple/green/yellow/red here — vs. delta.js's 3-tier +/-0.10 band,
+// scoreboard.js's 2-tier/no-neutral-band, splits.js's 3-tier +/-0.01 band).
+// Matches styles/gauge_multiline.py's _delta_colour exactly — keep in sync
+// with it (and sector_bar.js, which shares this scheme), do not unify across
+// files without updating the Python mirror too.
 function _multilineColour(entry) {
   if (entry.channel === 'delta_time') {
     const v = entry.value ?? 0;
@@ -138,7 +144,9 @@ const GaugeMultiline = {
       const colour = _multilineColour(entry);
       const label  = (entry.label || '').slice(0, 6).toUpperCase();
       const unit   = entry.unit || '';
-      const value  = entry.value ?? 0;
+      // Pass the raw (possibly null/undefined) value through - fmtValue's
+      // own null guard renders "--" for missing telemetry.
+      const value  = entry.value;
 
       const yCentre = h * 0.10 + rowH * (i + 0.5);
 
@@ -146,13 +154,12 @@ const GaugeMultiline = {
       ctx.fillStyle = colour;
       ctx.fillRect(legendX, yCentre - swatchH / 2, swatchW, swatchH);
 
-      // Format value
-      let valStr;
-      const absV = Math.abs(value);
-      if (absV >= 1000)     valStr = value.toFixed(0);
-      else if (absV >= 100) valStr = value.toFixed(0);
-      else if (absV >= 10)  valStr = value.toFixed(1);
-      else                  valStr = value.toFixed(2);
+      // Format value via the shared formatter so this legend inherits the
+      // same lap_time/delta_time/lean special-casing and the same
+      // thousands-separator behaviour (>=10000, per fmtValue) as every other
+      // gauge and its Python mirror (styles/gauge_multiline.py), instead of a
+      // hand-rolled duplicate that had drifted from both.
+      let valStr = GaugeBase.fmtValue(value, entry.channel);
       if (unit) valStr += '\u202f' + unit;
 
       // Combined label + value

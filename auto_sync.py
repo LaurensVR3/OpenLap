@@ -14,6 +14,7 @@ import json
 import logging
 import subprocess
 import threading
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
@@ -45,6 +46,14 @@ def _load_session(csv_path: str, source: str):
     if source == 'MoTeC':
         from motec_data import load_ld
         return load_ld(csv_path)
+    if source == 'VBOX':
+        from vbox_data import load_vbo
+        return load_vbo(csv_path)
+    if source == 'Unipro':
+        from unipro_data import is_unipro_tsv, load_tsv, load_uni
+        if is_unipro_tsv(csv_path):
+            return load_tsv(csv_path)
+        return load_uni(csv_path)
     raise ValueError(f'Unknown telemetry source: {source!r}')
 
 
@@ -87,6 +96,69 @@ def _probe_video(vpath: str) -> dict:
         'height': int(stream['height']),
         'duration': duration,
     }
+
+
+def _probe_creation_time(vpath: str) -> Optional[datetime]:
+    """Best-effort read of a video's embedded creation_time (UTC), or None
+    if absent/unreadable. Used only to detect real inter-segment gaps —
+    never fatal to the sync pipeline if it fails."""
+    try:
+        result = subprocess.run(
+            ['ffprobe', '-v', 'quiet', '-print_format', 'json',
+             '-show_entries', 'format_tags=creation_time', vpath],
+            capture_output=True, text=True, check=True,
+            creationflags=_NO_WINDOW,
+        )
+        data = json.loads(result.stdout)
+        ct = data.get('format', {}).get('tags', {}).get('creation_time')
+        if not ct:
+            return None
+        dt = datetime.fromisoformat(ct.replace('Z', '+00:00'))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        logger.debug('auto_sync: could not read creation_time for %s', vpath, exc_info=True)
+        return None
+
+
+def _video_gap_seconds(prev_path: str, prev_duration: float, cur_path: str) -> float:
+    """Real elapsed-time gap (seconds) between the end of the previous video
+    segment and the start of the current one, using embedded creation_time
+    metadata (the same source session_scanner.group_videos uses to decide
+    whether segments belong to the same recording session).
+
+    Returns 0.0 (i.e. "assume back-to-back") if either file's creation_time
+    can't be read — failing safe to the old behaviour rather than guessing.
+    Never negative (overlapping/out-of-order timestamps clamp to 0).
+    """
+    prev_ct = _probe_creation_time(prev_path)
+    cur_ct  = _probe_creation_time(cur_path)
+    if prev_ct is None or cur_ct is None:
+        return 0.0
+    gap = (cur_ct - prev_ct).total_seconds() - prev_duration
+    return max(0.0, gap)
+
+
+def _append_gap_frames(all_sig: list, gap_s: float, fps: float) -> int:
+    """Append neutral filler frames to *all_sig* (in place), representing
+    *gap_s* seconds of real elapsed time between video segments that produced
+    no frames (e.g. the camera was stopped/swapped cards mid-session).
+
+    Without this, concatenating segment frames back-to-back silently drops
+    the gap from the timeline, so any correlation dominated by a later
+    segment is off by roughly the unaccounted gap. The filler uses the mean
+    of the signal collected so far so it reads as a flat, unremarkable
+    stretch after z-normalization rather than a false motion spike or dip.
+
+    Returns the number of frames appended (0 if gap_s rounds to 0 frames).
+    """
+    n_gap_frames = max(0, int(round(gap_s * fps)))
+    if n_gap_frames == 0:
+        return 0
+    fill_val = float(np.mean(all_sig)) if all_sig else 0.0
+    all_sig.extend([fill_val] * n_gap_frames)
+    return n_gap_frames
 
 
 # ── Cross-correlation ─────────────────────────────────────────────────────────
@@ -166,6 +238,8 @@ def run_auto_sync(
     best_offset          = 0.0
     best_conf            = 0.0
     frames_per_check     = max(1, int(CHECK_EVERY_S * fps))
+    prev_vpath:    Optional[str] = None
+    prev_duration        = 0.0
 
     for vpath in video_paths:
         if cancel_event and cancel_event.is_set():
@@ -175,6 +249,18 @@ def run_auto_sync(
         except Exception:
             logger.warning('auto_sync: probe failed for %s', vpath)
             continue
+
+        # Account for any real elapsed-time gap between this segment and the
+        # previous one (e.g. camera stopped/restarted) — otherwise the
+        # concatenated signal silently compresses that dead time out of the
+        # timeline and any correlation dominated by this segment is wrong by
+        # roughly the unaccounted gap.
+        if prev_vpath is not None:
+            gap_s = _video_gap_seconds(prev_vpath, prev_duration, vpath)
+            if gap_s > 0:
+                _append_gap_frames(all_sig, gap_s, fps)
+                cumulative += gap_s
+                logger.debug('auto_sync: inserted %.1fs gap before %s', gap_s, vpath)
 
         orig_h   = info['height']
         new_h    = max(2, int(orig_h * RESIZE_W / info['width']))
@@ -238,6 +324,7 @@ def run_auto_sync(
         if not stopped_early:
             proc.wait()
             cumulative += duration
+            prev_vpath, prev_duration = vpath, duration
         else:
             break
 

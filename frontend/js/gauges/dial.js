@@ -11,7 +11,11 @@
 const GaugeDial = {
   render(ctx, data, w, h) {
     const theme     = GaugeBase.getTheme(data.theme || 'Dark');
-    const value     = data.value     ?? 0;
+    // rawValue is passed to fmtValue untouched so missing telemetry renders as
+    // "—"; value (defaulted to 0) is only for the needle/fill-fraction MATH
+    // below, which needs a real number.
+    const rawValue  = data.value;
+    const value     = rawValue ?? 0;
     const label     = (data.label    || '').toUpperCase();
     const unit      = data.unit      || '';
     const mn        = data.min_val   ?? 0;
@@ -82,6 +86,9 @@ const GaugeDial = {
       }
     } else {
       needleAngleDeg = ARC_START_DEG - ARC_SWEEP_DEG * frac;
+      // NOTE: 0.80 intentionally differs from bar.js (0.75, matching
+      // styles/gauge_bar.py) — keep consistent with line.js/compare.js,
+      // don't unify across gauge types without checking each Python mirror.
       fillCol = frac < 0.80 ? theme.fillLo : theme.fillHi;
 
       if (frac > 0.001) {
@@ -131,7 +138,7 @@ const GaugeDial = {
     const fsLabel = Math.max(7, Math.min(Math.round(9 * sc), Math.round(w * 0.08)));
     const fsUnit  = Math.max(6, Math.min(Math.round(7 * sc), Math.round(w * 0.06)));
 
-    const valStr = GaugeBase.fmtValue(value, channel);
+    const valStr = GaugeBase.fmtValue(rawValue, channel);
 
     ctx.textAlign    = 'center';
     ctx.textBaseline = 'middle';

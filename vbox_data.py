@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from data_model import DataPoint, Lap, Session
+from exceptions import MissingHeaderError, NoDataRowsError, CSVParseError
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +80,19 @@ def _dms_to_decimal(raw: float, hemisphere: str) -> float:
 
 
 def _parse_hhmmss(raw: float) -> Tuple[int, int, float]:
-    """Decompose HHMMSS.SS float into (hours, minutes, seconds)."""
+    """Decompose HHMMSS.SS float into (hours, minutes, seconds).
+
+    Raises CSVParseError if the decomposed value is out of sane bounds
+    (e.g. a garbled hour/minute field, or seconds rounding up to 60.0)
+    instead of letting an invalid value crash later inside datetime(...)
+    with an uninformative, uncaught ValueError.
+    """
     h = int(raw) // 10000
     m = (int(raw) // 100) % 100
     s = round(raw - h * 10000 - m * 100, 6)
+    if not (0 <= h <= 23 and 0 <= m <= 59 and 0 <= s < 60):
+        raise CSVParseError(
+            f"Invalid HHMMSS time value {raw!r} decoded to h={h} m={m} s={s}")
     return h, m, s
 
 
@@ -93,7 +103,7 @@ def load_vbo(path: str) -> Session:
 
     header_lines = sections.get('header', [])
     if not header_lines:
-        raise ValueError(f"No [header] section in {path}")
+        raise MissingHeaderError(f"No [header] section in {path}")
 
     channels = [c.strip().lower() for c in header_lines]
 
@@ -122,7 +132,7 @@ def load_vbo(path: str) -> Session:
     idx_yaw     = _find('yaw rate', 'yaw-rate')
 
     if idx_time is None or idx_lat is None or idx_lon is None:
-        raise ValueError(f"Missing required channels (time/lat/lon) in {path}")
+        raise MissingHeaderError(f"Missing required channels (time/lat/lon) in {path}")
 
     # Hemisphere: read from channel name
     lat_hem = 'S' if any('south' in c for c in channels if 'latitude' in c) else 'N'
@@ -152,7 +162,7 @@ def load_vbo(path: str) -> Session:
 
     data_lines = sections.get('data', [])
     if not data_lines:
-        raise ValueError(f"No [data] section in {path}")
+        raise NoDataRowsError(f"No [data] section in {path}")
 
     all_pts: List[DataPoint] = []
     prev_dt: Optional[datetime] = None
@@ -172,7 +182,12 @@ def load_vbo(path: str) -> Session:
             except ValueError:
                 return default
 
-        h, m, s = _parse_hhmmss(_col(idx_time))
+        try:
+            h, m, s = _parse_hhmmss(_col(idx_time))
+        except CSVParseError as exc:
+            logger.warning('Skipping row %d with invalid time value in %s: %s',
+                           record_idx, path, exc)
+            continue
         if session_date is not None:
             dt = session_date + timedelta(hours=h, minutes=m, seconds=s, days=day_offset)
             if prev_dt is not None and (dt - prev_dt).total_seconds() < -3600:
@@ -216,7 +231,7 @@ def load_vbo(path: str) -> Session:
         ))
 
     if not all_pts:
-        raise ValueError(f"No valid data rows parsed from {path}")
+        raise NoDataRowsError(f"No valid data rows parsed from {path}")
 
     # ── Elapsed times ─────────────────────────────────────────────────────────
 

@@ -142,6 +142,47 @@ describe('Overlay editor — export bar', () => {
     expect(router.navigate).toHaveBeenCalledWith('export');
   });
 
+  test('document mousemove/mouseup listeners are removed on unmount, not leaked across remounts', async () => {
+    // Regression coverage: setupMouseEvents() used to add mousemove/mouseup
+    // listeners straight to `document` on every mount() and unmount() never
+    // removed them — each Data→Overlay round trip left one more permanent
+    // pair behind, sharing the same module-level drag state, so a stray
+    // mouseup after N visits fired saveLayout() (API.saveOverlay) N times.
+    //
+    // beforeEach already performed one mount; tear that down with the
+    // (currently un-spied) real listeners before wiring the spies so counts
+    // below only reflect the cycles this test drives.
+    page.unmount();
+    cleanupContainer(container);
+
+    const addSpy    = vi.spyOn(document, 'addEventListener');
+    const removeSpy = vi.spyOn(document, 'removeEventListener');
+
+    for (let i = 0; i < 2; i++) {
+      container = makeContainer();
+      await page.mount(container);
+      await flushAsync();
+      await flushAsync();
+      page.unmount();
+      cleanupContainer(container);
+    }
+
+    const addCount    = type => addSpy.mock.calls.filter(c => c[0] === type).length;
+    const removeCount = type => removeSpy.mock.calls.filter(c => c[0] === type).length;
+
+    expect(addCount('mousemove')).toBeGreaterThan(0);
+    expect(addCount('mousemove')).toBe(removeCount('mousemove'));
+    expect(addCount('mouseup')).toBeGreaterThan(0);
+    expect(addCount('mouseup')).toBe(removeCount('mouseup'));
+
+    // Re-mount so the outer afterEach's page.unmount()/cleanupContainer() has
+    // a live container/page to tear down, matching every other test's shape.
+    container = makeContainer();
+    await page.mount(container);
+    await flushAsync();
+    await flushAsync();
+  });
+
   test('"▶ Export Now" does nothing if nothing can be queued and no session is loaded', async () => {
     // Fresh mount with no previewSession at all
     page.unmount();
@@ -168,5 +209,105 @@ describe('Overlay editor — export bar', () => {
 
     freshPage.unmount();
     cleanupContainer(freshContainer);
+  });
+});
+
+describe('Overlay editor — HTML-attribute escaping', () => {
+  // Regression coverage: two spots interpolated network/filesystem-derived
+  // values straight into HTML attributes without the file's own `_esc()`
+  // helper — data-osm-id (from an OSM/Overpass network response) and the
+  // manual ref-lap picker's data-csv (a raw filesystem path). A value
+  // containing a `"` could break out of the attribute.
+  const MALICIOUS = '123" onmouseover="alert(1)';
+
+  let router, container, page;
+
+  beforeEach(async () => {
+    loadState();
+
+    globalThis.ResizeObserver = class { observe() {} disconnect() {} };
+    const fakeCtx = {
+      clearRect() {}, fillRect() {}, beginPath() {}, moveTo() {}, lineTo() {},
+      stroke() {}, fill() {}, save() {}, restore() {}, arc() {}, closePath() {},
+      measureText: () => ({ width: 10 }), roundRect() {}, fillText() {},
+    };
+    HTMLCanvasElement.prototype.getContext = () => fakeCtx;
+    // gauges/map.js isn't loaded by this test (out of scope — only editor.js/
+    // export.js/etc. are touched here); renderGaugeEl() catches the resulting
+    // "GaugeMap is not defined" error and draws an error placeholder, which is
+    // fine for these DOM-attribute-escaping tests that don't assert on canvas output.
+    globalThis.GaugeMap = { render: () => {}, renderZoomed: () => {} };
+
+    router = makeRouter();
+    globalThis.Router = router;
+    globalThis.API = makeAPI({
+      getVideoServerPort: vi.fn(async () => 0),
+      getConfig:          vi.fn(async () => ({ overlay: { is_bike: false, theme: 'Dark', gauges: [] } })),
+      getOverlay:         vi.fn(async () => ({
+        is_bike: false, theme: 'Dark',
+        gauges: [{ channel: 'map', style: 'Circuit', visible: true, x: 0.1, y: 0.1, w: 0.3, h: 0.3 }],
+      })),
+      listPresets:        vi.fn(async () => ({})),
+      getSessionMeta:     vi.fn(async () => ({ track: 'Spa-Francorchamps' })),
+      getLaps:            vi.fn(async () => LAPS),
+      loadLapHistory:     vi.fn(async () => []),
+      getTrackMapGeometry: vi.fn(async () => ({ lats: [], lons: [] })),
+      getTrackMapCandidates: vi.fn(async () => ({
+        candidates: [{ osm_id: MALICIOUS, name: 'Spa', centroid_dist_m: 500 }],
+        selected_osm_id: '', auto_osm_id: '', track_key: 'spa',
+      })),
+      getLapsForRefPicker: vi.fn(async () => ([
+        { date: '2024-06-15T00:00:00Z', laps: [{ csv_path: MALICIOUS, lap_num: 1, duration: 80, is_best: true }] },
+      ])),
+    });
+
+    loadExportParams();
+    loadPage('pages/editor.js');
+    container = makeContainer();
+    page      = router.getPage('editor');
+
+    State.set('previewSession', { ...SESSION, lap_idx: 1 });
+    await page.mount(container);
+    await flushAsync();
+    await flushAsync();
+  });
+
+  afterEach(() => {
+    page?.unmount();
+    cleanupContainer(container);
+  });
+
+  test('OSM candidate osm_id is escaped in the data-osm-id attribute', async () => {
+    const canvas = container.querySelector('.gauge-canvas[data-gauge-idx="0"]');
+    expect(canvas).not.toBeNull();
+    canvas.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+    const configureBtn = container.querySelector('#map-osm-configure');
+    expect(configureBtn).not.toBeNull();
+    configureBtn.click();
+    await flushAsync();
+    await flushAsync();
+
+    const row = container.querySelector('.osm-cand-row[data-osm-id]');
+    expect(row).not.toBeNull();
+    // If unescaped, the embedded `"` would break out of the attribute and
+    // dataset.osmId would come back truncated (e.g. "123") with a stray
+    // onmouseover attribute injected onto the element instead.
+    expect(row.dataset.osmId).toBe(MALICIOUS);
+    expect(row.hasAttribute('onmouseover')).toBe(false);
+  });
+
+  test('ref lap picker csv path is escaped in the data-csv attribute', async () => {
+    const refSel = container.querySelector('#ref-mode-sel');
+    expect(refSel).not.toBeNull();
+    refSel.value = 'manual';
+    refSel.dispatchEvent(new Event('change'));
+    await flushAsync();
+    await flushAsync();
+
+    const row = container.querySelector('.ref-lap-row');
+    expect(row).not.toBeNull();
+    expect(row.dataset.csv).toBe(MALICIOUS);
+    expect(row.hasAttribute('onmouseover')).toBe(false);
   });
 });

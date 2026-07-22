@@ -9,6 +9,14 @@
 const GaugeDelta = {
   _NEUTRAL_BAND: 0.10,
 
+  // NOTE: delta color-coding intentionally differs by gauge type - see the
+  // matching logic in scoreboard.js, splits.js, and multiline.js/sector_bar.js
+  // (3-tier +/-0.10 neutral band here, vs. 2-tier no-neutral-band in
+  // scoreboard.js, 3-tier +/-0.01 in splits.js, and a 4-tier purple/green/
+  // yellow/red scheme in multiline.js/sector_bar.js). Each matches its own
+  // styles/gauge_*.py mirror exactly - keep this file in sync with
+  // styles/gauge_delta.py, and do not unify the thresholds/tiers across files
+  // without also updating the corresponding Python mirror(s).
   _colour(delta) {
     if (Math.abs(delta) <= this._NEUTRAL_BAND) return '#e8e8e8';
     return delta < 0 ? '#22dd66' : '#ff4444';

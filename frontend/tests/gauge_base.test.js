@@ -41,3 +41,27 @@ describe('GaugeBase.fitFontSize', () => {
     expect(ctx.font).toContain('Consolas');
   });
 });
+
+describe('GaugeBase.fmtValue — gear channel', () => {
+  const GaugeBase = loadGaugeBase();
+
+  it('shows "N" for neutral (0)', () => {
+    expect(GaugeBase.fmtValue(0, 'gear')).toBe('N');
+  });
+
+  it('shows the plain integer for an engaged gear', () => {
+    expect(GaugeBase.fmtValue(3, 'gear')).toBe('3');
+  });
+
+  it('rounds a fractional value to the nearest gear rather than truncating', () => {
+    expect(GaugeBase.fmtValue(2.9, 'gear')).toBe('3');
+  });
+
+  it('rounds a small fractional value down to neutral', () => {
+    expect(GaugeBase.fmtValue(0.4, 'gear')).toBe('N');
+  });
+
+  it('returns an em dash for null/undefined', () => {
+    expect(GaugeBase.fmtValue(null, 'gear')).toBe('—');
+  });
+});

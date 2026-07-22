@@ -2,14 +2,19 @@
 Tests for _VideoFileHandler — the local HTTP server that serves video files
 to the frontend. Covers the security and robustness fixes from the code review:
   - Extension whitelist (path traversal prevention)
-  - Range header parsing (malformed input → 400, out-of-range → 416)
+  - Known-path allowlist (server only serves paths the app itself resolved)
+  - Range header parsing (malformed input → 400, out-of-range → 416,
+    suffix form "bytes=-N" → last N bytes)
   - Seek bounds (start >= file_size → 416)
   - Normal full and partial requests
+  - No wildcard CORS header
+  - Threaded server handles overlapping requests without serializing them
 """
 import http.client
 import http.server
 import sys
 import threading
+import time
 import urllib.parse
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -20,15 +25,19 @@ import pytest
 if 'webview' not in sys.modules:
     sys.modules['webview'] = MagicMock()
 
-from webview_api import _VideoFileHandler, _ALLOWED_VIDEO_EXTENSIONS
+from webview_api import (
+    _VideoFileHandler, _ALLOWED_VIDEO_EXTENSIONS, _ThreadingHTTPServer,
+    _register_known_video_path,
+)
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope='module')
 def server_port():
-    """Start a single _VideoFileHandler server for the whole module."""
-    srv = http.server.HTTPServer(('127.0.0.1', 0), _VideoFileHandler)
+    """Start a single _VideoFileHandler server (the same threaded class used
+    in production) for the whole module."""
+    srv = _ThreadingHTTPServer(('127.0.0.1', 0), _VideoFileHandler)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()
     yield srv.server_address[1]
@@ -37,9 +46,11 @@ def server_port():
 
 @pytest.fixture
 def mp4_file(tmp_path):
-    """A 16-byte fake .mp4 file: b'0123456789ABCDEF'."""
+    """A 16-byte fake .mp4 file: b'0123456789ABCDEF', pre-registered with the
+    known-path allowlist so legitimate requests against it are served."""
     p = tmp_path / 'clip.mp4'
     p.write_bytes(b'0123456789ABCDEF')
+    _register_known_video_path(str(p))
     return str(p)
 
 
@@ -86,8 +97,33 @@ class TestAllowedExtensions:
 
     def test_nonexistent_video_returns_404(self, server_port, tmp_path):
         p = tmp_path / 'missing.mp4'
+        # Registered but never written to disk — exercises the isfile() check
+        # specifically, independent of the known-path allowlist.
+        _register_known_video_path(str(p))
         status, _, _ = _req(server_port, _furl(str(p)))
         assert status == 404
+
+
+# ── Known-path allowlist ────────────────────────────────────────────────────────
+
+class TestKnownPathAllowlist:
+    def test_unregistered_path_returns_403(self, server_port, tmp_path):
+        """A path with a valid video extension that the app never itself
+        resolved (via session scan / manual assign / camera-folder link) must
+        be rejected, even though it exists on disk — this is the mitigation
+        for arbitrary cross-origin fetch() of any video-looking path."""
+        p = tmp_path / 'unregistered.mp4'
+        p.write_bytes(b'0123456789ABCDEF')
+        status, _, _ = _req(server_port, _furl(str(p)))
+        assert status == 403
+
+    def test_registered_path_is_served(self, server_port, tmp_path):
+        p = tmp_path / 'registered.mp4'
+        p.write_bytes(b'0123456789ABCDEF')
+        _register_known_video_path(str(p))
+        status, _, body = _req(server_port, _furl(str(p)))
+        assert status == 200
+        assert body == b'0123456789ABCDEF'
 
 
 # ── Full file requests ─────────────────────────────────────────────────────────
@@ -106,9 +142,12 @@ class TestFullRequests:
         _, hdrs, _ = _req(server_port, _furl(mp4_file))
         assert hdrs.get('Accept-Ranges') == 'bytes'
 
-    def test_cors_header(self, server_port, mp4_file):
+    def test_no_wildcard_cors_header(self, server_port, mp4_file):
+        """A same-origin <video> tag never needs CORS headers; a wildcard
+        Access-Control-Allow-Origin would let an unrelated cross-origin site
+        read response bytes via fetch() if it could guess/name the port+path."""
         _, hdrs, _ = _req(server_port, _furl(mp4_file))
-        assert hdrs.get('Access-Control-Allow-Origin') == '*'
+        assert hdrs.get('Access-Control-Allow-Origin') is None
 
 
 # ── Range requests ─────────────────────────────────────────────────────────────
@@ -138,6 +177,23 @@ class TestRangeRequests:
                           headers={'Range': 'bytes=0-3'})
         assert hdrs.get('Content-Range') == 'bytes 0-3/16'
 
+    def test_suffix_range_last_n_bytes(self, server_port, mp4_file):
+        """RFC 7233 suffix form: 'bytes=-500' means the LAST 500 bytes of the
+        file, not bytes 0-500. File is 16 bytes 'b0123456789ABCDEF'; the last
+        5 bytes are 'BCDEF' (indices 11-15), not the first 6 bytes '012345'."""
+        status, hdrs, body = _req(server_port, _furl(mp4_file),
+                                   headers={'Range': 'bytes=-5'})
+        assert status == 206
+        assert body == b'BCDEF'
+        assert hdrs.get('Content-Range') == 'bytes 11-15/16'
+
+    def test_suffix_range_longer_than_file_returns_whole_file(self, server_port, mp4_file):
+        """Suffix length exceeding the file size should clamp to the whole file."""
+        status, _, body = _req(server_port, _furl(mp4_file),
+                                headers={'Range': 'bytes=-9999'})
+        assert status == 206
+        assert body == b'0123456789ABCDEF'
+
 
 # ── Range error cases ──────────────────────────────────────────────────────────
 
@@ -153,10 +209,52 @@ class TestRangeErrors:
                             headers={'Range': 'bytes=20-30'})
         assert status == 416
 
-    def test_negative_start_returns_416(self, server_port, mp4_file):
-        # bytes=-5 is valid HTTP syntax (suffix range) but our handler rejects it
-        # because parts[0] would be '' and parts[1] would be '5' → start=0, end=5
-        # The check is: start < 0 — this tests the non-negative guard
+    def test_start_after_end_returns_416(self, server_port, mp4_file):
+        # start > end is not a valid range regardless of form.
+        # (Note: 'bytes=-5' is the RFC 7233 suffix form, NOT "start=-5" — it's
+        # handled separately, see TestRangeRequests.test_suffix_range_last_n_bytes.)
         status, _, _ = _req(server_port, _furl(mp4_file),
                             headers={'Range': 'bytes=5-3'})  # start > end
         assert status == 416
+
+
+# ── Concurrency ────────────────────────────────────────────────────────────────
+
+class TestConcurrentRequests:
+    def test_overlapping_range_requests_do_not_serialize(self, server_port, tmp_path):
+        """The production server uses _ThreadingHTTPServer (ThreadingMixIn), so
+        two overlapping range requests must both complete promptly rather than
+        the second blocking until the first's connection is closed. Uses a
+        larger file + artificial per-chunk delay (via a slow reader path is not
+        available, so we instead just fire many concurrent requests and assert
+        they all finish well within a generous window) as a coarse but real
+        end-to-end check against the actual running server fixture."""
+        big = tmp_path / 'big.mp4'
+        big.write_bytes(b'x' * (2 * 1024 * 1024))  # 2 MB
+        _register_known_video_path(str(big))
+
+        results = []
+        errors = []
+
+        def _worker():
+            try:
+                status, _, body = _req(server_port, _furl(str(big)),
+                                        headers={'Range': 'bytes=0-1048575'})
+                results.append((status, len(body)))
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=_worker) for _ in range(6)]
+        start = time.time()
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+        elapsed = time.time() - start
+
+        assert not errors, f'concurrent requests raised: {errors}'
+        assert len(results) == 6
+        assert all(status == 206 and n == 1048576 for status, n in results)
+        # A single-threaded HTTPServer would serialize these; generous bound
+        # to avoid flakiness while still catching gross serialization.
+        assert elapsed < 8, f'requests took {elapsed:.2f}s — server may be serializing connections'

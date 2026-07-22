@@ -31,6 +31,7 @@ class DataPoint:
     lap_elapsed:  float = 0.0
     rpm:          float = 0.0
     exhaust_temp: float = 0.0  # °C
+    gear:         int   = 0    # 0 = neutral
 
     @staticmethod
     def from_row(row: dict, is_bike: bool) -> 'DataPoint':
@@ -54,6 +55,7 @@ class DataPoint:
             # Optional: not in stock RaceBox exports, but present on some custom
             # RaceBox-format devices. 'or 0.0' covers missing/empty/None values.
             rpm        = float(row.get('Rpm', row.get('rpm', 0.0)) or 0.0),
+            gear       = int(row.get('Gear', row.get('gear', 0)) or 0),
         )
 
 
@@ -152,4 +154,5 @@ class Session:
             lap=p0.lap, gyro_x=L('gyro_x'), gyro_y=L('gyro_y'), gyro_z=L('gyro_z'),
             lean_angle=L('lean_angle'), elapsed=elapsed, lap_elapsed=L('lap_elapsed'),
             rpm=L('rpm'), exhaust_temp=L('exhaust_temp'),
+            gear=p0.gear,  # discrete — nearest sample rather than interpolated
         )

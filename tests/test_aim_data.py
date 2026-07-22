@@ -25,6 +25,23 @@ def test_find_col_case_insensitive():
     assert _find_col(cols, 'speed') == 'GPS_SPEED [km/h]'
 
 
+def test_find_col_bare_accelx():
+    # Bare 'AccelX' naming convention (documented in module docstring) must
+    # actually match — this was previously missing from _PATTERNS.
+    cols = ['AccelX', 'AccelY', 'AccelZ']
+    assert _find_col(cols, 'gforce_x') == 'AccelX'
+
+
+def test_find_col_bare_accely():
+    cols = ['AccelX', 'AccelY', 'AccelZ']
+    assert _find_col(cols, 'gforce_y') == 'AccelY'
+
+
+def test_find_col_bare_accelz():
+    cols = ['AccelX', 'AccelY', 'AccelZ']
+    assert _find_col(cols, 'gforce_z') == 'AccelZ'
+
+
 # ── _safe ──────────────────────────────────────────────────────────────────────
 
 def test_safe_valid_float():
@@ -126,6 +143,25 @@ def test_sniff_speed_unit_none():
 def test_load_csv_has_laps(aim_csv_path):
     session = load_csv(aim_csv_path)
     assert len(session.laps) > 0
+
+
+def test_load_csv_bare_accel_headers_read_gforce(tmp_path):
+    # AIM CSV using the bare 'AccelX/AccelY/AccelZ' naming convention documented
+    # in the module docstring — previously matched nothing and silently read
+    # gforce as 0.0 for every row.
+    csv_path = tmp_path / "bare_accel.csv"
+    csv_path.write_text(
+        "# Session-Date: 2024-06-15T12:00:00Z\n"
+        "Time (s),GPS_Speed [m/s],GPS_Latitude,GPS_Longitude,AccelX,AccelY,AccelZ,Lap\n"
+        "0.0,0.0,50.4372,5.9719,0.5,0.6,1.0,0\n"
+        "1.0,10.0,50.4373,5.9720,0.5,0.6,1.0,0\n"
+    )
+    session = load_csv(str(csv_path))
+    pt = session.interpolate_at(0.0)
+    assert pt is not None
+    assert pt.gforce_x == pytest.approx(0.5)
+    assert pt.gforce_y == pytest.approx(0.6)
+    assert pt.gforce_z == pytest.approx(1.0)
 
 
 def test_load_csv_empty_raises(tmp_path):

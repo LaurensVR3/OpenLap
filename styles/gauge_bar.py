@@ -7,7 +7,7 @@ A small sparkline of recent values sits below the bar.
 
 ELEMENT_TYPE : "gauge"
 STYLE_NAME   : "Bar"
-Data keys    : value, history_vals, label, unit, min_val, max_val, symmetric
+Data keys    : value, history_vals, label, unit, min_val, max_val, symmetric, channel
 """
 STYLE_NAME   = 'Bar'
 ELEMENT_TYPE = 'gauge'
@@ -28,6 +28,7 @@ def render(data: dict, w: int, h: int):
     mn        = data.get('min_val',     0.0)
     mx        = data.get('max_val',     100.0)
     symmetric = data.get('symmetric',   False)
+    channel   = data.get('channel',     '')
 
     T           = data.get('_tc', {})
     bg_rgba     = T.get('bg_rgba',      (0, 0, 0, 0.72))
@@ -100,7 +101,11 @@ def render(data: dict, w: int, h: int):
         val_col = col
 
     # Value text (middle zone: 0.34 – 0.48, safely between bar and sparkline)
-    val_str = f"{value:.1f} {unit}" if unit else f"{value:.1f}"
+    if channel == 'gear':
+        gear_int = int(round(value))
+        val_str = 'N' if gear_int == 0 else str(gear_int)
+    else:
+        val_str = f"{value:.1f} {unit}" if unit else f"{value:.1f}"
     value_text = ax.text(0.50, 0.41, val_str,
             ha='center', va='center', color=val_col,
             fontsize=fs_val, fontweight='bold', fontfamily='sans-serif')

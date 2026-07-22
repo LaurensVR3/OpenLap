@@ -218,5 +218,12 @@ def render_frame_worker(args: Tuple) -> bytes:
                 _blend(frame, img, gx, gy)
             except Exception as e:
                 logger.debug('Failed to render gauge %s/%s: %s', channel, style, e)
+                # A style's render() may have called plt.figure() before
+                # raising, and never reached the fig_to_rgba()/plt.close()
+                # that normally cleans it up. Pool workers are long-lived for
+                # the whole export, so leaving that figure open would leak
+                # for the rest of the export — close everything defensively.
+                import matplotlib.pyplot as plt
+                plt.close('all')
 
     return frame.tobytes()

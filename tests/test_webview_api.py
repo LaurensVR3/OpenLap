@@ -91,6 +91,79 @@ class TestExportParamClamping:
         # The unit test above verifies the formula; this is an integration smoke test.
 
 
+# ── Config save/load round-trip ───────────────────────────────────────────────
+
+class TestSaveConfigFields:
+    """
+    save_config() only applies fields listed in its own hardcoded
+    `simple_fields` allowlist — get_config() (asdict(self._config)) returns
+    every AppConfig field generically, so it's easy to add a new per-source
+    telemetry path to AppConfig and the Settings UI but forget to also add it
+    to that allowlist. When that happens, the frontend sends the new path
+    correctly, the backend silently drops it, and the field appears to
+    "not save" with no error anywhere (exactly what happened when
+    unipro_path was first added). These tests call the real save_config()/
+    get_config() round trip, not just the allowlist constant, so a similarly
+    forgotten field in the future fails a test instead of shipping silently.
+    """
+
+    # Every per-source telemetry folder field on AppConfig that the Settings
+    # page exposes via the generic _folderRow()/data-config-key mechanism.
+    # ref_lap_csv_path is deliberately excluded — it's set through a
+    # different, dedicated flow, not this generic folder-path save path.
+    TELEMETRY_PATH_FIELDS = [
+        'racebox_path', 'aim_path', 'motec_path', 'gpx_path', 'vbox_path',
+        'unipro_path', 'telemetry_path', 'video_path', 'export_path',
+    ]
+
+    @pytest.mark.parametrize('field', TELEMETRY_PATH_FIELDS)
+    def test_path_field_round_trips_through_save_and_get(self, api, field):
+        api.save_config({field: r'C:\Some\Test\Path'})
+        assert api.get_config()[field] == r'C:\Some\Test\Path'
+
+    def test_unipro_path_specifically(self, api):
+        """Direct regression test for the exact bug reported: the Unipro
+        folder field appeared to save (no error), but reopening Settings
+        showed it empty again, because save_config() silently ignored it."""
+        api.save_config({'unipro_path': r'C:\Telemetry\Unipro'})
+        assert api.get_config()['unipro_path'] == r'C:\Telemetry\Unipro'
+
+
+# ── _load_session format dispatch ─────────────────────────────────────────────
+
+class TestLoadSessionDispatch:
+    """
+    _load_session's format dispatch is a hardcoded if/elif chain of is_X(path)
+    checks, the same shape as export_runner.load_any_session and
+    auto_sync._load_session — every format must have a branch here too, or
+    the Data/Overlay/Export tabs silently misparse it.
+    """
+
+    @pytest.mark.parametrize('is_check,module,load_fn', [
+        ('is_vbox',        'vbox_data',    'load_vbo'),
+        ('is_motec_ld',    'motec_data',   'load_ld'),
+        ('is_gpx',         'gpx_data',     'load_gpx'),
+        ('is_unipro_tsv',  'unipro_data',  'load_tsv'),
+        ('is_unipro_uni',  'unipro_data',  'load_uni'),
+        ('is_aim_csv',     'aim_data',     'load_csv'),
+    ])
+    def test_dispatches_to_correct_loader(self, is_check, module, load_fn, monkeypatch):
+        import importlib
+
+        for mod_name in ('motec_data', 'vbox_data', 'gpx_data', 'unipro_data', 'aim_data'):
+            mod = importlib.import_module(mod_name)
+            for fn_name in dir(mod):
+                if fn_name.startswith('is_') and callable(getattr(mod, fn_name)):
+                    monkeypatch.setattr(mod, fn_name, lambda p: False)
+
+        target_mod = importlib.import_module(module)
+        monkeypatch.setattr(target_mod, is_check, lambda p: True)
+        sentinel = object()
+        monkeypatch.setattr(target_mod, load_fn, lambda p: sentinel)
+
+        assert WebviewAPI._load_session('/fake/path') is sentinel
+
+
 # ── Thread safety ─────────────────────────────────────────────────────────────
 
 class TestThreadSafety:

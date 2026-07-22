@@ -215,6 +215,13 @@ def _load_dll(path: str) -> CDLL:
     if not os.path.isfile(path):
         sys.exit(f"ERROR: DLL not found at {path!r}.")
 
+    # This DLL is fetched from a third-party host (see DLL_ZIP_URL above) with
+    # no signature/checksum verification — there's no canonical hash to check
+    # against since AIM updates the file independently of OpenLap releases.
+    # Log its origin/path so a support investigation has a trail if this
+    # native code is ever the cause of a reported issue.
+    logger.warning('Loading unverified third-party native DLL from %s (downloaded from %s)',
+                    path, DLL_ZIP_URL)
     dll = cdll.LoadLibrary(path)
 
     # Override return types for every function that returns something other

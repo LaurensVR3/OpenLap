@@ -19,6 +19,11 @@ const GaugeScoreboard = {
     const best      = data.best_so_far;   // number or null/undefined
 
     // Delta — use live reference-lap delta when available, else elapsed vs best
+    // NOTE: delta color-coding intentionally differs by gauge type (2-tier,
+    // no neutral band, here — vs. delta.js's 3-tier +/-0.10 band, splits.js's
+    // 3-tier +/-0.01 band, and multiline.js/sector_bar.js's 4-tier scheme).
+    // Matches styles/gauge_lap_scoreboard.py exactly — keep in sync with it,
+    // do not unify across files without updating the Python mirror too.
     let deltaTxt, deltaCol;
     const liveDelta = data.delta_time;
     if (liveDelta != null) {
@@ -54,10 +59,12 @@ const GaugeScoreboard = {
 
     // Font sizes matching gauge_lap_scoreboard.py formula:
     // fs_label = max(5, int(h * row_h * 0.28 / 1.39))
-    // row_h = 1/n (fraction), so row height in px = h/n
-    const rowPx   = h / n;
-    const fsLabel = Math.max(8,  Math.round(rowPx * 0.28));
-    const fsValue = Math.max(10, Math.round(rowPx * 0.52));
+    // row_h is the fraction (y_top-y_bottom)/n, NOT 1/n — rowH above already
+    // is that pixel row height (yTop/yBottom are themselves in px), so reuse
+    // it directly rather than the naive h/n (which omits the ~0.88 factor and
+    // renders text ~14% too large vs. the exported video frame).
+    const fsLabel = Math.max(8,  Math.round(rowH * 0.28));
+    const fsValue = Math.max(10, Math.round(rowH * 0.52));
 
     const padL = w * 0.08;
 

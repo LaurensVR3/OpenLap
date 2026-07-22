@@ -11,12 +11,18 @@ from typing import Callable, List, Optional
 
 
 def load_any_session(path: str):
-    """Load a session from any supported format (RaceBox, AIM, GPX, MoTeC)."""
-    import gpx_data, aim_data, racebox_data, motec_data
+    """Load a session from any supported format (RaceBox, AIM, GPX, MoTeC, VBOX, Unipro)."""
+    import gpx_data, aim_data, racebox_data, motec_data, vbox_data, unipro_data
     if motec_data.is_motec_ld(path):
         return motec_data.load_ld(path)
+    if vbox_data.is_vbox(path):
+        return vbox_data.load_vbo(path)
     if gpx_data.is_gpx(path):
         return gpx_data.load_gpx(path)
+    if unipro_data.is_unipro_tsv(path):
+        return unipro_data.load_tsv(path)
+    if unipro_data.is_unipro_uni(path):
+        return unipro_data.load_uni(path)
     if aim_data.is_aim_csv(path):
         return aim_data.load_csv(path)
     return racebox_data.load_csv(path)
@@ -142,7 +148,10 @@ def run_export(
                     pt.lean_angle = compute_lean_angle(
                         pt.speed, pt.gyro_z, pt.gforce_y)
 
-        if not videos and (item_scope != 'full' or item_overlay_only):
+        # Overlay-only exports draw onto a blank transparent canvas — they
+        # never need a source video — so only skip when there's no video
+        # and the export isn't overlay-only.
+        if not videos and not item_overlay_only:
             log("  ✗ No video file — skipping")
             done_jobs += 1
             continue
@@ -159,16 +168,28 @@ def run_export(
             _vcache.mkdir(parents=True, exist_ok=True)
             join_share = 0.10
             tmp_joined = str(_vcache / f"joined_{os.path.basename(csv_path)}.mp4")
-            newest_src = max(os.path.getmtime(v) for v in videos)
-            if (os.path.exists(tmp_joined) and
-                    os.path.getmtime(tmp_joined) >= newest_src):
+            try:
+                newest_src = max(os.path.getmtime(v) for v in videos)
+                already_joined = (os.path.exists(tmp_joined) and
+                                  os.path.getmtime(tmp_joined) >= newest_src)
+            except OSError as e:
+                log(f"  ✗ Join failed: video file unreachable ({e})")
+                errors.append(str(e))
+                done_jobs += 1
+                continue
+            if already_joined:
                 log(f"  Reusing cached joined video.")
                 video_path = tmp_joined
             else:
                 log(f"  Joining {len(videos)} video segments…")
                 sess_prog(done_jobs, 0.0, 0, "Joining clips…")
+
+                def join_prog(pct, msg, _done=done_jobs, _share=join_share):
+                    sess_w = 100.0 / max(total_jobs, 1)
+                    progress_cb(_done * sess_w + (pct / 100.0) * _share * sess_w, msg)
+
                 try:
-                    concat_videos(videos, tmp_joined)
+                    concat_videos(videos, tmp_joined, progress_cb=join_prog)
                     video_path = tmp_joined
                     sess_prog(done_jobs, join_share, 0, "")
                 except Exception as e:
@@ -253,7 +274,7 @@ def run_export(
                 out   = os.path.join(export_path, f"{_export_stem(sess, label)}{_ext}")
                 log(f"  Lap {lap_idx + 1}: {lap.duration:.3f}s → {os.path.basename(out)}")
                 render_lap(
-                    video_path, out, sess, RenderJob(_export_stem(sess, label), lap),
+                    video_path or '', out, sess, RenderJob(_export_stem(sess, label), lap),
                     sync_offset=offset, encoder=encoder, crf=crf,
                     n_workers=workers, show_map=show_map,
                     show_telemetry=show_tel, padding=item_padding,
@@ -265,6 +286,7 @@ def run_export(
                     track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
                     speed_unit=resolved_speed_unit,
+                    is_cancelled=is_cancelled,
                 )
 
             elif item_scope == 'fastest':
@@ -276,7 +298,7 @@ def run_export(
                 out = os.path.join(export_path, f"{_export_stem(sess, 'Fastest')}{_ext}")
                 log(f"  Fastest lap: {lap.duration:.3f}s → {os.path.basename(out)}")
                 render_lap(
-                    video_path, out, sess, RenderJob(_export_stem(sess, 'Fastest'), lap),
+                    video_path or '', out, sess, RenderJob(_export_stem(sess, 'Fastest'), lap),
                     sync_offset=offset, encoder=encoder, crf=crf,
                     n_workers=workers, show_map=show_map,
                     show_telemetry=show_tel, padding=item_padding,
@@ -288,6 +310,7 @@ def run_export(
                     track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
                     speed_unit=resolved_speed_unit,
+                    is_cancelled=is_cancelled,
                 )
 
             elif item_scope == 'all_laps':
@@ -305,7 +328,7 @@ def run_export(
                     out = os.path.join(export_path, f"{_export_stem(sess, label)}{_ext}")
                     log(f"  Lap {i}/{len(laps)}: {lap.duration:.3f}s")
                     render_lap(
-                        video_path, out, sess, RenderJob(_export_stem(sess, label), lap),
+                        video_path or '', out, sess, RenderJob(_export_stem(sess, label), lap),
                         sync_offset=offset, encoder=encoder, crf=crf,
                         n_workers=workers, show_map=show_map,
                         show_telemetry=show_tel, padding=item_padding,
@@ -317,6 +340,7 @@ def run_export(
                         track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
                     speed_unit=resolved_speed_unit,
+                    is_cancelled=is_cancelled,
                     )
 
             elif item_scope == 'lap_range':
@@ -349,7 +373,7 @@ def run_export(
                 out = os.path.join(export_path, f"{_export_stem(sess, label)}{_ext}")
                 log(f"  Lap range {first_n}–{last_n} ({len(included)} laps) → {os.path.basename(out)}")
                 render_lap(
-                    video_path, out, sess, RenderJob(label, range_lap),
+                    video_path or '', out, sess, RenderJob(label, range_lap),
                     sync_offset=offset, encoder=encoder, crf=crf,
                     n_workers=workers, show_map=show_map,
                     show_telemetry=show_tel, padding=item_padding,
@@ -361,6 +385,7 @@ def run_export(
                     track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
                     speed_unit=resolved_speed_unit,
+                    is_cancelled=is_cancelled,
                 )
 
             elif item_scope == 'full':
@@ -379,6 +404,7 @@ def run_export(
                     track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
                     speed_unit=resolved_speed_unit,
+                    is_cancelled=is_cancelled,
                 )
 
             elif item_scope == 'clip':
@@ -415,6 +441,7 @@ def run_export(
                     track_map_geometry=_track_map_geometry,
                     track_map_areas=_track_map_areas,
                     speed_unit=resolved_speed_unit,
+                    is_cancelled=is_cancelled,
                 )
 
         except Exception as e:

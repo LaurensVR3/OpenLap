@@ -26,11 +26,8 @@ GAUGE_CHANNELS = {
     'altitude':     {'label': 'Altitude',     'unit': 'm',    'hist_key': 'alt',           'min': 0,    'max': 1000,  'symmetric': False},
     'lap_time':     {'label': 'Lap Time',     'unit': '',     'hist_key': 't',             'min': 0,    'max': 120,   'symmetric': False},
     'delta_time':   {'label': 'Delta',        'unit': 's',    'hist_key': 'delta_time',    'min': -30,  'max': 30,    'symmetric': True},
+    'gear':         {'label': 'Gear',         'unit': '',     'hist_key': 'gear',          'min': 0,    'max': 6,     'symmetric': False},
 }
-
-GAUGE_STYLES      = ['Numeric', 'Bar', 'Dial', 'Line', 'Lean', 'Delta', 'Compare', 'Splits']
-GAUGE_STYLES_BIKE = ['Numeric', 'Bar', 'Dial', 'Line', 'Lean', 'Delta', 'Compare', 'Splits']
-GAUGE_STYLES_CAR  = ['Numeric', 'Bar', 'Dial', 'Line',          'Delta', 'Compare', 'Splits']
 
 GAUGE_COLOURS = [
     '#00d4ff', '#ff6b35', '#a8ff3e', '#ff3ea8',

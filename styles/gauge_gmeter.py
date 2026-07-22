@@ -36,7 +36,7 @@ def render(data: dict, w: int, h: int):
     bg_rgba   = T.get('bg_rgba',       (0, 0, 0, 0.72))
     bg_edge   = T.get('bg_edge_rgba',  (1, 1, 1, 0.07))
     label_col = T.get('label',         '#445566')
-    acc_col   = T.get('gauge_acc',     '#4f8ef7')
+    acc_col   = T.get('fill_lo',       '#4f8ef7')  # matches gmeter.js's theme.fillLo
     warn_col  = T.get('fill_hi',       '#ff4422')
 
     size  = min(w, h)

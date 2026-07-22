@@ -12,6 +12,8 @@ import http.server
 import logging
 import mimetypes
 import os
+import re
+import socketserver
 import threading
 import urllib.parse
 from dataclasses import asdict
@@ -29,7 +31,59 @@ _ALLOWED_VIDEO_EXTENSIONS = frozenset({
     '.MP4', '.MOV', '.AVI', '.MKV', '.M4V',
 })
 
+# OSM way ids surfaced by track_map_cache.fetch_candidates() are always plain
+# (positive) integers — the Overpass query in that module only ever queries
+# `way(...)`, never `relation(...)`, for the candidate list. A leading '-' is
+# allowed anyway purely as defense in depth (some OSM tooling mints negative
+# synthetic ids for relations) even though this codebase never produces one.
+_VALID_OSM_ID_RE = re.compile(r'^-?\d+$')
+
 AUTO_SYNC_WORKERS = 2   # concurrent ffmpeg decodes — kept modest, CPU-heavy work
+
+# Paths this running app instance has itself resolved via session-scanning,
+# manual video assignment, or camera-folder linking. The video server only
+# ever serves a path that both (a) matches the extension whitelist and
+# (b) appears in this set — so an arbitrary cross-origin fetch() from some
+# unrelated site open in the user's regular browser can't use the local
+# video-server port as a generic "read any file the attacker can name" oracle;
+# it can only read files OpenLap itself already discovered/linked.
+_known_video_paths: set = set()
+_known_video_paths_lock = threading.Lock()
+
+
+def _norm_video_path(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _register_known_video_path(path: str) -> None:
+    if not path:
+        return
+    try:
+        norm = _norm_video_path(path)
+    except Exception:
+        return
+    with _known_video_paths_lock:
+        _known_video_paths.add(norm)
+
+
+def _is_known_video_path(path: str) -> bool:
+    try:
+        norm = _norm_video_path(path)
+    except Exception:
+        return False
+    with _known_video_paths_lock:
+        return norm in _known_video_paths
+
+
+class _ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    """HTTPServer that handles each connection on its own thread.
+
+    Browsers routinely open several overlapping range requests while
+    buffering/seeking; the plain single-threaded HTTPServer serializes them,
+    which can stall playback. daemon_threads=True so these never block
+    process exit.
+    """
+    daemon_threads = True
 
 
 class _VideoFileHandler(http.server.BaseHTTPRequestHandler):
@@ -58,6 +112,14 @@ class _VideoFileHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(403, 'Forbidden')
             return
 
+        # Security: only serve paths the app itself has resolved (matched session
+        # videos, manually-assigned videos, linked camera-folder clips) — not any
+        # arbitrary path a caller can name. See _register_known_video_path().
+        if not _is_known_video_path(raw):
+            logger.warning('VideoServer 403: unrecognised path %s', raw)
+            self.send_error(403, 'Forbidden')
+            return
+
         logger.debug('VideoServer GET %s → %s (exists=%s)', self.path, raw, os.path.isfile(raw))
         if not os.path.isfile(raw):
             logger.warning('VideoServer 404: %s', raw)
@@ -68,9 +130,19 @@ class _VideoFileHandler(http.server.BaseHTTPRequestHandler):
         rng   = self.headers.get('Range', '')
         if rng:
             try:
-                parts = rng.replace('bytes=', '').split('-')
-                start = int(parts[0]) if parts[0] else 0
-                end   = int(parts[1]) if parts[1] else size - 1
+                spec = rng.replace('bytes=', '')
+                if spec.startswith('-'):
+                    # Suffix form per RFC 7233, e.g. "bytes=-500" → last 500
+                    # bytes of the file (start is NOT byte offset 0 here).
+                    suffix_len = int(spec[1:])
+                    if suffix_len <= 0:
+                        raise ValueError('non-positive suffix length')
+                    start = max(0, size - suffix_len)
+                    end   = size - 1
+                else:
+                    parts = spec.split('-')
+                    start = int(parts[0]) if parts[0] else 0
+                    end   = int(parts[1]) if len(parts) > 1 and parts[1] else size - 1
             except (ValueError, IndexError):
                 self.send_error(400, 'Invalid Range header')
                 return
@@ -87,7 +159,10 @@ class _VideoFileHandler(http.server.BaseHTTPRequestHandler):
         self.send_header('Content-Type', mime)
         self.send_header('Content-Length', str(length))
         self.send_header('Accept-Ranges', 'bytes')
-        self.send_header('Access-Control-Allow-Origin', '*')
+        # No Access-Control-Allow-Origin header: a same-origin <video src="...">
+        # request to this exact 127.0.0.1:PORT origin does not need CORS headers
+        # at all, and omitting it means a cross-origin fetch() from some other
+        # site open in the user's browser gets an opaque response it cannot read.
         self.end_headers()
         try:
             with open(raw, 'rb') as f:
@@ -124,8 +199,13 @@ class WebviewAPI:
         self._auto_sync_thread: Optional[threading.Thread] = None
         self._thread_lock      = threading.Lock()
         self._file_meta_cache: Optional[dict] = None
-        self._meta_cache_lock  = threading.Lock()
+        # RLock (not Lock): get_session_meta wraps fetch+mutate+save of the
+        # meta cache in a single `with self._meta_cache_lock:` block, and that
+        # block calls _get_file_meta_cache()/_save_file_meta_cache(), which
+        # each acquire this same lock again — a plain Lock would deadlock.
+        self._meta_cache_lock  = threading.RLock()
         self._config_lock      = threading.Lock()
+        self._video_port_lock  = threading.Lock()
 
     # ── Called by main.py once the window is ready ────────────────────────────
     def set_window(self, window: webview.Window) -> None:
@@ -160,18 +240,22 @@ class WebviewAPI:
     # ── Video file server ─────────────────────────────────────────────────────
     def get_video_server_port(self) -> int:
         """Return the localhost port of the video file server, starting it if needed."""
-        if hasattr(self, '_video_port'):
+        # Guard the lazy-init check+create with a lock — without it two
+        # near-simultaneous callers can both observe "no server yet" and each
+        # spin up their own HTTPServer, leaking one forever.
+        with self._video_port_lock:
+            if hasattr(self, '_video_port'):
+                return self._video_port
+            try:
+                server = _ThreadingHTTPServer(('127.0.0.1', 0), _VideoFileHandler)
+                self._video_port = server.server_address[1]
+                t = threading.Thread(target=server.serve_forever, daemon=True)
+                t.start()
+                logger.info('Video file server started on port %d', self._video_port)
+            except Exception:
+                logger.exception('Failed to start video file server')
+                self._video_port = 0
             return self._video_port
-        try:
-            server = http.server.HTTPServer(('127.0.0.1', 0), _VideoFileHandler)
-            self._video_port = server.server_address[1]
-            t = threading.Thread(target=server.serve_forever, daemon=True)
-            t.start()
-            logger.info('Video file server started on port %d', self._video_port)
-        except Exception:
-            logger.exception('Failed to start video file server')
-            self._video_port = 0
-        return self._video_port
 
     # ── Config ────────────────────────────────────────────────────────────────
     def get_config(self) -> dict:
@@ -181,46 +265,49 @@ class WebviewAPI:
         return cfg
 
     def save_config(self, data: dict) -> None:
-        # Update string fields
-        simple_fields = [
-            'racebox_path', 'aim_path', 'motec_path', 'gpx_path', 'vbox_path',
-            'telemetry_path', 'video_path', 'export_path', 'racebox_email',
-        ]
-        for f in simple_fields:
-            if f in data:
-                setattr(self._config, f, data[f])
-        if 'encoder' in data:
-            self._config.encoder = str(data['encoder'])
-        if 'crf' in data:
-            self._config.crf = int(data['crf'])
-        if 'workers' in data:
-            self._config.workers = int(data['workers'])
-        if 'speed_unit' in data:
-            self._config.speed_unit = str(data['speed_unit'])
-        # Merge dict fields (JS may send partial updates)
-        if 'offsets' in data and isinstance(data['offsets'], dict):
-            self._config.offsets.update(data['offsets'])
-        if 'offset_sources' in data and isinstance(data['offset_sources'], dict):
-            self._config.offset_sources.update(data['offset_sources'])
-        if 'bike_overrides' in data and isinstance(data['bike_overrides'], dict):
-            self._config.bike_overrides.update(data['bike_overrides'])
-        if 'auto_sync_enabled' in data:
-            self._config.auto_sync_enabled = bool(data['auto_sync_enabled'])
-        self._config.save()
+        with self._config_lock:
+            # Update string fields
+            simple_fields = [
+                'racebox_path', 'aim_path', 'motec_path', 'gpx_path', 'vbox_path',
+                'unipro_path', 'telemetry_path', 'video_path', 'export_path', 'racebox_email',
+            ]
+            for f in simple_fields:
+                if f in data:
+                    setattr(self._config, f, data[f])
+            if 'encoder' in data:
+                self._config.encoder = str(data['encoder'])
+            if 'crf' in data:
+                self._config.crf = int(data['crf'])
+            if 'workers' in data:
+                self._config.workers = int(data['workers'])
+            if 'speed_unit' in data:
+                self._config.speed_unit = str(data['speed_unit'])
+            # Merge dict fields (JS may send partial updates)
+            if 'offsets' in data and isinstance(data['offsets'], dict):
+                self._config.offsets.update(data['offsets'])
+            if 'offset_sources' in data and isinstance(data['offset_sources'], dict):
+                self._config.offset_sources.update(data['offset_sources'])
+            if 'bike_overrides' in data and isinstance(data['bike_overrides'], dict):
+                self._config.bike_overrides.update(data['bike_overrides'])
+            if 'auto_sync_enabled' in data:
+                self._config.auto_sync_enabled = bool(data['auto_sync_enabled'])
+            self._config.save()
 
     # ── Overlay ───────────────────────────────────────────────────────────────
     def get_overlay(self) -> dict:
         return asdict(self._config.overlay)
 
     def save_overlay(self, data: dict) -> None:
-        self._config.overlay = overlay_from_dict(data)
-        self._config.save()
+        with self._config_lock:
+            self._config.overlay = overlay_from_dict(data)
+            self._config.save()
 
     def save_overlay_as(self, name: str, data: dict) -> None:
-        self._config.presets[name] = data
-        self._config.overlay = overlay_from_dict(data)
-        self._config.active_preset = name
-        self._config.save()
+        with self._config_lock:
+            self._config.presets[name] = data
+            self._config.overlay = overlay_from_dict(data)
+            self._config.active_preset = name
+            self._config.save()
 
     def list_presets(self) -> list:
         return list(self._config.presets.keys())
@@ -305,6 +392,11 @@ class WebviewAPI:
                 videos.append(v)
         videos.sort(key=lambda v: v.sort_key)
 
+        # Register every scanned video path with the video server's known-path
+        # allowlist (see _is_known_video_path) so it's servable over HTTP.
+        for v in videos:
+            _register_known_video_path(v.path)
+
         self._save_file_meta_cache()
 
         groups = group_videos(videos)
@@ -378,6 +470,8 @@ class WebviewAPI:
             videos = scan_videos(folder, cache=file_cache['videos'])
         except Exception:
             videos = []
+        for v in videos:
+            _register_known_video_path(v.path)
         self._save_file_meta_cache()
 
         groups = group_videos(videos)
@@ -394,11 +488,12 @@ class WebviewAPI:
 
         offset, matched_count = solve_camera_offset(groups, session_times)
 
-        entries = [e for e in self._config.linked_camera_folders
-                   if not (e.get('day') == day and e.get('folder') == folder)]
-        entries.append({'day': day, 'folder': folder, 'offset_seconds': offset, 'source': 'auto'})
-        self._config.linked_camera_folders = entries
-        self._config.save()
+        with self._config_lock:
+            entries = [e for e in self._config.linked_camera_folders
+                       if not (e.get('day') == day and e.get('folder') == folder)]
+            entries.append({'day': day, 'folder': folder, 'offset_seconds': offset, 'source': 'auto'})
+            self._config.linked_camera_folders = entries
+            self._config.save()
 
         logger.info('link_camera_folder: %s + %s → offset=%.1fs matched=%d/%d',
                    day, folder, offset, matched_count, len(groups))
@@ -412,11 +507,12 @@ class WebviewAPI:
     def unlink_camera_folder(self, day: str, folder: str) -> None:
         """Remove a previously linked camera folder for a day."""
         folder = str(Path(folder).resolve())
-        self._config.linked_camera_folders = [
-            e for e in self._config.linked_camera_folders
-            if not (e.get('day') == day and e.get('folder') == folder)
-        ]
-        self._config.save()
+        with self._config_lock:
+            self._config.linked_camera_folders = [
+                e for e in self._config.linked_camera_folders
+                if not (e.get('day') == day and e.get('folder') == folder)
+            ]
+            self._config.save()
 
     def save_sessions_cache(self, sessions: list) -> None:
         """Persist the full merged session list (from all paths) for fast startup.
@@ -446,6 +542,12 @@ class WebviewAPI:
         result = []
         for s in sessions:
             csv = s.get('csv_path', '')
+            vpaths = s.get('video_paths', [])
+            # Re-register on every cache load (not just live scans) so playback
+            # still works for a session restored from disk before any rescan
+            # has run in this process.
+            for vp in vpaths:
+                _register_known_video_path(vp)
             result.append({
                 'csv_path':         csv,
                 'source':           s.get('source', 'RaceBox'),
@@ -453,7 +555,7 @@ class WebviewAPI:
                 'matched':          s.get('matched', False),
                 'needs_conversion': s.get('needs_conversion', False),
                 'xrk_path':        s.get('xrk_path'),
-                'video_paths':     s.get('video_paths', []),
+                'video_paths':     vpaths,
                 'sync_offset':     offsets.get(csv),
                 'sync_source':     offset_sources.get(csv),
                 'auto_sync_failed': csv in auto_failed,
@@ -476,7 +578,7 @@ class WebviewAPI:
             # GPX / MoTeC / VBOX: need a full load but they're usually small.
             # Cache the derived result by (size, mtime) so repeat scans of an
             # unchanged file don't re-parse it every time.
-            if suffix in ('.gpx', '.ld', '.vbo'):
+            if suffix in ('.gpx', '.ld', '.vbo', '.uni', '.tsv'):
                 stat = None
                 try:
                     st = os.stat(csv_path)
@@ -484,10 +586,21 @@ class WebviewAPI:
                 except OSError:
                     pass
 
-                meta_cache = self._get_file_meta_cache()['meta']
-                entry = meta_cache.get(csv_path)
-                if stat and entry and entry.get('size') == stat[0] and entry.get('mtime') == stat[1]:
-                    return entry['data']
+                # Fetching the cache, checking the cached entry, mutating it,
+                # and triggering the save must all happen under the SAME lock
+                # as one atomic per-call operation. Several threads race in
+                # here concurrently (frontend fires getSessionMeta 6-at-a-time
+                # via Promise.all) — without this, one thread's dict mutation
+                # can land while another thread's _save_file_meta_cache() is
+                # mid-`json.dump` iteration over the same dict, raising
+                # "RuntimeError: dictionary changed size during iteration".
+                # The actual (possibly slow) file parse below stays outside
+                # the lock so concurrent metadata reads aren't serialized.
+                with self._meta_cache_lock:
+                    meta_cache = self._get_file_meta_cache()['meta']
+                    entry = meta_cache.get(csv_path)
+                    if stat and entry and entry.get('size') == stat[0] and entry.get('mtime') == stat[1]:
+                        return entry['data']
 
                 session = self._load_session(csv_path)
                 if not session:
@@ -504,8 +617,10 @@ class WebviewAPI:
                         'speed_unit': getattr(session, 'source_speed_unit', 'kmh'),
                     }
                 if stat:
-                    meta_cache[csv_path] = {'size': stat[0], 'mtime': stat[1], 'data': result}
-                    self._save_file_meta_cache()
+                    with self._meta_cache_lock:
+                        meta_cache = self._get_file_meta_cache()['meta']
+                        meta_cache[csv_path] = {'size': stat[0], 'mtime': stat[1], 'data': result}
+                        self._save_file_meta_cache()
                 return result
 
             # AIM CSV: no metadata header; use filename
@@ -594,6 +709,7 @@ class WebviewAPI:
                     'lat':          p.lat,
                     'lon':          p.lon,
                     'lean':         p.lean_angle,
+                    'gear':         p.gear or 0,
                 }
                 points.append(d)
             return points
@@ -634,8 +750,9 @@ class WebviewAPI:
 
     # ── Session info overrides ────────────────────────────────────────────────
     def edit_session_info(self, csv_path: str, overrides: dict) -> None:
-        self._config.session_info[csv_path] = overrides
-        self._config.save()
+        with self._config_lock:
+            self._config.session_info[csv_path] = overrides
+            self._config.save()
 
     def bulk_rename_track(self, csv_paths: list, new_name: str) -> dict:
         """Set the track override to new_name for each path in csv_paths.
@@ -645,16 +762,17 @@ class WebviewAPI:
         Returns {'updated': N}.
         """
         updated = 0
-        for csv_path in csv_paths:
-            if not csv_path:
-                continue
-            abs_path = os.path.abspath(csv_path)
-            existing = self._config.session_info.get(abs_path, {})
-            self._config.session_info[abs_path] = {**existing, 'info_track': new_name}
-            updated += 1
+        with self._config_lock:
+            for csv_path in csv_paths:
+                if not csv_path:
+                    continue
+                abs_path = os.path.abspath(csv_path)
+                existing = self._config.session_info.get(abs_path, {})
+                self._config.session_info[abs_path] = {**existing, 'info_track': new_name}
+                updated += 1
 
-        if updated:
-            self._config.save()
+            if updated:
+                self._config.save()
         return {'updated': updated}
 
     def get_laps_for_ref_picker(self, csv_path: str) -> list:
@@ -766,14 +884,21 @@ class WebviewAPI:
 
     def set_track_map_selection(self, track_key: str, osm_id: str) -> None:
         """Save (or clear) the user-chosen OSM way for a track name."""
-        if not isinstance(getattr(self._config, 'track_map_selections', None), dict):
-            self._config.track_map_selections = {}
         key = track_key.lower().strip()
-        if osm_id:
-            self._config.track_map_selections[key] = str(osm_id)
-        else:
-            self._config.track_map_selections.pop(key, None)
-        self._config.save()
+        if osm_id and not _VALID_OSM_ID_RE.match(str(osm_id)):
+            # osm_id ends up in a cache filename (track_map_cache._cache_path via
+            # load_geometry) — reject anything that isn't a plain integer id
+            # instead of silently persisting it into config.
+            logger.warning('set_track_map_selection: rejecting invalid osm_id %r', osm_id)
+            return
+        with self._config_lock:
+            if not isinstance(getattr(self._config, 'track_map_selections', None), dict):
+                self._config.track_map_selections = {}
+            if osm_id:
+                self._config.track_map_selections[key] = str(osm_id)
+            else:
+                self._config.track_map_selections.pop(key, None)
+            self._config.save()
 
     def get_track_map_geometry(self, csv_path: str,
                                centroid_lat: float = None,
@@ -811,6 +936,14 @@ class WebviewAPI:
                 areas = load_areas(centroid_lat, centroid_lon)
 
             if not osm_id:
+                return {'lats': [], 'lons': [], 'areas': areas}
+
+            # Defense in depth: osm_id ends up in a cache filename inside
+            # load_geometry(). Values written via set_track_map_selection() are
+            # already validated, but a hand-edited config.json or a value from
+            # before this check existed should not silently reach that path build.
+            if not _VALID_OSM_ID_RE.match(str(osm_id)):
+                logger.warning('get_track_map_geometry: rejecting invalid osm_id %r', osm_id)
                 return {'lats': [], 'lons': [], 'areas': areas}
 
             geometry = load_geometry(osm_id)
@@ -998,8 +1131,13 @@ class WebviewAPI:
                 ref_lap_obj       = None,
                 ref_lap_csv_path  = params.get('ref_lap_csv_path', ''),
                 ref_lap_num       = int(params.get('ref_lap_num', 0) or 0),
-                bike_overrides    = self._config.bike_overrides,
-                session_info      = self._config.session_info,
+                # Shallow copies: these are flat dicts of primitives, so a copy
+                # is cheap and means edit_session_info()/bulk_rename_track()
+                # mutating the live config on the main thread while this
+                # background export thread iterates cannot raise
+                # "RuntimeError: dictionary changed size during iteration".
+                bike_overrides    = dict(self._config.bike_overrides),
+                session_info      = dict(self._config.session_info),
                 log_cb            = log_cb,
                 progress_cb       = progress_cb,
                 done_cb           = done_cb,
@@ -1165,14 +1303,13 @@ class WebviewAPI:
         }
 
     # ── AIM DLL status ────────────────────────────────────────────────────────
-    def aim_dll_status(self) -> dict:
-        """Return AIM XRK reader availability.
+    @staticmethod
+    def _find_matlab_xrk_dll() -> str:
+        """Search known install locations for the MatLabXRK*.dll reader.
 
-        Two readers exist:
-          - Windows-only MatLabXRK DLL (downloaded from aim-sportline.com)
-          - Cross-platform libxrk (PyPI; ships native wheels for win/mac/linux)
-        Either one is sufficient for XRK conversion. Frontend uses
-        `xrk_supported` to decide whether to show AIM-related UI.
+        Shared by aim_dll_status() and convert_xrk_session() — both used to
+        duplicate this search-path-construction + glob logic verbatim.
+        Returns the first match found, or '' if none.
         """
         import glob as _glob, sys, os
         from pathlib import Path
@@ -1182,12 +1319,23 @@ class WebviewAPI:
             search_dirs += [sys._MEIPASS, os.path.dirname(sys.executable)]
         else:
             search_dirs.append(os.path.dirname(os.path.abspath(__file__)))
-        dll_path = ''
         for base in search_dirs:
             dlls = _glob.glob(os.path.join(base, 'MatLabXRK*.dll'))
             if dlls:
-                dll_path = dlls[0]
-                break
+                return dlls[0]
+        return ''
+
+    def aim_dll_status(self) -> dict:
+        """Return AIM XRK reader availability.
+
+        Two readers exist:
+          - Windows-only MatLabXRK DLL (downloaded from aim-sportline.com)
+          - Cross-platform libxrk (PyPI; ships native wheels for win/mac/linux)
+        Either one is sufficient for XRK conversion. Frontend uses
+        `xrk_supported` to decide whether to show AIM-related UI.
+        """
+        import sys
+        dll_path = self._find_matlab_xrk_dll()
 
         try:
             import libxrk  # noqa: F401
@@ -1260,18 +1408,7 @@ class WebviewAPI:
         if not actual_xrk:
             return {'ok': False, 'error': 'XRK source file not found'}
         try:
-            import glob as _glob, sys
-            from pathlib import Path
-            search_dirs = [str(Path.home() / '.openlap')]
-            if getattr(sys, 'frozen', False):
-                search_dirs += [sys._MEIPASS, os.path.dirname(sys.executable)]
-            else:
-                search_dirs.append(os.path.dirname(os.path.abspath(__file__)))
-            dll_path = next(
-                (d[0] for base in search_dirs
-                 for d in [_glob.glob(os.path.join(base, 'MatLabXRK*.dll'))] if d),
-                None
-            )
+            dll_path = self._find_matlab_xrk_dll()
             if dll_path:
                 import xrk_to_csv as _xrk
                 _xrk.xrk_to_csv(actual_xrk, csv_path, dll_path)
@@ -1286,9 +1423,12 @@ class WebviewAPI:
     def assign_video(self, csv_path: str, video_path: str) -> None:
         """Manually link a video file to a telemetry session."""
         abs_csv = str(Path(csv_path).resolve())
-        si = self._config.session_info.setdefault(abs_csv, {})
-        si['_video_override'] = str(Path(video_path).resolve())
-        self._config.save()
+        abs_video = str(Path(video_path).resolve())
+        _register_known_video_path(abs_video)
+        with self._config_lock:
+            si = self._config.session_info.setdefault(abs_csv, {})
+            si['_video_override'] = abs_video
+            self._config.save()
 
     # ── RaceBox session download ──────────────────────────────────────────────
     def download_racebox_sessions(self) -> None:
@@ -1380,13 +1520,24 @@ class WebviewAPI:
     # ── Internal helpers ──────────────────────────────────────────────────────
     @staticmethod
     def _load_session(csv_path: str):
-        import gpx_data, aim_data, racebox_data, motec_data, vbox_data
+        import gpx_data, aim_data, racebox_data, motec_data, vbox_data, unipro_data
         if vbox_data.is_vbox(csv_path):
             return vbox_data.load_vbo(csv_path)
         if motec_data.is_motec_ld(csv_path):
             return motec_data.load_ld(csv_path)
         if gpx_data.is_gpx(csv_path):
             return gpx_data.load_gpx(csv_path)
+        if unipro_data.is_unipro_tsv(csv_path):
+            return unipro_data.load_tsv(csv_path)
+        if unipro_data.is_unipro_uni(csv_path):
+            return unipro_data.load_uni(csv_path)
         if aim_data.is_aim_csv(csv_path):
             return aim_data.load_csv(csv_path)
         return racebox_data.load_csv(csv_path)
+
+    def confirm_clear_queue(self) -> bool:
+        if self._window is None:
+            return False
+        return bool(self._window.create_confirmation_dialog(
+            'Clear queue', 'Remove all laps from the export queue?'
+        ))

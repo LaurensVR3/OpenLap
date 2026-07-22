@@ -27,124 +27,138 @@ import units as _units
 
 _N_SECTORS = 3  # number of track sectors used for delta-time display
 
+
+def _int_or_zero(v) -> int:
+    """int(v), treating NaN/inf/unconvertible values as 0.
+
+    cv2.VideoCapture.get() can return NaN for a corrupt/malformed video's
+    frame count or dimensions — `int(nan)` raises ValueError, which would
+    otherwise crash render_lap() before it ever reaches the friendly
+    "video appears empty/unreadable" error path a few lines below.
+    """
+    try:
+        if v != v:  # NaN is the only float that doesn't equal itself
+            return 0
+        return int(v)
+    except (ValueError, OverflowError, TypeError):
+        return 0
+
 # ── FFmpeg helpers ─────────────────────────────────────────────────────────────
 
-def detect_encoder() -> str:
-    """Detect best available hardware encoder, fall back to libx264."""
-    tests = [
-        (['ffmpeg', '-hide_banner', '-f', 'lavfi', '-i', 'nullsrc',
-          '-t', '0.1', '-c:v', 'h264_nvenc', '-f', 'null', '-'], 'h264_nvenc'),
-        (['ffmpeg', '-hide_banner', '-f', 'lavfi', '-i', 'nullsrc',
-          '-t', '0.1', '-c:v', 'h264_amf',   '-f', 'null', '-'], 'h264_amf'),
-        (['ffmpeg', '-hide_banner', '-f', 'lavfi', '-i', 'nullsrc',
-          '-t', '0.1', '-c:v', 'h264_qsv',   '-f', 'null', '-'], 'h264_qsv'),
-    ]
-    for cmd, enc in tests:
-        try:
-            r = _run(cmd, timeout=5)
-            if r.returncode == 0:
-                return enc
-        except Exception:
-            pass
-    return 'libx264'
+def _probe_duration_s(path: str) -> float:
+    """Cheap duration read via cv2 (header only, no frame decode)."""
+    cap = cv2.VideoCapture(path)
+    try:
+        fps    = cap.get(cv2.CAP_PROP_FPS)
+        frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        return frames / fps if fps > 0 and frames > 0 else 0.0
+    finally:
+        cap.release()
 
 
-def concat_videos(input_files: List[str], output: str) -> None:
-    """Join video files using ffmpeg concat demuxer (no re-encode)."""
+def _run_ffmpeg_join(cmd_no_output: list, output: str,
+                      progress_cb=None, total_s: float = 0.0,
+                      stall_timeout_s: float = 120.0):
+    """Run one ffmpeg join attempt, optionally reporting progress and
+    guarding against a stalled read (e.g. an unresponsive network share)
+    hanging the whole export forever.
+
+    Returns an object with .returncode and .stderr, mirroring
+    subprocess.CompletedProcess closely enough for the caller's needs.
+    """
+    import threading, time as _time, subprocess as _sp
+
+    class _Result:
+        returncode = 0
+        stderr     = b''
+
+    if not (progress_cb and total_s > 0):
+        return _run(cmd_no_output + [output])
+
+    proc = _popen(cmd_no_output + ['-progress', 'pipe:1', '-nostats', output],
+                  stdout=_sp.PIPE, stderr=_sp.PIPE)
+
+    stderr_buf: list = []
+    def _drain_stderr():
+        stderr_buf.extend(proc.stderr)
+    t_err = threading.Thread(target=_drain_stderr, daemon=True)
+    t_err.start()
+
+    last_progress = _time.monotonic()
+    def _read_progress():
+        nonlocal last_progress
+        for raw_line in proc.stdout:
+            line = raw_line.decode(errors='replace').strip()
+            if line.startswith('out_time_ms='):
+                try:
+                    elapsed = int(line.split('=', 1)[1]) / 1_000_000.0
+                    pct = min(1.0, elapsed / total_s) * 100
+                    progress_cb(pct, f"Joining clips…  {elapsed:.1f} / {total_s:.1f}s")
+                    last_progress = _time.monotonic()
+                except (ValueError, ZeroDivisionError):
+                    pass
+    t_prog = threading.Thread(target=_read_progress, daemon=True)
+    t_prog.start()
+
+    stalled = False
+    while proc.poll() is None:
+        if _time.monotonic() - last_progress > stall_timeout_s:
+            stalled = True
+            proc.kill()
+            break
+        _time.sleep(0.2)
+
+    proc.wait()
+    t_prog.join(timeout=2)
+    t_err.join(timeout=2)
+
+    r = _Result()
+    r.stderr = b''.join(stderr_buf)
+    if stalled:
+        r.returncode = -1
+        r.stderr = (f"No progress for over {stall_timeout_s:.0f}s while joining "
+                    f"(source file may be on an unreachable/stalled network share)."
+                    ).encode() + b'\n' + r.stderr
+    else:
+        r.returncode = proc.returncode
+    return r
+
+
+def concat_videos(input_files: List[str], output: str,
+                   progress_cb=None, stall_timeout_s: float = 120.0) -> None:
+    """Join video files using ffmpeg concat demuxer (no re-encode).
+
+    When progress_cb is given, reports join progress against the summed
+    duration of the input files — the only way to show real progress for a
+    stream copy, since ffmpeg can't otherwise report a meaningful percentage
+    for `-c copy`. Also guards against a stalled read (e.g. an unreachable
+    network share) via stall_timeout_s: if ffmpeg's progress output goes
+    quiet for that long, the join is killed and raises VideoConcatError
+    instead of hanging the whole export indefinitely.
+    """
     with tempfile.NamedTemporaryFile('w', suffix='.txt',
                                      delete=False, encoding='utf-8') as f:
         for p in input_files:
             f.write(f"file '{os.path.abspath(p)}'\n")
         concat_file = f.name
+
+    total_s = sum(_probe_duration_s(p) for p in input_files) if progress_cb else 0.0
+
     try:
         cmd = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0',
-               '-i', concat_file, '-c', 'copy', output]
-        r = _run(cmd)
+               '-i', concat_file, '-c', 'copy']
+        r = _run_ffmpeg_join(cmd, output, progress_cb, total_s, stall_timeout_s)
         if r.returncode != 0:
             cmd2 = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0',
                     '-i', concat_file,
-                    '-c:v', 'libx264', '-crf', '18', '-c:a', 'aac', output]
-            r2 = _run(cmd2)
+                    '-c:v', 'libx264', '-crf', '18', '-c:a', 'aac']
+            r2 = _run_ffmpeg_join(cmd2, output, progress_cb, total_s, stall_timeout_s)
             if r2.returncode != 0:
                 err = r2.stderr.decode(errors='replace')
                 logger.error('FFmpeg concat failed:\n%s', err)
                 raise VideoConcatError(err[-600:])
     finally:
         os.unlink(concat_file)
-
-
-class MultiCap:
-    """
-    Virtual VideoCapture over multiple files.
-    Exposes the same .get()/.set()/.read()/.release() interface as a
-    single cv2.VideoCapture, so callers need no special-casing.
-    Frame indices are global across all clips; seeks are O(1).
-    """
-
-    def __init__(self, paths: List[str]):
-        self._caps: List[cv2.VideoCapture] = []
-        self._offsets: List[int] = []   # global start frame of each clip
-        self._counts:  List[int] = []   # frame count of each clip
-        self._fps: float = 30.0
-        self._total: int = 0
-        self._cur_global: int = 0
-
-        offset = 0
-        for p in paths:
-            cap = cv2.VideoCapture(p)
-            if not cap.isOpened():
-                raise IOError(f"Cannot open video: {p}")
-            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-            cnt = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            self._caps.append(cap)
-            self._offsets.append(offset)
-            self._counts.append(cnt)
-            self._fps = fps          # assume homogeneous; last wins
-            offset += cnt
-
-        self._total = offset
-
-    # ── cv2.VideoCapture-compatible interface ──────────────────────────────
-
-    def isOpened(self) -> bool:
-        return bool(self._caps)
-
-    def get(self, prop_id: int) -> float:
-        if prop_id == cv2.CAP_PROP_FPS:
-            return self._fps
-        if prop_id == cv2.CAP_PROP_FRAME_COUNT:
-            return float(self._total)
-        return 0.0
-
-    def set(self, prop_id: int, value: float) -> bool:
-        if prop_id == cv2.CAP_PROP_POS_FRAMES:
-            self._cur_global = int(value)
-            return True
-        return False
-
-    def read(self):
-        fidx = self._cur_global
-        if fidx < 0 or fidx >= self._total:
-            return False, None
-
-        # Find which clip owns this global frame
-        clip_idx = 0
-        for i, (off, cnt) in enumerate(zip(self._offsets, self._counts)):
-            if off + cnt > fidx:
-                clip_idx = i
-                break
-
-        local_frame = fidx - self._offsets[clip_idx]
-        cap = self._caps[clip_idx]
-        cap.set(cv2.CAP_PROP_POS_FRAMES, local_frame)
-        ret, frame = cap.read()
-        self._cur_global = fidx + 1
-        return ret, frame
-
-    def release(self):
-        for cap in self._caps:
-            cap.release()
-        self._caps.clear()
 
 
 def mux_audio(raw_video: str, audio_source: str,
@@ -229,20 +243,6 @@ def mux_audio(raw_video: str, audio_source: str,
             raise VideoMuxError(err[-600:])
 
 
-def video_duration(path: str) -> float:
-    """Return video duration in seconds via ffprobe."""
-    try:
-        r = _run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-             '-of', 'default=noprint_wrappers=1:nokey=1', path], text=True)
-        return float(r.stdout.strip())
-    except Exception:
-        cap = cv2.VideoCapture(path)
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30
-        fc  = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-        cap.release()
-        return fc / fps if fps else 0.0
-
-
 # ── Render job ────────────────────────────────────────────────────────────────
 
 class RenderJob:
@@ -271,7 +271,7 @@ def _setup_delta_time(reference_lap, job, session):
                     ref_channels={}, sectors=[])
 
     import numpy as np
-    from delta_time import compute_lap_profile, make_delta_fn
+    from delta_time import compute_lap_profile, make_delta_fn, _MIN_TRACK_LENGTH_M
 
     delta_fn = make_delta_fn(reference_lap, current_lap_duration=job.duration)
 
@@ -302,6 +302,7 @@ def _setup_delta_time(reference_lap, job, session):
         'rpm':          _ref_arr('rpm'),
         'exhaust_temp': _ref_arr('exhaust_temp'),
         'alt':          _ref_arr('alt'),
+        'gear':         _ref_arr('gear'),
     }
 
     # Sector splits
@@ -309,7 +310,7 @@ def _setup_delta_time(reference_lap, job, session):
     if job.lap is not None and cur_lap_t is not None and len(ref_dist_u) > 1:
         N_SECTORS  = _N_SECTORS
         total_dist = float(ref_dist_u[-1])
-        if total_dist > 50.0:
+        if total_dist > _MIN_TRACK_LENGTH_M:
             ref_elapsed_u = ref_elapsed_full[ref_u_idx]
             _, cur_u_idx  = np.unique(cur_lap_d, return_index=True)
             cur_dist_u    = cur_lap_d[cur_u_idx]
@@ -441,6 +442,7 @@ def render_lap(
     track_map_geometry: Optional[list] = None, # [{lat,lon}] OSM circuit outline, or None
     track_map_areas:    Optional[list] = None, # [{lats,lons}] OSM area polygons, or None
     speed_unit:         str = 'kmh',           # 'kmh' | 'mph' | 'ms' — already-resolved display unit
+    is_cancelled:       Optional[Callable[[], bool]] = None,  # polled once per chunk
 ) -> None:
     """
     Render one video with telemetry overlay.
@@ -468,12 +470,25 @@ def render_lap(
 
     cap   = cv2.VideoCapture(video_path)
     fps   = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    vw    = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    vh    = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    if fps != fps:  # NaN — falsy-zero check above doesn't catch this since
+        fps = 30.0  # `nan or 30.0` evaluates to nan (NaN is truthy in Python)
+    total = _int_or_zero(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    vw    = _int_or_zero(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    vh    = _int_or_zero(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     # ── Frame range ────────────────────────────────────────────────────────────
     sync_offset = sync_offset or 0.0
+
+    # Overlay-only exports never read pixels from the source video — the frame
+    # loop below always draws onto a blank transparent canvas (see `_ov_blank`)
+    # — so a missing video file only means fps/dimensions/duration need to be
+    # synthesized instead of read from `cap`. Duration is derived from the lap
+    # (or, for a full-session export, the session's last telemetry point).
+    if overlay_only and (vw <= 0 or vh <= 0 or total <= 0):
+        vw, vh, fps = 1920, 1080, 30.0
+        session_end = session.all_points[-1].elapsed if session.all_points else 0.0
+        virtual_end = sync_offset + (job.gpx_end if job.gpx_start is not None else session_end)
+        total = int(math.ceil((virtual_end + padding + 2.0) * fps))
 
     if job.gpx_start is not None:
         vid_lap_start = sync_offset + job.gpx_start
@@ -528,15 +543,27 @@ def render_lap(
             stdin=_sp.PIPE, stderr=_sp.PIPE,
         )
         _ov_stderr: list = []
+        _ov_write_error: list = []   # holds the exception if ffmpeg's stdin dies mid-write
         _ov_queue: _q_mod.Queue = _q_mod.Queue(maxsize=n_workers * 4)
 
         def _ov_write_loop():
             while True:
                 item = _ov_queue.get()
                 if item is None:
-                    _ov_proc.stdin.close()
+                    try:
+                        _ov_proc.stdin.close()
+                    except Exception:
+                        pass
                     break
-                _ov_proc.stdin.write(item)
+                try:
+                    _ov_proc.stdin.write(item)
+                except Exception as e:
+                    # ffmpeg died (bad codec args, disk full, unsupported
+                    # pix_fmt on this build, …). Record it so the main loop's
+                    # queue.put() below stops waiting on a thread that will
+                    # never drain the queue again, instead of hanging forever.
+                    _ov_write_error.append(e)
+                    break
 
         _th.Thread(target=lambda: _ov_stderr.extend(_ov_proc.stderr), daemon=True).start()
         _ov_writer = _th.Thread(target=_ov_write_loop, daemon=False)
@@ -608,8 +635,12 @@ def render_lap(
     processed = 0
 
     pool = Pool(n_workers) if n_workers > 1 else None
+    _completed = False
     try:
         while frame_idx < f_end:
+            if is_cancelled and is_cancelled():
+                log("  Cancelled.")
+                return
             chunk_frames, chunk_meta = [], []
 
             for _ in range(chunk):
@@ -672,6 +703,7 @@ def render_lap(
                                 't':            0.0,
                                 'delta_time':   0.0,
                                 'alt':          float(np.interp(d_ref, _ref_dist_u, _ref_channels.get('alt', [0.0]*len(_ref_dist_u)))),
+                                'gear':         float(np.interp(d_ref, _ref_dist_u, _ref_channels['gear'])),
                             })
                         except Exception:
                             pass
@@ -686,6 +718,7 @@ def render_lap(
                         'exhaust_temp':   pt.exhaust_temp,
                         'delta_time':     delta_val,
                         'alt':            pt.alt,
+                        'gear':           pt.gear,
                         # Lap-scoreboard fields
                         'li_lap_num':     pt.lap,
                         'li_total_laps':  _total_timed,
@@ -735,7 +768,21 @@ def render_lap(
 
             if overlay_only:
                 for raw in results:
-                    _ov_queue.put(raw)   # writer thread feeds ffmpeg; never blocks main loop
+                    # Bounded-wait put instead of a plain blocking put(): if
+                    # the writer thread already died (ffmpeg exited, bad
+                    # codec args, disk full, …) nothing will ever drain this
+                    # queue again, and a plain put() would hang the export
+                    # forever with no error surfaced. Poll _ov_write_error
+                    # between attempts so a dead writer fails fast instead.
+                    while True:
+                        if _ov_write_error:
+                            raise VideoMuxError(
+                                f"FFmpeg ProRes pipe failed: {_ov_write_error[0]}")
+                        try:
+                            _ov_queue.put(raw, timeout=1.0)
+                            break
+                        except _q_mod.Full:
+                            continue
                     processed += 1
             else:
                 shape = chunk_frames[0].shape
@@ -744,10 +791,40 @@ def render_lap(
                     processed += 1
 
             prog(processed / n_frames * 85, f"Frame {processed}/{n_frames}")
+        _completed = True
     finally:
         if pool:
             pool.terminate()
             pool.join()
+        if not _completed:
+            # The frame loop exited early — an exception propagated out of
+            # it (worker error, ffmpeg pipe failure, …) or the export was
+            # cancelled mid-render. Release whatever resources actually got
+            # created instead of leaking a video handle, a temp file, or an
+            # orphaned ffmpeg process. The normal teardown below (mux,
+            # ffmpeg exit-code check, etc.) only runs when the loop actually
+            # finished all its frames.
+            cap.release()
+            if overlay_only:
+                try:
+                    _ov_queue.put_nowait(None)
+                except Exception:
+                    pass
+                _ov_writer.join(timeout=5)
+                if _ov_proc.poll() is None:
+                    _ov_proc.terminate()
+                if os.path.exists(out_path):
+                    try:
+                        os.remove(out_path)
+                    except OSError:
+                        pass
+            else:
+                writer.release()
+                if tmp_raw and os.path.exists(tmp_raw):
+                    try:
+                        os.remove(tmp_raw)
+                    except OSError:
+                        pass
 
     if overlay_only:
         cap.release()

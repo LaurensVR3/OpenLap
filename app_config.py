@@ -4,6 +4,7 @@
 from __future__ import annotations
 import json
 import logging
+import os
 import shutil
 import threading
 from dataclasses import dataclass, field, asdict
@@ -11,6 +12,11 @@ from pathlib import Path
 from typing import Dict, List
 
 logger = logging.getLogger(__name__)
+
+# Guards the config.json read-modify-write in AppConfig.save() so a debounced
+# schedule_save() timer firing on a background thread (e.g. after auto_sync
+# writes an offset) can't race a normal user-driven save() and tear the file.
+_config_save_lock = threading.Lock()
 
 CONFIG_FILE          = Path.home() / '.openlap' / 'config.json'
 SCAN_CACHE_FILE      = Path.home() / '.openlap' / 'scan_cache.json'
@@ -58,6 +64,7 @@ class AppConfig:
     motec_path:     str = ""
     gpx_path:       str = ""
     vbox_path:      str = ""
+    unipro_path:    str = ""
     # Legacy single telemetry folder — kept as scan-all fallback for old configs
     telemetry_path: str = ""
     video_path:     str = ""
@@ -101,7 +108,7 @@ class AppConfig:
         seen: set = set()
         result: List[str] = []
         for p in (self.racebox_path, self.aim_path, self.motec_path,
-                  self.gpx_path, self.vbox_path, self.telemetry_path):
+                  self.gpx_path, self.vbox_path, self.unipro_path, self.telemetry_path):
             p = p.strip()
             if not p:
                 continue
@@ -114,9 +121,47 @@ class AppConfig:
     # ── Persistence ───────────────────────────────────────────────────────────
 
     def save(self) -> None:
+        """Persist config to disk atomically, keeping a backup of the
+        previous last-known-good file.
+
+        Guarded by a module-level lock since schedule_save() may fire this
+        from a background Timer thread (e.g. debounced UI edits) at the same
+        time auto_sync's background thread writes offsets back via a normal
+        save() call — without the lock, two concurrent read-modify-writes
+        could interleave and corrupt the file.
+        """
         CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(asdict(self), f, indent=2, default=str)
+        backup_file = CONFIG_FILE.parent / (CONFIG_FILE.name + '.bak')
+        payload = json.dumps(asdict(self), indent=2, default=str)
+
+        with _config_save_lock:
+            # Keep the previous version as a backup before overwriting, so a
+            # load() that hits a corrupt/torn primary file has somewhere to
+            # fall back to other than hard defaults.
+            if CONFIG_FILE.exists():
+                try:
+                    shutil.copy2(CONFIG_FILE, backup_file)
+                except OSError:
+                    logger.debug('Could not write config backup %s', backup_file, exc_info=True)
+
+            # Atomic write: write the full payload to a temp file in the same
+            # directory, then os.replace() it over the real file. os.replace
+            # is atomic on both Windows and POSIX, so a concurrent reader
+            # (or a crash mid-write) never observes a partially-written file.
+            tmp_file = CONFIG_FILE.parent / (
+                f'{CONFIG_FILE.name}.tmp-{os.getpid()}-{threading.get_ident()}')
+            try:
+                with open(tmp_file, 'w', encoding='utf-8') as f:
+                    f.write(payload)
+                os.replace(tmp_file, CONFIG_FILE)
+            finally:
+                # Clean up the temp file if os.replace() never happened
+                # (e.g. the write itself raised).
+                if tmp_file.exists():
+                    try:
+                        tmp_file.unlink()
+                    except OSError:
+                        pass
 
     def schedule_save(self, delay: float = 0.5) -> None:
         """Debounced save — flushes to disk at most once per *delay* seconds.
@@ -131,7 +176,7 @@ class AppConfig:
         t = threading.Timer(delay, self.save)
         t.daemon = True
         t.start()
-        object.__setattr__(self, '_save_timer', t)  # type: ignore[arg-type]
+        self._save_timer = t
 
     @classmethod
     def load(cls) -> 'AppConfig':
@@ -149,7 +194,17 @@ class AppConfig:
                 data = json.load(f)
             return _from_dict(data)
         except Exception:
-            logger.warning('Failed to load config from %s, using defaults', CONFIG_FILE, exc_info=True)
+            logger.warning('Failed to load config from %s, trying backup', CONFIG_FILE, exc_info=True)
+            backup_file = CONFIG_FILE.parent / (CONFIG_FILE.name + '.bak')
+            if backup_file.exists():
+                try:
+                    with open(backup_file, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    logger.warning('Recovered config from backup %s', backup_file)
+                    return _from_dict(data)
+                except Exception:
+                    logger.warning('Backup config also unreadable, using defaults',
+                                   exc_info=True)
             return cls()
 
 
@@ -283,6 +338,7 @@ def _from_dict(data: dict) -> AppConfig:
         motec_path     = data.get('motec_path',     ''),
         gpx_path       = data.get('gpx_path',       ''),
         vbox_path      = data.get('vbox_path',      ''),
+        unipro_path    = data.get('unipro_path',    ''),
         telemetry_path = data.get('telemetry_path', ''),
         video_path     = data.get('video_path',     ''),
         export_path    = data.get('export_path',    ''),

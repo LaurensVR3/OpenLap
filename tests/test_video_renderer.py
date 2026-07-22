@@ -163,3 +163,130 @@ class TestSyncOffsetFrameRange:
         # 60-second video at 30fps = 1800 frames; lap at 200–280s is outside
         f_start, f_end = self._calc(0.0, 200.0, 280.0, 30.0, 1800)
         assert f_end <= f_start   # no valid frame range
+
+
+# ── Overlay-only virtual canvas (no source video) ─────────────────────────────
+
+class TestOverlayOnlyVirtualDuration:
+    """
+    render_lap synthesizes fps/dimensions/duration when overlay_only=True and
+    the source video is missing (cap metadata reads as 0). Duration must track
+    the actual lap or session length, not a fixed floor — an earlier version of
+    this fix hardcoded a 3600s minimum, which silently produced an hour of
+    blank overlay for any full-session export shorter than that.
+    """
+
+    FPS = 30.0
+
+    def _virtual_total(self, sync_offset, padding, gpx_end=None, session_end=None):
+        virtual_end = sync_offset + (gpx_end if gpx_end is not None else session_end)
+        return int(math.ceil((virtual_end + padding + 2.0) * self.FPS))
+
+    def test_lap_scope_duration_matches_lap_not_a_fixed_floor(self):
+        # A short (20s) lap must not be inflated to an hour of frames.
+        total = self._virtual_total(sync_offset=0.0, padding=5.0, gpx_end=20.0)
+        assert total < 3600 * self.FPS
+        assert total >= int((20.0 + 5.0) * self.FPS)
+
+    def test_full_session_duration_scales_with_session_length(self):
+        short_total = self._virtual_total(sync_offset=0.0, padding=0.0, session_end=300.0)   # 5 min
+        long_total  = self._virtual_total(sync_offset=0.0, padding=0.0, session_end=7200.0)  # 2 h
+        # Duration must track the session, not collapse to a shared fixed floor.
+        assert long_total > short_total
+        assert short_total < 3600 * self.FPS
+        assert long_total  > 3600 * self.FPS
+
+    def test_source_has_no_fixed_duration_floor(self):
+        """Guard against reintroducing a hardcoded minimum virtual duration."""
+        import video_renderer, inspect
+        src = inspect.getsource(video_renderer.render_lap)
+        assert 'max(3600' not in src
+
+
+# ── concat_videos join progress / stall handling ───────────────────────────────
+
+class TestConcatVideosProgress:
+    """
+    concat_videos's join used to give zero progress feedback while ffmpeg
+    ran — a multi-GB join over a slow/network-mounted source looked
+    indistinguishable from a genuine hang. Verify: (1) progress_cb is driven
+    from ffmpeg's own -progress output against the summed input duration,
+    and (2) a stalled join (no progress for stall_timeout_s) is killed and
+    raises VideoConcatError rather than blocking forever.
+    """
+
+    def _fake_proc(self, stdout_lines, returncode=0, poll_sequence=None):
+        """A minimal stand-in for subprocess.Popen with the bits concat_videos
+        actually touches: .stdout (iterable of bytes), .stderr (iterable),
+        .poll()/.wait()/.kill(), .returncode."""
+        from unittest.mock import MagicMock
+        proc = MagicMock()
+        proc.stdout = iter(stdout_lines)
+        proc.stderr = iter([])
+        proc.returncode = returncode
+        # poll() returns None until the sequence is exhausted, then returncode
+        poll_vals = list(poll_sequence) if poll_sequence is not None else [None, returncode]
+        proc.poll.side_effect = poll_vals
+        return proc
+
+    def test_reports_progress_from_ffmpeg_out_time(self, tmp_path, monkeypatch):
+        import video_renderer as vr
+
+        monkeypatch.setattr(vr, '_probe_duration_s', lambda p: 10.0)
+        lines = [
+            b'out_time_ms=2000000\n',
+            b'out_time_ms=5000000\n',
+            b'out_time_ms=9500000\n',
+            b'progress=end\n',
+        ]
+        proc = self._fake_proc(lines, returncode=0)
+        monkeypatch.setattr(vr, '_popen', lambda *a, **k: proc)
+
+        seen = []
+        vr.concat_videos(['a.mp4', 'b.mp4'], str(tmp_path / 'out.mp4'),
+                          progress_cb=lambda pct, msg: seen.append(pct))
+
+        assert len(seen) == 3
+        assert seen == sorted(seen)          # monotonically increasing
+        # total_s = summed duration of both inputs (10.0s each) = 20.0s
+        assert seen[-1] == pytest.approx(47.5, abs=0.1)   # 9.5s / 20.0s total
+
+    def test_no_progress_cb_uses_plain_run(self, tmp_path, monkeypatch):
+        """Without progress_cb, falls back to the original one-shot _run path
+        (no -progress plumbing, no probing input durations)."""
+        import video_renderer as vr
+        from unittest.mock import MagicMock
+
+        probed = []
+        monkeypatch.setattr(vr, '_probe_duration_s', lambda p: probed.append(p) or 10.0)
+        result = MagicMock(returncode=0)
+        run_mock = MagicMock(return_value=result)
+        monkeypatch.setattr(vr, '_run', run_mock)
+
+        vr.concat_videos(['a.mp4', 'b.mp4'], str(tmp_path / 'out.mp4'))
+
+        run_mock.assert_called_once()
+        assert probed == []   # duration probing only happens when progress_cb is given
+
+    def test_stalled_join_is_killed_and_raises(self, tmp_path, monkeypatch):
+        import video_renderer as vr
+        from exceptions import VideoConcatError
+
+        monkeypatch.setattr(vr, '_probe_duration_s', lambda p: 100.0)
+        # No progress lines at all — poll() keeps returning None (still
+        # running) until stall detection kicks in and kills it. Both the
+        # stream-copy attempt and its re-encode fallback stall the same way,
+        # so _popen must hand back a fresh process each call.
+        procs = []
+        def _new_proc(*a, **k):
+            p = self._fake_proc(stdout_lines=[], returncode=0,
+                                 poll_sequence=[None] * 100)
+            procs.append(p)
+            return p
+        monkeypatch.setattr(vr, '_popen', _new_proc)
+
+        with pytest.raises(VideoConcatError):
+            vr.concat_videos(['a.mp4', 'b.mp4'], str(tmp_path / 'out.mp4'),
+                              progress_cb=lambda pct, msg: None,
+                              stall_timeout_s=0.05)
+        assert procs and all(p.kill.assert_called_once() is None for p in procs)

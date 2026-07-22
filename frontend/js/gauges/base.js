@@ -168,22 +168,6 @@ function drawAccentBar(ctx, w, h, color) {
 }
 
 /**
- * Scale font size proportionally to gauge dimensions.
- * Mirrors scale_factor() from overlay_utils.py.
- *
- * @param {number} baseSize   — reference font size at base dimensions
- * @param {number} w          — actual width
- * @param {number} h          — actual height
- * @param {number} baseW      — reference width  (default 120)
- * @param {number} baseH      — reference height (default 160)
- * @returns {number} pixel font size (integer, clamped to a minimum)
- */
-function scaleFont(baseSize, w, h, baseW = 120, baseH = 160) {
-  const sc = Math.sqrt((w / baseW) * (h / baseH));
-  return Math.max(8, Math.round(baseSize * sc));
-}
-
-/**
  * Shrink a font size so `text` rendered at that size does not exceed maxWidthPx.
  * Mirrors fit_text_to_width() in overlay_utils.py.
  *
@@ -217,16 +201,24 @@ function fitFontSize(ctx, text, fontSizePx, fontWeight, maxWidthPx, minFontSizeP
  * @returns {string}
  */
 function fmtValue(value, channel) {
+  // Single null/undefined guard for every channel (including the generic
+  // fallback below) — callers must pass the real value through (no `?? 0`
+  // pre-defaulting) so genuinely-missing telemetry renders as "—" instead of
+  // a fake zero-ish reading.
+  if (value == null) return '—';
   if (channel === 'lap_time') {
-    if (value == null || value < 0) return '—';
+    if (value < 0) return '—';
     const m = Math.floor(value / 60);
     const s = (value % 60).toFixed(3).padStart(6, '0');
     return value >= 60 ? `${m}:${s}` : value.toFixed(3);
   }
   if (channel === 'lean') return value.toFixed(1);
   if (channel === 'delta_time') {
-    if (value == null) return '—';
     return (value >= 0 ? '+' : '') + value.toFixed(3);
+  }
+  if (channel === 'gear') {
+    const gearInt = Math.round(value);
+    return gearInt === 0 ? 'N' : String(gearInt);
   }
   const abs = Math.abs(value);
   if (abs >= 10000) return value.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
@@ -246,4 +238,4 @@ function fmtTime(secs) {
 }
 
 // Export as a namespace object (no ES module build step required)
-const GaugeBase = { getTheme, roundRect, drawBackground, drawAccentBar, scaleFont, fitFontSize, fmtValue, fmtTime, THEMES };
+const GaugeBase = { getTheme, roundRect, drawBackground, drawAccentBar, fitFontSize, fmtValue, fmtTime, THEMES };

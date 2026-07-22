@@ -10,16 +10,23 @@
 (function () {
   let _config     = null;
   let _unlistenFns = [];
+  let _container   = null;   // guards post-await DOM writes against a stale mount
 
   // ── Mount / Unmount ──────────────────────────────────────────────────────────
 
   async function mount(container) {
+    _container = container;
     _config = await API.getConfig();
+    // Bail out if the user navigated away (unmount() nulled _container, or a
+    // second mount() replaced it) while getConfig() was still in flight —
+    // otherwise this resumes and overwrites whatever page is now showing.
+    if (_container !== container) return;
     container.innerHTML = _buildHTML(_config);
     _bindEvents(container);
   }
 
   function unmount() {
+    _container = null;
     _unlistenFns.forEach(fn => fn());
     _unlistenFns = [];
   }
@@ -50,6 +57,7 @@
       ${_folderRow('MoTeC',       'motec_path',   cfg.motec_path,   'MoTeC .ld binary files')}
       ${_folderRow('GPX',         'gpx_path',     cfg.gpx_path,     '.gpx GPS track files')}
       ${_folderRow('VBOX',        'vbox_path',    cfg.vbox_path,    'Racelogic VBOX .vbo files')}
+      ${_folderRow('Unipro',      'unipro_path',  cfg.unipro_path,  'Unipro Laptimer .uni or Analyser .tsv exports')}
     </section>
 
     <!-- Video & output -->

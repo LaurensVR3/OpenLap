@@ -52,7 +52,16 @@ def load_csv(path: str) -> Session:
     if not raw_rows:
         raise NoDataRowsError(f"No data rows in {path}")
 
-    all_pts: List[DataPoint] = [DataPoint.from_row(r, is_bike) for r in raw_rows]
+    all_pts: List[DataPoint] = []
+    for r in raw_rows:
+        try:
+            all_pts.append(DataPoint.from_row(r, is_bike))
+        except (KeyError, ValueError, TypeError) as exc:
+            logger.warning('Skipping malformed row %r in %s: %s',
+                           r.get('Record', '?'), path, exc)
+
+    if not all_pts:
+        raise NoDataRowsError(f"No valid data rows in {path}")
 
     # If this is a bike session but LeanAngle was not exported, compute it from
     # speed × yaw rate (GyroZ).  Formula: lean = atan(v_m_s × ω_rad_s / g)

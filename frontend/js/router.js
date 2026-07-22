@@ -7,6 +7,14 @@ const Router = (() => {
   let _current = null;
   let _navSeq  = 0;  // incremented on each navigate; guards stale async mounts
 
+  function _esc(s) {
+    return String(s ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
   function register(name, page) {
     _pages[name] = page;
   }
@@ -38,7 +46,7 @@ const Router = (() => {
       view.innerHTML = `<div class="empty-state">
         <div class="empty-icon">🚫</div>
         <div class="empty-title">Page not found</div>
-        <div>${name}</div>
+        <div>${_esc(name)}</div>
       </div>`;
     }
 

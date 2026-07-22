@@ -137,5 +137,7 @@ const API = (() => {
 
     startAutoSync:              (sessions)           => call('start_auto_sync', sessions),
     cancelAutoSync:             ()                   => call('cancel_auto_sync'),
+
+    confirmClearQueue:          ()                   => call('confirm_clear_queue'),
   };
 })();

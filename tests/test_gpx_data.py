@@ -141,6 +141,38 @@ def test_load_gpx_interpolate_at_midpoint():
     assert result is not None
 
 
+# ── No-timestamp fallback (1 Hz synthesis) ────────────────────────────────────
+
+def _write_gpx_no_time(tmp_path, n_points=5):
+    pts = ''.join(
+        f'<trkpt lat="50.{i:04d}" lon="4.{i:04d}"></trkpt>' for i in range(n_points)
+    )
+    content = (
+        '<?xml version="1.0"?>'
+        '<gpx version="1.1" xmlns="http://www.topografix.com/GPX/1/1">'
+        f'<trk><trkseg>{pts}</trkseg></trk></gpx>'
+    )
+    p = tmp_path / "no_time.gpx"
+    p.write_text(content)
+    return str(p)
+
+
+def test_load_gpx_no_timestamps_assigns_distinct_elapsed(tmp_path):
+    path = _write_gpx_no_time(tmp_path, n_points=5)
+    session = load_gpx(path)
+    elapsed = [p.elapsed for p in session.all_points]
+    # Every point must have a distinct, strictly increasing elapsed time
+    assert elapsed == sorted(set(elapsed))
+    assert len(set(elapsed)) == len(elapsed)
+
+
+def test_load_gpx_no_timestamps_1hz_spacing(tmp_path):
+    path = _write_gpx_no_time(tmp_path, n_points=5)
+    session = load_gpx(path)
+    elapsed = [p.elapsed for p in session.all_points]
+    assert elapsed == pytest.approx([0.0, 1.0, 2.0, 3.0, 4.0])
+
+
 # ── Error cases ────────────────────────────────────────────────────────────────
 
 def test_load_gpx_empty_trkseg_raises(tmp_path):

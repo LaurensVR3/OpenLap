@@ -1,6 +1,6 @@
 # OpenLap — Free Motorsport Telemetry Overlay Software
 
-**OpenLap** is a free, open-source desktop application that overlays telemetry data on racing video footage. It supports **RaceBox**, **AIM MyChron**, **MoTeC**, and **GPX** data sources and runs entirely on your PC — no subscription, no cloud, no fees.
+**OpenLap** is a free, open-source desktop application that overlays telemetry data on racing video footage. It supports **RaceBox**, **AIM MyChron**, **MoTeC**, **GPX**, **VBOX**, and **Unipro Laptimer** data sources and runs entirely on your PC — no subscription, no cloud, no fees.
 
 Point it at your telemetry files and a folder of race videos, and it matches sessions, syncs timing, and renders professional gauge overlays — all from a single window.
 
@@ -36,6 +36,8 @@ When the app opens, go to the **Settings tab first** and tell it where your file
 - **AIM folder** — the folder containing your AIM `.xrk` / `.xrz` / `.drk` files
 - **MoTeC folder** — the folder containing your MoTeC `.ld` files
 - **GPX folder** — the folder containing your `.gpx` files
+- **VBOX folder** — the folder containing your Racelogic `.vbo` files
+- **Unipro folder** — the folder containing your Unipro `.tsv` (preferred) or `.uni` files
 - **Video folder** — the folder where your race videos are stored
 - **Export folder** — where finished videos will be saved
 
@@ -100,7 +102,7 @@ Click **+ Export** on the lap or session you want, then go to the **Export tab**
 
 **Sessions are not appearing in the Data tab**
 - Check that the correct folder is set in Settings for your data source
-- Make sure the files are the right type (`.csv` for RaceBox, `.xrk`/`.xrz`/`.drk` for AIM, `.ld` for MoTeC, `.gpx` for GPX)
+- Make sure the files are the right type (`.csv` for RaceBox, `.xrk`/`.xrz`/`.drk` for AIM, `.ld` for MoTeC, `.gpx` for GPX, `.vbo` for VBOX, `.tsv`/`.uni` for Unipro)
 - Click **Scan** to force a rescan
 - AIM files also need the DLL downloaded (Settings → Download DLL)
 
@@ -127,7 +129,7 @@ Click **+ Export** on the lap or session you want, then go to the **Export tab**
 ## Features
 
 ### Data & Session Management
-- Per-source telemetry folders — configure separate directories for RaceBox, AIM, MoTeC, and GPX data
+- Per-source telemetry folders — configure separate directories for RaceBox, AIM, MoTeC, GPX, VBOX, and Unipro data
 - Auto-scan on startup with persistent session cache for fast restarts
 - Sessions grouped by date with lap list, best time, and video match status
 - Manual video reassignment for sessions where auto-matching doesn't find the right clip
@@ -169,6 +171,13 @@ Click **+ Export** on the lap or session you want, then go to the **Export tab**
 | **AIM MyChron** | MyChron 5, MyChron 5S, Solo 2 (`.xrk` · `.xrz` · `.drk`) | Auto-converted to CSV on scan |
 | **MoTeC** | Any MoTeC logger exporting `.ld` | Binary i2 format; full session lap timing |
 | **GPX** | Any GPS device or phone app (`.gpx`) | Speed derived from position + timestamp; no G-force, auto-sync not available |
+| **VBOX** | Racelogic VBOX loggers (`.vbo`) | Full channel + lap-trigger support |
+| **Unipro Laptimer** | Unipro GPS laptimer (`.tsv`, `.uni`) | See below — prefer `.tsv` when available |
+
+**A note on Unipro support:** Unipro publishes no file format spec, so this was built by reverse-engineering. Two formats are supported, and they are **not equivalent**:
+
+- **`.tsv` (recommended)** — export it from Unipro Analyser's own "Export to TSV" function. This is a full, documented parse: every channel (RPM, gear, exhaust temp, real accelerometer-measured G-force, and the device's own true lap numbering) comes through directly and accurately. Use this whenever you can.
+- **`.uni` (the raw binary the device itself writes)** — supported directly so you don't strictly need Analyser installed, but only GPS position, altitude, and speed could be reverse-engineered from it. RPM, gear, gyro, and exhaust temp are unavailable and read as zero. Longitudinal/lateral G and lap boundaries are *estimated* from the GPS track (a beacon-crossing heuristic) rather than read from the device — cross-checked against a `.tsv` export of the same session, this heuristic under-counted by one lap. If you only have a raw `.uni` file and need complete or lap-accurate data, export a `.tsv` from Analyser and use that instead.
 
 ### Telemetry channels
 
@@ -192,7 +201,7 @@ Most telemetry overlay tools are expensive, subscription-based, or locked to a s
 
 - **Free** — no licence fees, no watermarks, no export limits
 - **Open source** — GPL v3; inspect, modify, and contribute
-- **Multi-source** — RaceBox, AIM MyChron, MoTeC, and GPX in one app
+- **Multi-source** — RaceBox, AIM MyChron, MoTeC, GPX, VBOX, and Unipro Laptimer in one app
 - **GPU-accelerated** — NVIDIA NVENC, AMD AMF, Intel QSV; renders fast on any modern PC
 - **Offline** — no internet required after initial setup; your data stays on your machine
 

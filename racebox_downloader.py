@@ -16,12 +16,27 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, List, Optional
+
+_SAFE_ID_RE = re.compile(r'[^\w-]')
+
+
+def _sanitize_source_id(raw: str) -> str:
+    """Restrict a scraped session id to a safe filename component.
+
+    `sid` is parsed straight out of an <a href="/session/...?..."> scraped
+    from racebox.pro's session list — it's used directly to build a local
+    file path (dest_path()) and a download URL, so a compromised/MITM'd
+    response could otherwise smuggle path-traversal characters (`../`, an
+    absolute path prefix, etc.) into a filesystem write.
+    """
+    return _SAFE_ID_RE.sub('_', raw)[:128]
 
 
 # ── Abstract base ─────────────────────────────────────────────────────────────
@@ -88,12 +103,12 @@ class DataSource(ABC):
 
     def dest_path(self, session: RemoteSession, dest_dir: str,
                   ext: str = '.csv') -> str:
-        return os.path.join(dest_dir, f"{session.source_id}{ext}")
+        return os.path.join(dest_dir, f"{_sanitize_source_id(session.source_id)}{ext}")
 
     def already_downloaded(self, session: RemoteSession,
                            dest_dir: str) -> bool:
         """Return True if a file with this session's ID exists anywhere under dest_dir."""
-        target = session.source_id
+        target = _sanitize_source_id(session.source_id)
         if not os.path.isdir(dest_dir):
             return False
         for root, _, files in os.walk(dest_dir):
