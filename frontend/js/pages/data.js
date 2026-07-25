@@ -18,8 +18,15 @@
   let _lapDetails = {};   // csv_path → [{lap_idx, duration, is_best}]
   let _selCsv     = null; // currently selected session csv_path
   let _config     = null;
-  let _scanning    = false;
-  let _autoSyncing = false;
+  let _scanning     = false;
+  let _autoSyncing  = false;
+  let _channelSyncing = false;
+  let _lastSyncChannel = {};   // csv_path -> channel name the last successful auto-sync matched on (RPM/G-Force/Speed/Altitude)
+
+  let _channelLists = {};          // csv_path -> [{key,label,unit,noisy}, ...]
+  let _channelListsLoading = new Set();
+  let _showAllChannels = false;    // "show noisy channels" toggle, shared across cards
+
   let _statusMsg   = '';
   let _container   = null;
   let _metaQueue   = [];   // sessions waiting for meta fetch
@@ -196,7 +203,7 @@
   }
 
   async function promptAndLink(day) {
-    const folder = await API.openFolderDialog().catch(() => null);
+    const folder = await API.openFolderDialog(_config?.video_path || '').catch(() => null);
     if (!folder) return;
 
     const daySessions = _sessions
@@ -243,11 +250,15 @@
                     : s.sync_offset != null && s.sync_source === 'auto' ? 'di-auto'
                     : s.sync_offset != null         ? 'di-user'
                     : 'di-unsync';
+    const secondaryPath = _config?.secondary_source?.[s.csv_path];
+    const secondaryBadge = secondaryPath
+      ? `<span class="dl-secondary-badge" title="Secondary telemetry: ${esc(secondaryPath)}">+${esc(baseName(secondaryPath))}</span>`
+      : '';
 
     return `<div class="dl-row${isSel?' sel':''}${isDayB?' day-best':''}" data-csv="${esc(s.csv_path)}">
       <span class="dl-sync ${iconCls}">${syncLabel}</span>
       <span class="dl-time">${esc(time)}</span>
-      <span class="dl-track" title="${esc(s.csv_path)}">${esc(track)}</span>
+      <span class="dl-track" title="${esc(s.csv_path)}">${esc(track)}${secondaryBadge}</span>
       <span class="dl-source">${esc(s.source||'RaceBox')}</span>
       <span class="dl-num">${esc(lapStr)}</span>
       <span class="dl-num">${esc(bestStr)}</span>
@@ -368,9 +379,124 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
     <span id="dr-assign-vid-msg" class="status-msg"></span>
   </div>
 </div>`}
+
+<!-- Secondary telemetry -->
+${renderSecondaryCard(s)}
 `;
 
     wirePropPanel(s, pane);
+  }
+
+  function renderSecondaryCard(s) {
+    const secondaryPath = _config?.secondary_source?.[s.csv_path] || '';
+    const secOffset      = _config?.secondary_offsets?.[s.csv_path];
+    const secSource       = _config?.secondary_offset_sources?.[s.csv_path];
+    const secFailed = (_config?.secondary_sync_failed || []).includes(s.csv_path);
+    const isSyncing = _channelSyncing && secOffset == null && !secFailed;
+
+    if (!secondaryPath) {
+      return `
+<div class="dr-card">
+  <div class="dr-card-title">SECONDARY TELEMETRY</div>
+  <div class="dr-hint">Combine a second telemetry file (e.g. a MoTeC engine log alongside this AIM GPS log) into one overlay.</div>
+  <div class="dr-actions" style="margin-top:8px">
+    <button class="btn btn-secondary btn-sm" id="dr-assign-secondary-btn">Attach second file…</button>
+    <span id="dr-assign-secondary-msg" class="status-msg"></span>
+  </div>
+</div>`;
+    }
+
+    const autoNote = isSyncing
+      ? `<div style="font-size:9px;color:#ffb74d;margin-bottom:6px;padding:5px 6px;
+                     background:rgba(255,183,77,0.08);border-radius:4px;border-left:2px solid #ffb74d">
+           Auto-detecting sync offset (trying RPM, G-force, Speed, Altitude)…
+         </div>`
+      : (secSource === 'auto'
+      ? `<div style="font-size:9px;color:#64b5f6;margin-bottom:6px;padding:5px 6px;
+                     background:rgba(100,181,246,0.08);border-radius:4px;border-left:2px solid #64b5f6">
+           Auto-detected${_lastSyncChannel[s.csv_path] ? ' via ' + esc(_lastSyncChannel[s.csv_path]) : ''}: ${secOffset != null ? secOffset.toFixed(3) + 's' : '—'} — adjust below if needed.
+         </div>`
+      : '');
+
+    // Plain per-file channel listing — no source picking. Overlapping
+    // channels between the two files just show up under both (session_merge
+    // qualifies the secondary's copy with the file name so both stay
+    // separately selectable in the Overlay editor).
+    const primaryList   = _channelLists[s.csv_path];
+    const secondaryList = _channelLists[secondaryPath];
+    let channelsHtml;
+    if (!primaryList || !secondaryList) {
+      loadChannelLists(s, secondaryPath);
+      channelsHtml = `<div class="dr-hint">Loading channels…</div>`;
+    } else {
+      channelsHtml = `
+        <div style="font-size:9px; color:var(--text3); margin:8px 0 4px;" title="${esc(s.csv_path)}">${esc(baseName(s.csv_path))}</div>
+        <div class="dr-rows">${_renderChannelListRows(primaryList)}</div>
+        <div style="font-size:9px; color:var(--text3); margin:10px 0 4px;" title="${esc(secondaryPath)}">${esc(baseName(secondaryPath))}</div>
+        <div class="dr-rows">${_renderChannelListRows(secondaryList)}</div>`;
+    }
+
+    return `
+<div class="dr-card">
+  <div class="dr-card-title">SECONDARY TELEMETRY</div>
+  ${autoNote}
+  <div class="dr-rows">
+    <div class="dr-row"><span class="dr-lbl">File</span><span class="dr-val" title="${esc(secondaryPath)}">${esc(baseName(secondaryPath))}</span></div>
+    <div class="dr-row">
+      <span class="dr-lbl">Offset (s)</span>
+      <span class="dr-val">
+        <input type="number" id="dr-secondary-off-input" class="input-field input-narrow" step="0.001"
+               value="${secOffset != null ? secOffset.toFixed(3) : ''}" placeholder="0.000">
+      </span>
+    </div>
+  </div>
+  <div class="dr-actions" style="margin-top:6px; margin-bottom:8px;">
+    <button class="btn btn-secondary btn-sm" id="dr-channel-sync-btn">Auto-sync</button>
+    <button class="btn btn-secondary btn-sm" id="dr-clear-secondary-btn">Remove</button>
+    <span id="dr-secondary-msg" class="status-msg"></span>
+  </div>
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-top:4px;">
+    <span style="font-size:9px; color:var(--text3);">AVAILABLE CHANNELS</span>
+    <label style="font-size:9px; color:var(--text3); display:flex; align-items:center; gap:4px; cursor:pointer;">
+      <input type="checkbox" id="dr-show-all-channels"${_showAllChannels ? ' checked' : ''}> Show all
+    </label>
+  </div>
+  <div style="max-height:260px; overflow-y:auto; padding-right:4px;">
+    ${channelsHtml}
+  </div>
+</div>`;
+  }
+
+  // Plain read-only listing of one telemetry file's channels (label + unit),
+  // filtered by the shared "show all" (noisy/diagnostic) toggle.
+  function _renderChannelListRows(list) {
+    let entries = [...list].sort((a, b) => a.label.localeCompare(b.label));
+    if (!_showAllChannels) entries = entries.filter(e => !e.noisy);
+    if (!entries.length) {
+      return `<div class="dr-hint">No channels found${_showAllChannels ? '' : ' — try "Show all"'}.</div>`;
+    }
+    return entries.map(e => `
+    <div class="dr-row">
+      <span class="dr-lbl" title="${esc(e.key)}">${esc(e.label)}</span>
+      <span class="dr-val" style="opacity:0.6; font-size:9px;">${esc(e.unit || '')}</span>
+    </div>`).join('');
+  }
+
+  async function loadChannelLists(s, secondaryPath) {
+    const key = s.csv_path + '::' + secondaryPath;
+    if (_channelListsLoading.has(key)) return;
+    _channelListsLoading.add(key);
+    try {
+      const [primaryChans, secondaryChans] = await Promise.all([
+        API.listSessionChannels(s.csv_path).catch(() => []),
+        API.listSessionChannels(secondaryPath).catch(() => []),
+      ]);
+      _channelLists[s.csv_path]    = primaryChans;
+      _channelLists[secondaryPath] = secondaryChans;
+    } finally {
+      _channelListsLoading.delete(key);
+    }
+    if (_selCsv === s.csv_path) renderRight();
   }
 
   function renderAlignCard(s, vidPaths, off) {
@@ -597,7 +723,10 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
       const btn = pane.querySelector('#dr-assign-vid-btn');
       const msg = pane.querySelector('#dr-assign-vid-msg');
       btn.disabled = true;
-      const videoPath = await API.openFileDialog(['Video Files (*.mp4;*.mov;*.avi;*.mkv;*.MP4;*.MOV)']).catch(() => null);
+      const videoPath = await API.openFileDialog(
+        ['Video Files (*.mp4;*.mov;*.avi;*.mkv;*.MP4;*.MOV)'],
+        _config?.video_path || ''
+      ).catch(() => null);
       if (!videoPath) { btn.disabled = false; return; }
       try {
         await API.assignVideo(s.csv_path, videoPath);
@@ -638,6 +767,86 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
 
     // Video sync
     wireVideoSync(s, pane);
+
+    // Secondary telemetry
+    wireSecondaryTelemetry(s, pane);
+  }
+
+  function wireSecondaryTelemetry(s, pane) {
+    // Attach a new secondary file
+    pane.querySelector('#dr-assign-secondary-btn')?.addEventListener('click', async () => {
+      const btn = pane.querySelector('#dr-assign-secondary-btn');
+      const msg = pane.querySelector('#dr-assign-secondary-msg');
+      btn.disabled = true;
+      const path = await API.openFileDialog(
+        ['Telemetry Files (*.ld;*.csv;*.xrk;*.gpx;*.vbo;*.uni;*.tsv)'],
+        s.csv_path || ''
+      ).catch(() => null);
+      if (!path) { btn.disabled = false; return; }
+      try {
+        const secondary_source = { ...(_config?.secondary_source || {}), [s.csv_path]: path };
+        _config = { ..._config, secondary_source };
+        await API.saveConfig({ secondary_source });
+        renderRight();
+        renderLeft();
+      } catch (e) {
+        if (msg) { msg.textContent = String(e); msg.className = 'status-msg status-err'; }
+        btn.disabled = false;
+      }
+    });
+
+    // Remove secondary source (and everything keyed to it)
+    pane.querySelector('#dr-clear-secondary-btn')?.addEventListener('click', async () => {
+      const secondary_source = { ...(_config?.secondary_source || {}) };
+      delete secondary_source[s.csv_path];
+      const secondary_offsets = { ...(_config?.secondary_offsets || {}) };
+      delete secondary_offsets[s.csv_path];
+      const secondary_offset_sources = { ...(_config?.secondary_offset_sources || {}) };
+      delete secondary_offset_sources[s.csv_path];
+      _config = { ..._config, secondary_source, secondary_offsets, secondary_offset_sources };
+      await API.saveConfig({ secondary_source, secondary_offsets, secondary_offset_sources });
+      renderRight();
+      renderLeft();
+    });
+
+    // Manual offset entry
+    const offInp = pane.querySelector('#dr-secondary-off-input');
+    offInp?.addEventListener('change', async () => {
+      const val = parseFloat(offInp.value);
+      if (!Number.isFinite(val)) return;
+      const secondary_offsets = { ...(_config?.secondary_offsets || {}), [s.csv_path]: val };
+      const secondary_offset_sources = { ...(_config?.secondary_offset_sources || {}), [s.csv_path]: 'user' };
+      _config = { ..._config, secondary_offsets, secondary_offset_sources };
+      await API.saveConfig({ secondary_offsets, secondary_offset_sources });
+      renderRight();
+    });
+
+    // Auto-sync via cross-correlation (tries RPM, G-force, Speed, Altitude —
+    // whichever channel both files have usable data for, keeps the best match)
+    pane.querySelector('#dr-channel-sync-btn')?.addEventListener('click', async () => {
+      const btn = pane.querySelector('#dr-channel-sync-btn');
+      const msg = pane.querySelector('#dr-secondary-msg');
+      btn.disabled = true;
+      try {
+        const r = await API.startChannelSync([s]);
+        if (r?.queued > 0) {
+          _channelSyncing = true;
+          if (msg) { msg.textContent = 'Syncing…'; msg.className = 'status-msg'; }
+          renderRight();
+        } else {
+          btn.disabled = false;
+        }
+      } catch (e) {
+        if (msg) { msg.textContent = String(e); msg.className = 'status-msg status-err'; }
+        btn.disabled = false;
+      }
+    });
+
+    // "Show all channels" toggle (includes noisy/diagnostic channels)
+    pane.querySelector('#dr-show-all-channels')?.addEventListener('change', e => {
+      _showAllChannels = e.target.checked;
+      renderRight();
+    });
   }
 
   function wireVideoSync(s, pane) {
@@ -1054,6 +1263,42 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
         ? ` — ${_asDone} matched, ${_asFailed} skipped`
         : '';
       setStatus(`${_sessions.length} session${_sessions.length !== 1 ? 's' : ''} found. Auto-sync complete${summary}.`);
+    }));
+
+    // Secondary-telemetry channel sync push events — same shape as auto_sync_progress
+    let _csIdx = 0, _csTotal = 0, _csDone = 0, _csFailed = 0;
+    _unlistenFns.push(API.on('channel_sync_progress', detail => {
+      const s = _sessions.find(x => x.csv_path === detail.csv_path);
+      if (!s) return;
+      if (detail.status === 'processing') {
+        _csIdx = detail.current; _csTotal = detail.total;
+        setStatus(`Syncing session ${_csIdx} of ${_csTotal}…`);
+      } else if (detail.status === 'done') {
+        _csDone++;
+        _lastSyncChannel = { ..._lastSyncChannel, [detail.csv_path]: detail.channel };
+        _config = {
+          ..._config,
+          secondary_offsets: { ...(_config?.secondary_offsets || {}), [detail.csv_path]: detail.offset },
+          secondary_offset_sources: { ...(_config?.secondary_offset_sources || {}), [detail.csv_path]: 'auto' },
+        };
+        setStatus(`Synced via ${detail.channel}: offset detected ${detail.offset.toFixed(3)}s at ${detail.confidence?.toFixed(2)}× confidence`);
+        if (_selCsv === s.csv_path) renderRight();
+      } else if (detail.status === 'failed') {
+        _csFailed++;
+        _config = {
+          ..._config,
+          secondary_sync_failed: [...new Set([...(_config?.secondary_sync_failed || []), detail.csv_path])],
+        };
+        setStatus(`Sync: no confident match on any shared channel (${detail.confidence?.toFixed(2)}× confidence) — set offset manually`);
+        if (_selCsv === s.csv_path) renderRight();
+      }
+    }));
+    _unlistenFns.push(API.on('channel_sync_done', () => {
+      _channelSyncing = false;
+      const summary = _csDone > 0 || _csFailed > 0
+        ? ` — ${_csDone} matched, ${_csFailed} skipped`
+        : '';
+      setStatus(`Sync complete${summary}.`);
     }));
 
     // Await the video server port before rendering so videoUrl() is correct from the start

@@ -230,3 +230,150 @@ def test_video_gap_seconds_missing_creation_time_falls_back_to_zero(monkeypatch)
     monkeypatch.setattr('auto_sync._probe_creation_time', lambda path: None)
     gap = _video_gap_seconds('a.mp4', prev_duration=80.0, cur_path='b.mp4')
     assert gap == 0.0
+
+
+# ── correlate_channels — secondary telemetry sync ────────────────────────────
+
+class TestCorrelateChannels:
+    """
+    correlate_channels() cross-correlates two telemetry files logged during
+    the same run (rather than video motion vs G-force) — trying every
+    channel both files have usable data for (RPM, G-force, Speed, Altitude)
+    and keeping whichever gives the best-confidence match. Its offset must
+    follow session_merge.py's convention (secondary_elapsed = primary_elapsed
+    + offset) — the OPPOSITE argument order from _correlate()'s own
+    (vid_sig, tel_sig) usage elsewhere in this file, verified empirically
+    during implementation.
+    """
+
+    @staticmethod
+    def _fake_session(dt, n, **channel_values):
+        """channel_values: any of rpm=, speed=, gforce_x=, gforce_y=, alt=
+        as arrays of length n; anything not passed stays at the DataPoint
+        default (0.0), same "absent channel" convention the loaders use."""
+        from data_model import DataPoint, Session
+        pts = [
+            DataPoint(
+                record=i, time=None, lat=0.0, lon=0.0,
+                alt=float(channel_values.get('alt', [0.0] * n)[i]),
+                speed=float(channel_values.get('speed', [0.0] * n)[i]),
+                gforce_x=float(channel_values.get('gforce_x', [0.0] * n)[i]),
+                gforce_y=float(channel_values.get('gforce_y', [0.0] * n)[i]),
+                gforce_z=0.0, lap=0, gyro_x=0.0, gyro_y=0.0, gyro_z=0.0,
+                elapsed=i * dt, rpm=float(channel_values.get('rpm', [0.0] * n)[i]),
+            )
+            for i in range(n)
+        ]
+        return Session(
+            source='Test', date_utc='', track='', configuration='',
+            session_type='', best_lap_time=0.0, all_points=pts, laps=[],
+        )
+
+    @staticmethod
+    def _shifted_spiky_profile(fps, n, t, shift_s, base=3000.0, amplitude=4000.0, noise=20.0, seed=1):
+        """A distinctive profile (idle + a few sharp spikes at fixed times —
+        like gear-shift RPM blips or braking-zone G-force peaks) plus a
+        time-shifted, independently-noised copy — gives a clean correlation
+        peak the way real gearshifts/braking zones do, mirroring the style
+        of _correlate()'s own test above."""
+        rng = np.random.default_rng(seed)
+        profile = np.full(n, base)
+        for center in (10.0, 25.0, 40.0, 50.0):
+            profile += amplitude * np.exp(-0.5 * ((t - center) / 0.8) ** 2)
+        primary = profile + rng.normal(0, noise, n)
+
+        shift_frames = int(round(shift_s * fps))
+        secondary = np.zeros(n)
+        secondary[: n - shift_frames] = profile[shift_frames:]
+        secondary += rng.normal(0, noise, n)
+        return primary, secondary
+
+    def test_recovers_known_offset_via_rpm(self, monkeypatch):
+        import auto_sync
+
+        fps = 5.0
+        n = int(60.0 * fps)
+        t = np.arange(n) / fps
+        # Secondary logger started 4s after primary:
+        # secondary_elapsed = primary_elapsed - 4  ->  offset (this module's
+        # convention) should come out to -4.0.
+        primary_rpm, secondary_rpm = self._shifted_spiky_profile(fps, n, t, shift_s=4.0)
+
+        sessions = {
+            '/primary.ld':    self._fake_session(1.0 / fps, n, rpm=primary_rpm),
+            '/secondary.csv': self._fake_session(1.0 / fps, n, rpm=secondary_rpm),
+        }
+        monkeypatch.setattr(auto_sync, '_load_session', lambda path, source: sessions[path])
+
+        offset, confidence, channel = auto_sync.correlate_channels(
+            '/primary.ld', '/secondary.csv', 'MoTeC', 'AIM Mychron',
+            search_window_s=20.0, fps=fps,
+        )
+        assert offset == pytest.approx(-4.0, abs=0.5)
+        assert confidence > auto_sync.MIN_CONFIDENCE
+        assert channel == 'RPM'
+
+    def test_falls_back_to_speed_when_no_rpm_data(self, monkeypatch):
+        # Neither file has RPM (e.g. a GPS-only logger paired with another
+        # GPS-only logger) — correlation should still succeed via Speed.
+        import auto_sync
+
+        fps = 5.0
+        n = int(60.0 * fps)
+        t = np.arange(n) / fps
+        primary_speed, secondary_speed = self._shifted_spiky_profile(
+            fps, n, t, shift_s=2.0, base=80.0, amplitude=40.0, noise=1.0)
+
+        sessions = {
+            '/primary.ld':    self._fake_session(1.0 / fps, n, speed=primary_speed),
+            '/secondary.csv': self._fake_session(1.0 / fps, n, speed=secondary_speed),
+        }
+        monkeypatch.setattr(auto_sync, '_load_session', lambda path, source: sessions[path])
+
+        offset, confidence, channel = auto_sync.correlate_channels(
+            '/primary.ld', '/secondary.csv', 'RaceBox', 'GPX',
+            search_window_s=20.0, fps=fps,
+        )
+        assert offset == pytest.approx(-2.0, abs=0.5)
+        assert confidence > auto_sync.MIN_CONFIDENCE
+        assert channel == 'Speed'
+
+    def test_prefers_rpm_over_speed_when_both_usable(self, monkeypatch):
+        # RPM is tried before Speed (see _CORRELATION_CANDIDATES order) — if
+        # RPM alone already clears MIN_CONFIDENCE, it should win even though
+        # a (noisier) Speed signal is also present on both sides.
+        import auto_sync
+
+        fps = 5.0
+        n = int(60.0 * fps)
+        t = np.arange(n) / fps
+        primary_rpm, secondary_rpm = self._shifted_spiky_profile(fps, n, t, shift_s=4.0)
+        # Much noisier speed signal — still usable, but a visibly worse match.
+        primary_speed, secondary_speed = self._shifted_spiky_profile(
+            fps, n, t, shift_s=4.0, base=80.0, amplitude=40.0, noise=25.0, seed=2)
+
+        sessions = {
+            '/primary.ld':    self._fake_session(1.0 / fps, n, rpm=primary_rpm, speed=primary_speed),
+            '/secondary.csv': self._fake_session(1.0 / fps, n, rpm=secondary_rpm, speed=secondary_speed),
+        }
+        monkeypatch.setattr(auto_sync, '_load_session', lambda path, source: sessions[path])
+
+        _, _, channel = auto_sync.correlate_channels(
+            '/primary.ld', '/secondary.csv', 'MoTeC', 'AIM Mychron',
+            search_window_s=20.0, fps=fps,
+        )
+        assert channel == 'RPM'
+
+    def test_no_usable_channel_returns_zero_confidence(self, monkeypatch):
+        import auto_sync
+        sessions = {
+            '/primary.ld':    self._fake_session(0.2, 50),  # every channel absent/flat
+            '/secondary.csv': self._fake_session(0.2, 50),
+        }
+        monkeypatch.setattr(auto_sync, '_load_session', lambda path, source: sessions[path])
+        offset, confidence, channel = auto_sync.correlate_channels(
+            '/primary.ld', '/secondary.csv', 'MoTeC', 'AIM Mychron',
+        )
+        assert offset == 0.0
+        assert confidence == 0.0
+        assert channel == ''

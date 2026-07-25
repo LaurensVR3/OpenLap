@@ -31,6 +31,19 @@ _ALLOWED_VIDEO_EXTENSIONS = frozenset({
     '.MP4', '.MOV', '.AVI', '.MKV', '.M4V',
 })
 
+
+def _dialog_start_dir(path: str) -> str:
+    """Resolve a best-effort starting directory for a file/folder picker from
+    a caller-supplied path (a folder, a file, or empty/missing). Falls back
+    to '' (pywebview's own default) rather than guessing when nothing
+    usable is found."""
+    if not path:
+        return ''
+    if os.path.isdir(path):
+        return path
+    parent = os.path.dirname(path)
+    return parent if os.path.isdir(parent) else ''
+
 # OSM way ids surfaced by track_map_cache.fetch_candidates() are always plain
 # (positive) integers — the Overpass query in that module only ever queries
 # `way(...)`, never `relation(...)`, for the candidate list. A leading '-' is
@@ -197,6 +210,8 @@ class WebviewAPI:
         self._rb_thread:       Optional[threading.Thread] = None
         self._auto_sync_cancel = threading.Event()
         self._auto_sync_thread: Optional[threading.Thread] = None
+        self._channel_sync_cancel  = threading.Event()
+        self._channel_sync_thread: Optional[threading.Thread] = None
         self._thread_lock      = threading.Lock()
         self._file_meta_cache: Optional[dict] = None
         # RLock (not Lock): get_session_meta wraps fetch+mutate+save of the
@@ -262,6 +277,15 @@ class WebviewAPI:
         cfg = asdict(self._config)
         # Inject the helper method result as a plain list
         cfg['all_telemetry_paths'] = self._config.all_telemetry_paths()
+        # Presets are stored as raw JSON and only routed through
+        # app_config.overlay_from_dict()'s migration when actually activated
+        # (see AppConfig._from_dict) — migrate them here too so the editor's
+        # live "switch preset" path (which reads straight from this dict,
+        # not through overlay_from_dict()) never sees a stale gauge schema.
+        from app_config import migrate_gauges
+        for preset in cfg.get('presets', {}).values():
+            if 'gauges' in preset:
+                preset['gauges'] = migrate_gauges(preset['gauges'])
         return cfg
 
     def save_config(self, data: dict) -> None:
@@ -291,6 +315,12 @@ class WebviewAPI:
                 self._config.bike_overrides.update(data['bike_overrides'])
             if 'auto_sync_enabled' in data:
                 self._config.auto_sync_enabled = bool(data['auto_sync_enabled'])
+            if 'secondary_source' in data and isinstance(data['secondary_source'], dict):
+                self._config.secondary_source.update(data['secondary_source'])
+            if 'secondary_offsets' in data and isinstance(data['secondary_offsets'], dict):
+                self._config.secondary_offsets.update(data['secondary_offsets'])
+            if 'secondary_offset_sources' in data and isinstance(data['secondary_offset_sources'], dict):
+                self._config.secondary_offset_sources.update(data['secondary_offset_sources'])
             self._config.save()
 
     # ── Overlay ───────────────────────────────────────────────────────────────
@@ -710,6 +740,8 @@ class WebviewAPI:
                     'lon':          p.lon,
                     'lean':         p.lean_angle,
                     'gear':         p.gear or 0,
+                    # Generic dynamic channels (see channel_discovery.py)
+                    **p.extra,
                 }
                 points.append(d)
             return points
@@ -717,23 +749,50 @@ class WebviewAPI:
             logger.exception('load_lap_history failed for %s lap %d: %s', csv_path, lap_idx, e)
             return []
 
+    def list_session_channels(self, csv_path: str) -> list:
+        """Return the gauge-selectable channels available in *one*
+        telemetry file (no secondary-source merge applied) — used by the
+        Data-tab channel-mapping picker, which needs to know what each file
+        independently offers before deciding how to combine them."""
+        try:
+            import channel_discovery
+            session = self._load_one_session(csv_path)
+            return channel_discovery.list_channels(session)
+        except Exception:
+            logger.exception('list_session_channels failed for %s', csv_path)
+            return []
+
+    def get_available_channels(self, csv_path: str) -> list:
+        """Return the gauge-selectable channels available in the (possibly
+        secondary-source-merged) session for *csv_path* — used by the
+        Overlay editor's gauge-type picker."""
+        try:
+            import channel_discovery
+            session = self._load_session(csv_path)
+            return channel_discovery.list_channels(session)
+        except Exception:
+            logger.exception('get_available_channels failed for %s', csv_path)
+            return []
+
     # ── File dialogs ──────────────────────────────────────────────────────────
-    def open_folder_dialog(self) -> Optional[str]:
+    def open_folder_dialog(self, start_dir: str = '') -> Optional[str]:
         if self._window is None:
             return None
         result = self._window.create_file_dialog(
-            webview.FOLDER_DIALOG
+            webview.FOLDER_DIALOG,
+            directory=_dialog_start_dir(start_dir),
         )
         if result:
             return str(Path(result[0]).resolve())
         return None
 
-    def open_file_dialog(self, filters: list = None) -> Optional[str]:
+    def open_file_dialog(self, filters: list = None, start_dir: str = '') -> Optional[str]:
         if self._window is None:
             return None
         result = self._window.create_file_dialog(
             webview.OPEN_DIALOG,
-            file_types=filters or []
+            file_types=filters or [],
+            directory=_dialog_start_dir(start_dir),
         )
         if result:
             return str(Path(result[0]).resolve())
@@ -1097,6 +1156,113 @@ class WebviewAPI:
             list(ex.map(_process, sessions))
 
         self._push('auto_sync_done')
+
+    # ── Secondary telemetry sync (multi-channel cross-correlation) ──────────────
+    def start_channel_sync(self, sessions: list) -> dict:
+        """Start background cross-correlation sync for sessions that have a
+        secondary telemetry source assigned but no offset yet — tries every
+        channel both files have usable data for (RPM, G-force, Speed,
+        Altitude) and keeps whichever gives the best match (see
+        auto_sync.correlate_channels).
+
+        Returns {'queued': N}.
+        """
+        with self._thread_lock:
+            if self._export_thread and self._export_thread.is_alive():
+                return {'queued': 0}
+            if self._channel_sync_thread and self._channel_sync_thread.is_alive():
+                return {'queued': 0}
+
+        # secondary_sync_failed is intentionally NOT checked here — unlike
+        # start_auto_sync() (which runs automatically across every session
+        # after a scan, where re-trying known-bad ones every time would be
+        # wasteful), this is only ever invoked as an explicit single-session
+        # "Auto-sync" button click. A prior failure must never silently
+        # block a user-initiated retry.
+        eligible = [
+            s for s in sessions
+            if self._config.secondary_source.get(s.get('csv_path', ''))
+            and self._config.secondary_offsets.get(s['csv_path']) is None
+        ]
+        if not eligible:
+            return {'queued': 0}
+
+        self._channel_sync_cancel.clear()
+        self._channel_sync_thread = threading.Thread(
+            target=self._run_channel_sync_bg,
+            args=(eligible,),
+            daemon=True,
+        )
+        self._channel_sync_thread.start()
+        return {'queued': len(eligible)}
+
+    def cancel_channel_sync(self) -> None:
+        self._channel_sync_cancel.set()
+
+    def _run_channel_sync_bg(self, sessions: list) -> None:
+        from auto_sync import correlate_channels, MIN_CONFIDENCE
+        from session_scanner import _csv_source
+
+        total = len(sessions)
+        progress_lock = threading.Lock()
+        started = 0
+
+        def _process(s: dict) -> None:
+            nonlocal started
+            if self._channel_sync_cancel.is_set():
+                return
+            if self._export_thread and self._export_thread.is_alive():
+                return
+
+            csv_path = s['csv_path']
+            secondary_path = self._config.secondary_source.get(csv_path)
+            if not secondary_path or not os.path.isfile(secondary_path):
+                return
+
+            with progress_lock:
+                started += 1
+                idx = started
+            self._push('channel_sync_progress',
+                       status='processing', csv_path=csv_path,
+                       current=idx, total=total)
+
+            try:
+                offset, confidence, channel = correlate_channels(
+                    primary_csv       = csv_path,
+                    secondary_csv     = secondary_path,
+                    primary_source    = s.get('source', 'RaceBox'),
+                    secondary_source  = _csv_source(secondary_path),
+                )
+            except Exception:
+                logger.exception('Channel sync failed for %s / %s', csv_path, secondary_path)
+                offset, confidence, channel = 0.0, 0.0, ''
+
+            if self._channel_sync_cancel.is_set():
+                return
+
+            with self._config_lock:
+                if confidence >= MIN_CONFIDENCE:
+                    if self._config.secondary_offset_sources.get(csv_path) != 'user':
+                        self._config.secondary_offsets[csv_path]        = offset
+                        self._config.secondary_offset_sources[csv_path] = 'auto'
+                        if csv_path in self._config.secondary_sync_failed:
+                            self._config.secondary_sync_failed.remove(csv_path)
+                        self._config.save()
+                        self._push('channel_sync_progress',
+                                   status='done', csv_path=csv_path,
+                                   offset=offset, confidence=confidence, channel=channel)
+                else:
+                    if csv_path not in self._config.secondary_sync_failed:
+                        self._config.secondary_sync_failed.append(csv_path)
+                    self._config.save()
+                    self._push('channel_sync_progress',
+                               status='failed', csv_path=csv_path,
+                               confidence=confidence)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=AUTO_SYNC_WORKERS) as ex:
+            list(ex.map(_process, sessions))
+
+        self._push('channel_sync_done')
 
     def _run_export_bg(self, params: dict) -> None:
         from export_runner import run_export
@@ -1519,8 +1685,12 @@ class WebviewAPI:
 
     # ── Internal helpers ──────────────────────────────────────────────────────
     @staticmethod
-    def _load_session(csv_path: str):
+    def _load_one_session(csv_path: str):
+        """Load a single telemetry file, auto-detecting its format. Does not
+        apply any secondary-source merge — use _load_session() for that."""
         import gpx_data, aim_data, racebox_data, motec_data, vbox_data, unipro_data
+        from session_scanner import resolve_xrk_csv
+        csv_path = resolve_xrk_csv(csv_path)
         if vbox_data.is_vbox(csv_path):
             return vbox_data.load_vbo(csv_path)
         if motec_data.is_motec_ld(csv_path):
@@ -1534,6 +1704,28 @@ class WebviewAPI:
         if aim_data.is_aim_csv(csv_path):
             return aim_data.load_csv(csv_path)
         return racebox_data.load_csv(csv_path)
+
+    def _load_session(self, csv_path: str):
+        """Load a telemetry file, transparently merging in a secondary source
+        if one has been assigned to it (see session_merge.merge_sessions).
+        This is the single funnel every session consumer (get_session_meta,
+        get_laps, load_lap_history, track-map endpoints, export) goes
+        through, so a merge here reaches all of them for free."""
+        primary = self._load_one_session(csv_path)
+
+        secondary_path = self._config.secondary_source.get(csv_path)
+        if not secondary_path or not os.path.isfile(secondary_path):
+            return primary
+
+        try:
+            secondary = self._load_one_session(secondary_path)
+        except Exception:
+            logger.exception('Failed to load secondary telemetry %s for %s', secondary_path, csv_path)
+            return primary
+
+        from session_merge import merge_sessions
+        offset = self._config.secondary_offsets.get(csv_path, 0.0)
+        return merge_sessions(primary, secondary, offset)
 
     def confirm_clear_queue(self) -> bool:
         if self._window is None:

@@ -6,9 +6,9 @@ from a common module without creating circular dependencies through
 racebox_data.py.
 """
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 @dataclass
@@ -32,6 +32,10 @@ class DataPoint:
     rpm:          float = 0.0
     exhaust_temp: float = 0.0  # °C
     gear:         int   = 0    # 0 = neutral
+    extra:        Dict[str, float] = field(default_factory=dict)
+    # Generic catch-all for channels beyond the fixed set above (e.g. raw
+    # MoTeC/AIM channels with no dedicated field) — source-agnostic, keyed
+    # by channel name. See Session.extra_channel_meta for label/unit.
 
     @staticmethod
     def from_row(row: dict, is_bike: bool) -> 'DataPoint':
@@ -109,6 +113,8 @@ class Session:
     is_bike:       bool = False
     csv_path:      str  = ''
     source_speed_unit: str = 'kmh'   # 'kmh' | 'mph' | 'ms' — unit detected in the source file
+    extra_channel_meta: Dict[str, dict] = field(default_factory=dict)
+    # channel name -> {'label': str, 'unit': str}, for whatever's in each DataPoint.extra
 
     @property
     def start_time(self) -> Optional[datetime]:
@@ -147,6 +153,9 @@ class Session:
             return p0
         a = (elapsed - p0.elapsed) / dt
         L = lambda attr: getattr(p0, attr) + (getattr(p1, attr) - getattr(p0, attr)) * a
+        extra_keys = p0.extra.keys() | p1.extra.keys()
+        extra = {k: p0.extra.get(k, 0.0) + (p1.extra.get(k, 0.0) - p0.extra.get(k, 0.0)) * a
+                 for k in extra_keys}
         return DataPoint(
             record=p0.record, time=p0.time,
             lat=L('lat'), lon=L('lon'), alt=L('alt'), speed=L('speed'),
@@ -155,4 +164,5 @@ class Session:
             lean_angle=L('lean_angle'), elapsed=elapsed, lap_elapsed=L('lap_elapsed'),
             rpm=L('rpm'), exhaust_temp=L('exhaust_temp'),
             gear=p0.gear,  # discrete — nearest sample rather than interpolated
+            extra=extra,
         )

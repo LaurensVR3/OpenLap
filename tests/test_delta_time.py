@@ -270,5 +270,7 @@ def test_gauge_delta_renders_neutral():
 
 
 def test_gauge_delta_in_styles_list():
-    from gauge_channels import get_channel_styles
-    assert 'Delta' in get_channel_styles('delta_time')
+    # Delta is a 'single'-bucket gauge type — selectable for any channel,
+    # not just delta_time (see gauge_channels.GAUGE_TYPES).
+    from gauge_channels import GAUGE_TYPES
+    assert GAUGE_TYPES['Delta']['bucket'] == 'single'

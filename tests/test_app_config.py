@@ -15,9 +15,8 @@ def test_default_telemetry_path():
 
 
 def test_default_map_style():
-    map_gauge = next((g for g in AppConfig().overlay.gauges if g['channel'] == 'map'), None)
+    map_gauge = next((g for g in AppConfig().overlay.gauges if g['type'] == 'Circuit'), None)
     assert map_gauge is not None
-    assert map_gauge['style'] == 'Circuit'
 
 
 def test_default_theme():
@@ -63,11 +62,11 @@ def test_offsets_preserved(tmp_config_dir):
 
 def test_gauges_preserved_after_round_trip(tmp_config_dir):
     cfg = AppConfig()
-    cfg.overlay.gauges[0]['channel'] = 'rpm'
+    cfg.overlay.gauges[1]['channel'] = 'rpm'
     cfg.save()
 
     loaded = AppConfig.load()
-    assert loaded.overlay.gauges[0]['channel'] == 'rpm'
+    assert loaded.overlay.gauges[1]['channel'] == 'rpm'
 
 
 def test_speed_unit_preserved(tmp_config_dir):
@@ -124,18 +123,67 @@ def test_overlay_from_dict_round_trip():
     restored   = overlay_from_dict(serialized)
     assert restored.theme == original.theme
     assert len(restored.gauges) == len(original.gauges)
-    orig_map    = next((g for g in original.gauges  if g['channel'] == 'map'), None)
-    restored_map = next((g for g in restored.gauges if g['channel'] == 'map'), None)
+    orig_map    = next((g for g in original.gauges  if g['type'] == 'Circuit'), None)
+    restored_map = next((g for g in restored.gauges if g['type'] == 'Circuit'), None)
     assert orig_map is not None and restored_map is not None
-    assert restored_map['style'] == orig_map['style']
 
 
 def test_overlay_from_dict_missing_keys():
     layout   = overlay_from_dict({'theme': 'Carbon'})
     assert layout.theme == 'Carbon'
-    map_gauge = next((g for g in layout.gauges if g['channel'] == 'map'), None)
-    assert map_gauge is not None
-    assert map_gauge['style'] == 'Circuit'  # default
+    map_gauge = next((g for g in layout.gauges if g['type'] == 'Circuit'), None)
+    assert map_gauge is not None  # default
+
+
+# ── {channel, style} -> {type, channel} schema migration ───────────────────────
+
+def test_migrates_old_schema_real_channel_gauge():
+    layout = overlay_from_dict({'gauges': [
+        {'channel': 'speed', 'style': 'Dial', 'visible': True, 'x': 0, 'y': 0, 'w': 0.1, 'h': 0.1},
+    ]})
+    g = layout.gauges[0]
+    assert g['type'] == 'Dial'
+    assert g['channel'] == 'speed'
+    assert 'style' not in g
+
+
+@pytest.mark.parametrize('old_channel,old_style', [
+    ('map', 'Circuit'),
+    ('map', 'Zoomed'),
+    ('info', 'Info'),
+    ('lap_info', 'Scoreboard'),
+    ('multi', 'Multi-Line'),
+    ('image', 'Image'),
+    ('g_meter', 'G-Meter'),
+])
+def test_migrates_old_schema_pseudo_channel_gauge_drops_channel(old_channel, old_style):
+    layout = overlay_from_dict({'gauges': [
+        {'channel': old_channel, 'style': old_style, 'visible': True, 'x': 0, 'y': 0, 'w': 0.1, 'h': 0.1},
+    ]})
+    g = layout.gauges[0]
+    assert g['type'] == old_style
+    assert 'channel' not in g
+    assert 'style' not in g
+
+
+def test_migrates_old_schema_multi_channels_field_name():
+    layout = overlay_from_dict({'gauges': [
+        {'channel': 'multi', 'style': 'Multi-Line', 'channels': ['speed', 'rpm'],
+         'visible': True, 'x': 0, 'y': 0, 'w': 0.1, 'h': 0.1},
+    ]})
+    g = layout.gauges[0]
+    assert g['type'] == 'Multi-Line'
+    assert g['multi_channels'] == ['speed', 'rpm']
+    assert 'channel' not in g
+
+
+def test_new_schema_gauge_passes_through_unchanged():
+    layout = overlay_from_dict({'gauges': [
+        {'type': 'Bar', 'channel': 'rpm', 'visible': True, 'x': 0, 'y': 0, 'w': 0.1, 'h': 0.1},
+    ]})
+    g = layout.gauges[0]
+    assert g['type'] == 'Bar'
+    assert g['channel'] == 'rpm'
 
 
 # ── _from_dict ─────────────────────────────────────────────────────────────────

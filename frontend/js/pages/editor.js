@@ -30,57 +30,74 @@
     'Image':      (ctx, d, w, h) => GaugeImage.render(ctx, d, w, h),
   };
 
-  // ── Channel → valid styles map (mirrors gauge_channels.py) ─────────────────
-  const CHANNEL_STYLES = {
-    speed:       ['Dial', 'Bar', 'Numeric', 'Line', 'Compare'],
-    rpm:         ['Numeric', 'Bar', 'Dial', 'Line'],
-    exhaust_temp:['Numeric', 'Bar', 'Line'],
-    gforce_lon:  ['Bar', 'Dial', 'Numeric', 'Line', 'Compare'],
-    gforce_lat:  ['Bar', 'Dial', 'Numeric', 'Line', 'Compare'],
-    g_meter:     ['G-Meter'],
-    lean:        ['Lean', 'Bar', 'Dial', 'Line', 'Numeric'],
-    altitude:    ['Line', 'Bar', 'Numeric'],
-    lap_time:    ['Numeric', 'Splits', 'Sector Bar', 'Line', 'Compare', 'Bar'],
-    delta_time:  ['Delta', 'Numeric', 'Line', 'Compare'],
-    map:         ['Circuit', 'Zoomed'],
-    info:        ['Info'],
-    lap_info:    ['Scoreboard'],
-    multi:       ['Multi-Line'],
-    image:       ['Image'],
-    gear:        ['Numeric', 'Bar', 'Dial'],
-  };
+  // ── Gauge types (mirrors gauge_channels.GAUGE_TYPES) ────────────────────────
+  // 'single' — reads one freely-chosen data channel (see DATA_CHANNELS below)
+  // 'multi'  — reads a user-built list of channels (gauge.multi_channels)
+  // 'none'   — fixed shape, no user-chosen channel (own sub-config instead;
+  //            G-Meter's channel is hardcoded to 'g_meter' by the type itself)
+  const GAUGE_TYPES = [
+    { value: 'Dial',       label: 'Dial',         bucket: 'single' },
+    { value: 'Bar',        label: 'Bar',          bucket: 'single' },
+    { value: 'Numeric',    label: 'Numeric',      bucket: 'single' },
+    { value: 'Line',       label: 'Line',         bucket: 'single' },
+    { value: 'Compare',    label: 'Compare',      bucket: 'single' },
+    { value: 'Delta',      label: 'Delta',        bucket: 'single' },
+    { value: 'Lean',       label: 'Lean',         bucket: 'single' },
+    { value: 'Splits',     label: 'Splits',       bucket: 'single' },
+    { value: 'Sector Bar', label: 'Sector Bar',   bucket: 'single' },
+    { value: 'Multi-Line', label: 'Multi-Line',   bucket: 'multi'  },
+    { value: 'Info',       label: 'Session Info', bucket: 'none'   },
+    { value: 'Scoreboard', label: 'Lap Info',     bucket: 'none'   },
+    { value: 'Image',      label: 'Image / Logo', bucket: 'none'   },
+    { value: 'Circuit',    label: 'Circuit Map',  bucket: 'none'   },
+    { value: 'Zoomed',     label: 'Zoomed Map',   bucket: 'none'   },
+    { value: 'G-Meter',    label: 'G-Meter',      bucket: 'none'   },
+  ];
 
-  const ALL_CHANNELS = [
+  function _gaugeTypeBucket(type) {
+    return GAUGE_TYPES.find(t => t.value === type)?.bucket || 'single';
+  }
+
+  // Fixed data channels selectable for a 'single'-bucket gauge type, or as
+  // an entry in a Multi-Line gauge's channel list.
+  const DATA_CHANNELS = [
     { value: 'speed',       label: 'Speed' },
     { value: 'rpm',         label: 'RPM' },
     { value: 'exhaust_temp',label: 'Exhaust Temp' },
     { value: 'gforce_lon',  label: 'Long G' },
     { value: 'gforce_lat',  label: 'Lat G' },
-    { value: 'g_meter',     label: 'G-Meter' },
     { value: 'lean',        label: 'Lean Angle' },
     { value: 'altitude',    label: 'Altitude' },
     { value: 'lap_time',    label: 'Lap Time' },
     { value: 'delta_time',  label: 'Delta' },
-    { value: 'map',         label: 'Map' },
-    { value: 'info',        label: 'Session Info' },
-    { value: 'lap_info',    label: 'Lap Info' },
-    { value: 'multi',       label: 'Multi-Line' },
-    { value: 'image',       label: 'Image / Logo' },
     { value: 'gear',        label: 'Gear' },
   ];
 
-  // Channels that can appear inside a Multi-Line gauge
-  const MULTI_CHANNEL_OPTS = [
-    { value: 'speed',        label: 'Speed' },
-    { value: 'rpm',          label: 'RPM' },
-    { value: 'exhaust_temp', label: 'Exhaust Temp' },
-    { value: 'gforce_lon',   label: 'Long G' },
-    { value: 'gforce_lat',   label: 'Lat G' },
-    { value: 'lean',         label: 'Lean Angle' },
-    { value: 'altitude',     label: 'Altitude' },
-    { value: 'lap_time',     label: 'Lap Time' },
-    { value: 'delta_time',   label: 'Delta' },
-  ];
+  // Extra/dynamic channel options (session extras + any linked secondary
+  // telemetry source, via getAvailableChannels), filtered by the "show all"
+  // toggle — see channel_discovery.py for the noisy heuristic. Used for both
+  // the single-channel Data Channel picker and the Multi-Line channel list.
+  function _extraChannelOptions() {
+    const fixedKeys = new Set(DATA_CHANNELS.map(c => c.value));
+    return _extraChannels
+      .filter(c => !fixedKeys.has(c.key))
+      .filter(c => _showAllChannelsEditor || !c.noisy)
+      .sort((a, b) => a.label.localeCompare(b.label))
+      .map(c => ({ value: c.key, label: c.label }));
+  }
+
+  // Every selectable data channel: the fixed set plus this session's extras.
+  function _allChannelOptions() {
+    return DATA_CHANNELS.concat(_extraChannelOptions());
+  }
+
+  // Label lookup for a channel key — fixed list first, falling back to the
+  // dynamic channel list, then the raw key itself.
+  function _channelLabel(ch) {
+    return DATA_CHANNELS.find(o => o.value === ch)?.label
+      || _extraChannels.find(c => c.key === ch)?.label
+      || ch;
+  }
 
   const GAUGE_COLOURS_LIST = [
     '#00d4ff','#ff6b35','#a8ff3e','#ff3ea8',
@@ -117,6 +134,9 @@
   let _mountGen        = 0;     // incremented on unmount; guards stale async continuations
   let _resizeObserver  = null;
   let _trackMapGeometry = null; // {lats, lons} from OSM — loaded async on session change
+  let _extraChannels   = [];    // [{key,label,unit,noisy}, ...] from getAvailableChannels — dynamic
+                                 // channels beyond the fixed DATA_CHANNELS map
+  let _showAllChannelsEditor = false; // "show noisy channels" toggle for the data-channel picker
   let _appConfig = null;   // AppConfig dict, refreshed on each mount() — see API.getConfig()
 
   // ── Speed unit conversion (mirrors units.py on the Python side) ────────────
@@ -137,10 +157,10 @@
   const HANDLE_NORM     = 0.012;  // resize handle size as fraction of preview width
 
   // ── Dummy data ─────────────────────────────────────────────────────────────
-  function dummyData(channel, style, theme, gauge = null) {
+  function dummyData(type, channel, theme, gauge = null) {
     const base = { theme };
-    switch (channel) {
-      case 'info': {
+    switch (type) {
+      case 'Info': {
         const ov = gauge?.info_overrides || {};
         return {
           ...base,
@@ -154,33 +174,37 @@
           selected_fields: gauge?.selected_fields || ['track','datetime','vehicle','weather','wind'],
         };
       }
-      case 'lap_info': return {
+      case 'Scoreboard': return {
         ...base, lap_num: 3, total_laps: 8,
         lap_elapsed: 45.234, best_so_far: 83.456, delta_time: -0.234,
         selected_fields: gauge?.selected_fields || ['lap','best','current','delta'],
       };
-      case 'image': return {
+      case 'Image': return {
         ...base,
         image_path: gauge?.image_path || '',
         image_url:  '',   // no live URL in dummy mode — placeholder shown
         opacity:    gauge?.opacity ?? 1.0,
         fit:        gauge?.fit     || 'contain',
       };
-      case 'map': return {
+      case 'Circuit':
+      case 'Zoomed': return {
         ...base,
         lats: [], lons: [], cur_idx: 0,
         zoom_radius_m: gauge?.zoom_radius_m ?? 150,
         show_ref: gauge?.show_ref !== false,
         ref_lats: [], ref_lons: [],
       };
-      case 'multi': {
+      case 'Multi-Line': {
         const mh = (amp, off) => Array.from({length:40}, (_,i)=>amp*Math.sin(i*0.25+off)+off);
         const keys = (gauge?.multi_channels && gauge.multi_channels.length)
           ? gauge.multi_channels
           : ['speed', 'gforce_lat'];
         const LF = _liveFields(_effSpeedUnit());
         const multi_channels = keys.map((ch, ci) => {
-          const m = LF[ch] || { label: ch, unit: '', min: 0, max: 100, sym: false, key: ch };
+          const extraMeta = _extraChannels.find(c => c.key === ch);
+          const m = LF[ch] || (extraMeta
+            ? { label: extraMeta.label, unit: extraMeta.unit, min: 0, max: 100, sym: false, key: ch }
+            : { label: ch, unit: '', min: 0, max: 100, sym: false, key: ch });
           const amp = (m.max - m.min) * 0.35;
           const off = (m.max + m.min) / 2;
           return {
@@ -192,6 +216,10 @@
         return { ...base, multi_channels };
       }
       default: {
+        // 'single'-bucket types (Dial/Bar/Numeric/Line/Compare/Delta/Lean/
+        // Splits/Sector Bar) use the freely-chosen channel; G-Meter's
+        // channel is fixed by the type itself, not user-selectable.
+        if (type === 'G-Meter') channel = 'g_meter';
         const effUnit = _effSpeedUnit();
         const meta = {
           speed:       {label:'Speed',     unit:SPEED_UNIT_LABELS[effUnit], min:_kmhToUnit(0, effUnit), max:_kmhToUnit(250, effUnit), sym:false, val:_kmhToUnit(185, effUnit)},
@@ -205,7 +233,14 @@
           lap_time:    {label:'Lap Time',  unit:'',     min:0,   max:120, sym:false, val:84.5},
           delta_time:  {label:'Delta',     unit:'s',    min:-30, max:30,  sym:true,  val:-0.234},
           gear:        {label:'Gear',      unit:'',     min:0,   max:6,   sym:false, val:3},
-        }[channel] || {label:'Value', unit:'', min:0, max:100, sym:false, val:42};
+        }[channel] || (() => {
+          // Dynamic/arbitrary channel — use its real label/unit if we've
+          // already fetched the channel list, otherwise a generic preview.
+          const extraMeta = _extraChannels.find(c => c.key === channel);
+          return extraMeta
+            ? {label: extraMeta.label, unit: extraMeta.unit, min:0, max:100, sym:false, val:42}
+            : {label:'Value', unit:'', min:0, max:100, sym:false, val:42};
+        })();
 
         const hist = Array.from({length:40}, (_,i) => {
           const t = i * 0.1;
@@ -217,13 +252,13 @@
           label: meta.label, unit: meta.unit,
           min_val: meta.min, max_val: meta.max,
           symmetric: meta.sym, channel,
-          sectors: style === 'Splits' || style === 'Sector Bar' ? [
+          sectors: type === 'Splits' || type === 'Sector Bar' ? [
             {num:1, ref_t:24.5, cur_t:24.3, delta:-0.20, done:true, boundary_elapsed:24.3},
             {num:2, ref_t:23.1, cur_t:24.4, delta:1.30,  done:true, boundary_elapsed:48.7},
             {num:3, ref_t:25.8, cur_t:null, delta:null,  done:false, boundary_elapsed:Infinity},
           ] : [],
         };
-        if (channel === 'g_meter') {
+        if (type === 'G-Meter') {
           d.value_gy = 0.8;
           d.history_gy = Array.from({length:40}, (_,i) => 1.5 * Math.cos(i * 0.25));
         }
@@ -248,16 +283,17 @@
     };
   }
 
-  function buildLiveData(channel, style, frameIdx, gauge = null) {
+  function buildLiveData(type, channel, frameIdx, gauge = null) {
     const theme = _layout?.theme || 'Dark';
+    if (type === 'G-Meter') channel = 'g_meter';   // fixed by the type itself
     const base  = { theme, channel };
-    if (!_livePoints || !_livePoints.length) return dummyData(channel, style, theme, gauge);
+    if (!_livePoints || !_livePoints.length) return dummyData(type, channel, theme, gauge);
     const idx = Math.max(0, Math.min(frameIdx, _livePoints.length - 1));
     const p   = _livePoints[idx];
     const histStart = Math.max(0, idx - 40);
     const hist = _livePoints.slice(histStart, idx + 1);
 
-    if (channel === 'map') {
+    if (type === 'Circuit' || type === 'Zoomed') {
       const osmOn = gauge?.track_map_enabled !== false;
       return {
         theme,
@@ -270,7 +306,7 @@
         track_map_areas: (osmOn && _trackMapGeometry) ? (_trackMapGeometry.areas || []) : [],
       };
     }
-    if (channel === 'g_meter') {
+    if (type === 'G-Meter') {
       return {
         theme, channel,
         value:       p.gx  ?? 0,
@@ -280,24 +316,39 @@
         min_val: -3, max_val: 3, symmetric: true,
       };
     }
-    if (channel === 'multi') {
+    if (type === 'Multi-Line') {
       const effUnit = _effSpeedUnit();
       const LF = _liveFields(effUnit);
       const keys = (gauge?.multi_channels && gauge.multi_channels.length)
         ? gauge.multi_channels : ['speed', 'gforce_lat'];
       const multi_channels = keys.map((ch, ci) => {
-        const m = LF[ch] || { label: ch, unit: '', min: 0, max: 100, sym: false, key: ch };
         const factor = (ch === 'speed') ? (KMH_PER_UNIT[effUnit] ?? 1.0) : 1.0;
+        if (LF[ch]) {
+          const m = LF[ch];
+          return {
+            channel: ch, label: m.label, unit: m.unit,
+            values:    hist.map(pt => (pt[m.key] ?? 0) * factor),
+            value:     (p[m.key] ?? 0) * factor,
+            min_val:   m.min, max_val: m.max, symmetric: m.sym, color_idx: ci,
+          };
+        }
+        // Dynamic/arbitrary channel — same auto-range approach as the
+        // single-channel live path above.
+        const extraMeta = _extraChannels.find(c => c.key === ch);
+        const histVals  = hist.map(pt => pt[ch] ?? 0);
+        const curVal    = p[ch] ?? 0;
+        const lo = Math.min(...histVals, curVal);
+        const hi = Math.max(...histVals, curVal);
+        const pad = (hi - lo) * 0.1 || 1;
         return {
-          channel: ch, label: m.label, unit: m.unit,
-          values:    hist.map(pt => (pt[m.key] ?? 0) * factor),
-          value:     (p[m.key] ?? 0) * factor,
-          min_val:   m.min, max_val: m.max, symmetric: m.sym, color_idx: ci,
+          channel: ch, label: extraMeta?.label || ch, unit: extraMeta?.unit || '',
+          values: histVals, value: curVal,
+          min_val: lo - pad, max_val: hi + pad, symmetric: false, color_idx: ci,
         };
       });
       return { theme, multi_channels };
     }
-    if (channel === 'info') {
+    if (type === 'Info') {
       const ov   = gauge?.info_overrides || {};
       const meta = _liveSessionMeta || {};
       let info_date = '', info_time = '';
@@ -320,7 +371,7 @@
         selected_fields: gauge?.selected_fields || ['track', 'datetime', 'vehicle', 'weather', 'wind'],
       };
     }
-    if (channel === 'lap_info') {
+    if (type === 'Scoreboard') {
       const laps      = _liveLaps || [];
       const timedLaps = laps.filter(l => !l.is_outlap && !l.is_inlap);
       const timedDurs = timedLaps.map(l => l.duration).filter(d => d != null);
@@ -340,7 +391,7 @@
         selected_fields: gauge?.selected_fields || ['lap','best','current','delta'],
       };
     }
-    if (channel === 'image') {
+    if (type === 'Image') {
       const path = gauge?.image_path || '';
       const url  = (path && _livePort)
         ? `http://127.0.0.1:${_livePort}/?f=${encodeURIComponent(path)}`
@@ -355,17 +406,38 @@
     }
     const effUnit = _effSpeedUnit();
     const m = _liveFields(effUnit)[channel];
-    if (!m) return dummyData(channel, style, theme, gauge);
-    const factor = (channel === 'speed') ? (KMH_PER_UNIT[effUnit] ?? 1.0) : 1.0;
-    return {
-      theme, channel,
-      value:            (p[m.key] ?? 0) * factor,
-      history_vals:     hist.map(pt => (pt[m.key] ?? 0) * factor),
-      ref_history_vals: [],
-      label: m.label, unit: m.unit,
-      min_val: m.min, max_val: m.max, symmetric: m.sym,
-      sectors: [],
-    };
+    if (m) {
+      const factor = (channel === 'speed') ? (KMH_PER_UNIT[effUnit] ?? 1.0) : 1.0;
+      return {
+        theme, channel,
+        value:            (p[m.key] ?? 0) * factor,
+        history_vals:     hist.map(pt => (pt[m.key] ?? 0) * factor),
+        ref_history_vals: [],
+        label: m.label, unit: m.unit,
+        min_val: m.min, max_val: m.max, symmetric: m.sym,
+        sectors: [],
+      };
+    }
+    // Dynamic/arbitrary channel (see channel_discovery.py) — read directly
+    // off the raw point dict by its own name (already flattened in by
+    // load_lap_history's **p.extra) and auto-range the display bounds from
+    // the actual live history, mirroring gauge_channels.py's export-side fallback.
+    if (p && Object.prototype.hasOwnProperty.call(p, channel)) {
+      const extraMeta = _extraChannels.find(c => c.key === channel);
+      const histVals  = hist.map(pt => pt[channel] ?? 0);
+      const curVal    = p[channel] ?? 0;
+      const lo = Math.min(...histVals, curVal);
+      const hi = Math.max(...histVals, curVal);
+      const pad = (hi - lo) * 0.1 || 1;
+      return {
+        theme, channel,
+        value: curVal, history_vals: histVals, ref_history_vals: [],
+        label: extraMeta?.label || channel, unit: extraMeta?.unit || '',
+        min_val: lo - pad, max_val: hi + pad, symmetric: false,
+        sectors: [],
+      };
+    }
+    return dummyData(type, channel, theme, gauge);
   }
 
   // ── Live preview helpers ────────────────────────────────────────────────────
@@ -766,16 +838,20 @@
     _liveOffset  = session.sync_offset ?? 0;
     _trackMapGeometry = null;
 
-    // Fetch metadata and lap list in parallel — no track-map call here so these
-    // are never blocked by a slow session-file reload on the Python side.
-    const [meta, laps] = await Promise.all([
+    // Fetch metadata, lap list, and the dynamic channel list in parallel —
+    // no track-map call here so these are never blocked by a slow
+    // session-file reload on the Python side.
+    const [meta, laps, channels] = await Promise.all([
       API.getSessionMeta(session.csv_path).catch(() => ({})),
       API.getLaps(session.csv_path).catch(() => []),
+      API.getAvailableChannels(session.csv_path).catch(() => []),
     ]);
     if (_mountGen !== myGen) return;  // navigated away while awaiting
 
     _liveSessionMeta = meta;
     _liveLaps        = laps;
+    _extraChannels   = channels;
+    if (_selected !== null) updatePropPanel();  // pick up newly-available channels
     // Default to the lap requested, but skip the outlap — start on the first timed lap.
     let startIdx = session.lap_idx ?? 0;
     if (laps[startIdx]?.is_outlap || laps[startIdx]?.is_inlap) {
@@ -851,16 +927,16 @@
     const ctx = gEl.getContext('2d');
     ctx.clearRect(0, 0, gw, gh);
 
-    const renderer = GAUGE_RENDERERS[gauge.style];
+    const renderer = GAUGE_RENDERERS[gauge.type];
     if (!renderer) return;
 
     try {
       const data = (_livePoints && _livePoints.length)
-        ? buildLiveData(gauge.channel, gauge.style, _liveFrameIdx, gauge)
-        : dummyData(gauge.channel, gauge.style, _layout?.theme || 'Dark', gauge);
+        ? buildLiveData(gauge.type, gauge.channel, _liveFrameIdx, gauge)
+        : dummyData(gauge.type, gauge.channel, _layout?.theme || 'Dark', gauge);
       renderer(ctx, data, gw, gh);
     } catch (e) {
-      console.error('[renderGaugeEl] channel:', gauge.channel, 'style:', gauge.style, e);
+      console.error('[renderGaugeEl] type:', gauge.type, 'channel:', gauge.channel, e);
       // Draw error placeholder
       ctx.fillStyle = 'rgba(239,68,68,0.4)';
       ctx.fillRect(0, 0, gw, gh);
@@ -1177,7 +1253,7 @@
   ];
 
   function _buildChannelProps(g) {
-    if (g.channel === 'info') {
+    if (g.type === 'Info') {
       const sel = g.selected_fields || ['track','datetime','vehicle','weather','wind'];
       const ov  = g.info_overrides  || {};
       return `
@@ -1198,7 +1274,7 @@
         </div>`;
     }
 
-    if (g.channel === 'lap_info') {
+    if (g.type === 'Scoreboard') {
       const LAP_INFO_ROWS = [
         { key: 'lap',     label: 'Lap #' },
         { key: 'best',    label: 'Best' },
@@ -1221,7 +1297,7 @@
         </div>`;
     }
 
-    if (g.channel === 'image') {
+    if (g.type === 'Image') {
       const path    = g.image_path || '';
       const opacity = Math.round((g.opacity ?? 1.0) * 100);
       const fit     = g.fit || 'contain';
@@ -1253,11 +1329,11 @@
         </div>`;
     }
 
-    if (g.channel === 'map') {
+    if (g.type === 'Circuit' || g.type === 'Zoomed') {
       const osmEnabled = g.track_map_enabled !== false;
       const radius     = g.zoom_radius_m ?? 150;
       const showRef    = g.show_ref !== false;
-      const zoomedHtml = g.style === 'Zoomed' ? `
+      const zoomedHtml = g.type === 'Zoomed' ? `
         <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px;">
           <div style="font-size:9px;color:var(--text3);margin-bottom:6px;
                       text-transform:uppercase;letter-spacing:0.04em;">Zoom Settings</div>
@@ -1294,9 +1370,9 @@
         ${zoomedHtml}`;
     }
 
-    if (g.channel === 'multi') {
+    if (g.type === 'Multi-Line') {
       const keys = g.multi_channels || ['speed', 'gforce_lat'];
-      const opts = MULTI_CHANNEL_OPTS.map(o =>
+      const opts = _allChannelOptions().map(o =>
         `<option value="${o.value}">${o.label}</option>`).join('');
       return `
         <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px;">
@@ -1304,19 +1380,21 @@
                       text-transform:uppercase;letter-spacing:0.04em;">Channels</div>
           <div id="multi-ch-list">
             ${keys.map((ch, i) => {
-              const lbl = MULTI_CHANNEL_OPTS.find(o => o.value === ch)?.label || ch;
-              return `<div style="display:flex;align-items:center;gap:4px;margin-bottom:4px;">
+              const lbl = _channelLabel(ch);
+              return `<div style="display:flex;align-items:center;gap:4px;margin-bottom:4px;min-width:0;">
                 <div style="width:10px;height:10px;border-radius:2px;flex-shrink:0;
                             background:${GAUGE_COLOURS_LIST[i % GAUGE_COLOURS_LIST.length]}"></div>
-                <span style="flex:1;font-size:10px;color:var(--text)">${lbl}</span>
+                <span style="flex:1;min-width:0;font-size:10px;color:var(--text);
+                             overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                      title="${_esc(lbl)}">${_esc(lbl)}</span>
                 <button class="btn btn-sm multi-rm-btn" data-mch="${ch}"
-                        style="padding:1px 6px;color:var(--err);border-color:var(--err);">✕</button>
+                        style="flex-shrink:0;padding:1px 6px;color:var(--err);border-color:var(--err);">✕</button>
               </div>`;
             }).join('')}
           </div>
-          <div style="display:flex;gap:4px;margin-top:6px;">
-            <select id="multi-add-sel" style="flex:1;font-size:10px;">${opts}</select>
-            <button class="btn btn-sm" id="multi-add-btn" style="flex-shrink:0;">+ Add</button>
+          <div style="margin-top:6px;">
+            <select id="multi-add-sel" style="width:100%;max-width:100%;font-size:10px;box-sizing:border-box;">${opts}</select>
+            <button class="btn btn-sm" id="multi-add-btn" style="width:100%;margin-top:4px;">+ Add</button>
           </div>
         </div>`;
     }
@@ -1325,7 +1403,7 @@
   }
 
   function _bindChannelPropEvents(panel, g) {
-    if (g.channel === 'image') {
+    if (g.type === 'Image') {
       const inp       = panel.querySelector('#img-path-inp');
       const browseBtn = panel.querySelector('#img-browse-btn');
       const opSlider  = panel.querySelector('#img-opacity');
@@ -1347,7 +1425,8 @@
 
       browseBtn?.addEventListener('click', async () => {
         const path = await API.openFileDialog(
-          ['Image Files (*.png *.jpg *.jpeg *.webp *.bmp)']
+          ['Image Files (*.png *.jpg *.jpeg *.webp *.bmp)'],
+          inp?.value || ''
         );
         if (path) { inp.value = path; _applyPath(path); }
       });
@@ -1367,7 +1446,7 @@
       });
     }
 
-    if (g.channel === 'map') {
+    if (g.type === 'Circuit' || g.type === 'Zoomed') {
       panel.querySelector('#map-osm-enabled')?.addEventListener('change', e => {
         g.track_map_enabled = e.target.checked;
         rebuildGaugeCanvases();
@@ -1471,7 +1550,7 @@
         }
       });
 
-      if (g.style === 'Zoomed') {
+      if (g.type === 'Zoomed') {
         panel.querySelector('#map-radius')?.addEventListener('change', e => {
           g.zoom_radius_m = Math.max(10, Math.min(5000, parseInt(e.target.value) || 150));
           rebuildGaugeCanvases();
@@ -1485,7 +1564,7 @@
       }
     }
 
-    if (g.channel === 'lap_info') {
+    if (g.type === 'Scoreboard') {
       panel.querySelectorAll('.lapinfo-field-chk').forEach(chk => {
         chk.addEventListener('change', () => {
           const checked = [...panel.querySelectorAll('.lapinfo-field-chk')]
@@ -1497,7 +1576,7 @@
       });
     }
 
-    if (g.channel === 'info') {
+    if (g.type === 'Info') {
       panel.querySelectorAll('.info-field-chk').forEach(chk => {
         chk.addEventListener('change', () => {
           const checked = [...panel.querySelectorAll('.info-field-chk')]
@@ -1520,20 +1599,22 @@
       });
     }
 
-    if (g.channel === 'multi') {
+    if (g.type === 'Multi-Line') {
       const _rebuildMulti = () => {
         // Rebuild just the channel list DOM (no full prop panel refresh)
         const listEl = panel.querySelector('#multi-ch-list');
         if (!listEl) return;
         const keys = g.multi_channels || [];
         listEl.innerHTML = keys.map((ch, i) => {
-          const lbl = MULTI_CHANNEL_OPTS.find(o => o.value === ch)?.label || ch;
-          return `<div style="display:flex;align-items:center;gap:4px;margin-bottom:4px;">
+          const lbl = _channelLabel(ch);
+          return `<div style="display:flex;align-items:center;gap:4px;margin-bottom:4px;min-width:0;">
             <div style="width:10px;height:10px;border-radius:2px;flex-shrink:0;
                         background:${GAUGE_COLOURS_LIST[i % GAUGE_COLOURS_LIST.length]}"></div>
-            <span style="flex:1;font-size:10px;color:var(--text)">${lbl}</span>
+            <span style="flex:1;min-width:0;font-size:10px;color:var(--text);
+                         overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+                  title="${_esc(lbl)}">${_esc(lbl)}</span>
             <button class="btn btn-sm multi-rm-btn" data-mch="${ch}"
-                    style="padding:1px 6px;color:var(--err);border-color:var(--err);">✕</button>
+                    style="flex-shrink:0;padding:1px 6px;color:var(--err);border-color:var(--err);">✕</button>
           </div>`;
         }).join('');
         listEl.querySelectorAll('.multi-rm-btn').forEach(btn => {
@@ -1584,11 +1665,49 @@
       return;
     }
 
-    const g = _layout.gauges[_selected];
-    const styles = CHANNEL_STYLES[g.channel] || ['Numeric'];
-    const styleOptions = styles.map(s =>
-      `<option value="${s}" ${s === g.style ? 'selected' : ''}>${s}</option>`
-    ).join('');
+    const g      = _layout.gauges[_selected];
+    const bucket = _gaugeTypeBucket(g.type);
+
+    const typeOptgroups = `
+      <optgroup label="Single Value">
+        ${GAUGE_TYPES.filter(t => t.bucket === 'single').map(t => `<option value="${t.value}" ${t.value===g.type?'selected':''}>${t.label}</option>`).join('')}
+      </optgroup>
+      <optgroup label="Multi Value">
+        ${GAUGE_TYPES.filter(t => t.bucket === 'multi').map(t => `<option value="${t.value}" ${t.value===g.type?'selected':''}>${t.label}</option>`).join('')}
+      </optgroup>
+      <optgroup label="Info &amp; Map">
+        ${GAUGE_TYPES.filter(t => t.bucket === 'none').map(t => `<option value="${t.value}" ${t.value===g.type?'selected':''}>${t.label}</option>`).join('')}
+      </optgroup>`;
+
+    let channelPickerHtml = '';
+    if (bucket === 'single') {
+      const extraOptions = _extraChannelOptions();
+      const extraOptgroup = extraOptions.length
+        ? `<optgroup label="Session Channels">
+            ${extraOptions.map(c => `<option value="${_esc(c.value)}" ${c.value===g.channel?'selected':''}>${_esc(c.label)}</option>`).join('')}
+          </optgroup>`
+        : (DATA_CHANNELS.some(c => c.value === g.channel) ? '' : `<option value="${_esc(g.channel)}" selected>${_esc(g.channel)}</option>`);
+      channelPickerHtml = `
+        <div class="form-row">
+          <span class="form-label">Data Channel</span>
+          <select id="prop-channel" style="flex:1">
+            ${DATA_CHANNELS.map(c => `<option value="${c.value}" ${c.value===g.channel?'selected':''}>${c.label}</option>`).join('')}
+            ${extraOptgroup}
+          </select>
+        </div>
+        <div class="form-row">
+          <label style="font-size:9px; color:var(--text3); display:flex; align-items:center; gap:4px; cursor:pointer; flex:1;">
+            <input type="checkbox" id="prop-show-all-channels"${_showAllChannelsEditor ? ' checked' : ''}> Show all (incl. diagnostic/state)
+          </label>
+        </div>`;
+    } else if (bucket === 'multi') {
+      channelPickerHtml = `
+        <div class="form-row">
+          <label style="font-size:9px; color:var(--text3); display:flex; align-items:center; gap:4px; cursor:pointer; flex:1;">
+            <input type="checkbox" id="prop-show-all-channels"${_showAllChannelsEditor ? ' checked' : ''}> Show all channels (incl. diagnostic/state)
+          </label>
+        </div>`;
+    }
 
     panel.innerHTML = `
       <div style="padding:12px; display:flex; flex-direction:column; gap:8px;">
@@ -1598,16 +1717,11 @@
         </div>
 
         <div class="form-row">
-          <span class="form-label">Channel</span>
-          <select id="prop-channel" style="flex:1">
-            ${ALL_CHANNELS.map(c => `<option value="${c.value}" ${c.value===g.channel?'selected':''}>${c.label}</option>`).join('')}
-          </select>
+          <span class="form-label">Gauge Type</span>
+          <select id="prop-type" style="flex:1">${typeOptgroups}</select>
         </div>
 
-        <div class="form-row">
-          <span class="form-label">Style</span>
-          <select id="prop-style" style="flex:1">${styleOptions}</select>
-        </div>
+        ${channelPickerHtml}
 
         <div class="form-row">
           <span class="form-label">Visible</span>
@@ -1639,24 +1753,33 @@
       </div>`;
 
     // Wire up change handlers
-    panel.querySelector('#prop-channel').addEventListener('change', e => {
-      g.channel = e.target.value;
-      const newStyles = CHANNEL_STYLES[g.channel] || ['Numeric'];
-      g.style = newStyles[0];
-      // Apply per-channel defaults if not already set
-      const defs = _channelDefaults(g.channel);
+    panel.querySelector('#prop-type').addEventListener('change', e => {
+      g.type = e.target.value;
+      const newBucket = _gaugeTypeBucket(g.type);
+      if (newBucket === 'single') {
+        if (!g.channel) g.channel = 'speed';
+      } else {
+        delete g.channel;
+      }
+      // Apply per-type defaults if not already set
+      const defs = _typeDefaults(g.type);
       for (const [k, v] of Object.entries(defs)) {
         if (g[k] === undefined) g[k] = v;
       }
-      selectGauge(_selected);  // refresh (updates style dropdown too)
+      selectGauge(_selected);  // refresh (updates channel picker too)
       saveLayout();
     });
 
-    panel.querySelector('#prop-style').addEventListener('change', e => {
-      g.style = e.target.value;
-      updatePropPanel();   // refresh channel-specific props (e.g. Zoomed map settings)
+    panel.querySelector('#prop-channel')?.addEventListener('change', e => {
+      g.channel = e.target.value;
       rebuildGaugeCanvases();
+      rebuildGaugeList();
       saveLayout();
+    });
+
+    panel.querySelector('#prop-show-all-channels')?.addEventListener('change', e => {
+      _showAllChannelsEditor = e.target.checked;
+      updatePropPanel();
     });
 
     panel.querySelector('#prop-visible').addEventListener('change', e => {
@@ -1691,7 +1814,11 @@
     if (!list || !_layout) return;
 
     list.innerHTML = _layout.gauges.map((g, idx) => {
-      const ch      = ALL_CHANNELS.find(c => c.value === g.channel)?.label || g.channel;
+      const bucket    = _gaugeTypeBucket(g.type);
+      const typeLabel = GAUGE_TYPES.find(t => t.value === g.type)?.label || g.type;
+      const subLabel  = bucket === 'single' ? _channelLabel(g.channel)
+        : bucket === 'multi' ? `${(g.multi_channels || []).length} channel${(g.multi_channels || []).length === 1 ? '' : 's'}`
+        : '';
       const col     = GAUGE_COLOURS_LIST[idx % GAUGE_COLOURS_LIST.length];
       const visible = g.visible !== false;
       return `
@@ -1705,8 +1832,8 @@
           <div style="flex:1; min-width:0;">
             <div style="font-size:11px; color:var(--text); white-space:nowrap;
                         overflow:hidden; text-overflow:ellipsis;
-                        ${visible ? '' : 'opacity:0.4;'}">${ch}</div>
-            <div style="font-size:9px; color:var(--text3)">${g.style}</div>
+                        ${visible ? '' : 'opacity:0.4;'}">${typeLabel}</div>
+            <div style="font-size:9px; color:var(--text3)">${_esc(subLabel)}</div>
           </div>
           <button class="vis-toggle" data-vis-idx="${idx}"
                   title="${visible ? 'Hide gauge' : 'Show gauge'}"
@@ -1738,18 +1865,18 @@
   }
 
   // ── Add gauge ───────────────────────────────────────────────────────────────
-  function _channelDefaults(channel) {
-    if (channel === 'info')  return { selected_fields: ['track','datetime','vehicle','weather','wind'], info_overrides: {} };
-    if (channel === 'multi') return { multi_channels: ['speed', 'gforce_lat'] };
-    if (channel === 'image') return { image_path: '', opacity: 1.0, fit: 'contain' };
-    if (channel === 'map')   return { zoom_radius_m: 150, show_ref: true };
+  function _typeDefaults(type) {
+    if (type === 'Info')       return { selected_fields: ['track','datetime','vehicle','weather','wind'], info_overrides: {} };
+    if (type === 'Multi-Line') return { multi_channels: ['speed', 'gforce_lat'] };
+    if (type === 'Image')      return { image_path: '', opacity: 1.0, fit: 'contain' };
+    if (type === 'Circuit' || type === 'Zoomed') return { zoom_radius_m: 150, show_ref: true };
     return {};
   }
 
   function addGauge() {
     const newG = {
+      type:    'Dial',
       channel: 'speed',
-      style:   'Dial',
       visible: true,
       x: 0.01,
       y: 0.74,

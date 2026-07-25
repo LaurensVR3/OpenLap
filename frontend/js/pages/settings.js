@@ -222,11 +222,9 @@
     // Browse buttons
     container.querySelectorAll('[data-browse-key]').forEach(btn => {
       btn.addEventListener('click', async () => {
-        const path = await API.openFolderDialog();
-        if (path) {
-          const input = container.querySelector(`[data-config-key="${btn.dataset.browseKey}"]`);
-          if (input) input.value = path;
-        }
+        const input = container.querySelector(`[data-config-key="${btn.dataset.browseKey}"]`);
+        const path = await API.openFolderDialog(input?.value || '');
+        if (path && input) input.value = path;
       });
     });
 

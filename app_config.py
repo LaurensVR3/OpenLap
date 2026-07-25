@@ -38,11 +38,11 @@ class OverlayElement:
 def _default_gauges() -> List[dict]:
     """Return the built-in default gauge layout as plain dicts."""
     return [
-        {'channel': 'map',        'style': 'Circuit', 'visible': True, 'x': 0.74, 'y': 0.02, 'w': 0.24, 'h': 0.30},
-        {'channel': 'speed',      'style': 'Dial',    'visible': True, 'x': 0.01, 'y': 0.74, 'w': 0.13, 'h': 0.23},
-        {'channel': 'gforce_lat', 'style': 'Bar',     'visible': True, 'x': 0.15, 'y': 0.74, 'w': 0.10, 'h': 0.23},
-        {'channel': 'gforce_lon', 'style': 'Bar',     'visible': True, 'x': 0.26, 'y': 0.74, 'w': 0.10, 'h': 0.23},
-        {'channel': 'lap_time',   'style': 'Numeric', 'visible': True, 'x': 0.37, 'y': 0.74, 'w': 0.13, 'h': 0.23},
+        {'type': 'Circuit', 'visible': True, 'x': 0.74, 'y': 0.02, 'w': 0.24, 'h': 0.30},
+        {'type': 'Dial',    'channel': 'speed',      'visible': True, 'x': 0.01, 'y': 0.74, 'w': 0.13, 'h': 0.23},
+        {'type': 'Bar',     'channel': 'gforce_lat', 'visible': True, 'x': 0.15, 'y': 0.74, 'w': 0.10, 'h': 0.23},
+        {'type': 'Bar',     'channel': 'gforce_lon', 'visible': True, 'x': 0.26, 'y': 0.74, 'w': 0.10, 'h': 0.23},
+        {'type': 'Numeric', 'channel': 'lap_time',   'visible': True, 'x': 0.37, 'y': 0.74, 'w': 0.13, 'h': 0.23},
     ]
 
 
@@ -96,6 +96,14 @@ class AppConfig:
     linked_camera_folders: List[dict] = field(default_factory=list)
     # [{day: 'YYYY-MM-DD', folder: str, offset_seconds: float, source: 'auto'}, ...]
     # Manual fix for action cams with a wrong clock — see webview_api.link_camera_folder()
+    secondary_source: Dict[str, str] = field(default_factory=dict)
+    # key = primary absolute CSV path, value = secondary absolute CSV path
+    secondary_offsets: Dict[str, float] = field(default_factory=dict)
+    # key = primary CSV path, value = float offset in seconds (secondary_elapsed = primary_elapsed + offset)
+    secondary_offset_sources: Dict[str, str] = field(default_factory=dict)
+    # 'user' = manually confirmed, 'auto' = auto-detected via RPM cross-correlation (unconfirmed)
+    secondary_sync_failed: List[str] = field(default_factory=list)
+    # primary csv_paths where RPM auto-sync was tried but confidence was too low
 
     def all_telemetry_paths(self) -> List[str]:
         """Return all unique non-empty telemetry paths to scan.
@@ -282,6 +290,34 @@ def save_file_meta_cache(cache: dict) -> None:
 
 # ── Reconstruction helpers ─────────────────────────────────────────────────────
 
+def migrate_gauges(raw_gauges: List[dict]) -> List[dict]:
+    """Migrate a list of gauge dicts to the current schema. Used both by
+    overlay_from_dict() (for the active overlay) and by webview_api's
+    get_config() (for the raw preset dicts it hands to the frontend —
+    presets are stored as plain JSON and never routed through
+    overlay_from_dict() until they're actually activated, so a preset
+    switched to live in the editor without an app restart would otherwise
+    still be in whatever schema it was saved in)."""
+    gauges = []
+    for g in raw_gauges:
+        gd = dict(g)
+        # Migrate old 'channels' field name to 'multi_channels'
+        if 'channels' in gd and 'multi_channels' not in gd and gd.get('channel') == 'multi':
+            gd['multi_channels'] = gd.pop('channels')
+        # Migrate the old {channel, style} gauge schema to {type, channel}:
+        # 'type' takes over 'style' verbatim (style names and type names
+        # are the same strings, e.g. 'Dial', 'Circuit'). Pseudo-channels
+        # (map/info/lap_info/multi/image/g_meter) never had a real
+        # user-chosen channel, so drop the placeholder value — the new
+        # schema only carries 'channel' for gauges where it's meaningful.
+        if 'style' in gd and 'type' not in gd:
+            gd['type'] = gd.pop('style')
+            if gd.get('channel') in ('map', 'info', 'lap_info', 'multi', 'image', 'g_meter'):
+                gd.pop('channel', None)
+        gauges.append(gd)
+    return gauges
+
+
 def overlay_from_dict(overlay_data: dict) -> OverlayLayout:
     """Deserialize an OverlayLayout from a plain dict (e.g. from a preset or config)."""
     raw_gauges = list(overlay_data.get('gauges', []))
@@ -300,16 +336,7 @@ def overlay_from_dict(overlay_data: dict) -> OverlayLayout:
             'h': old_map.get('h', 0.30),
         })
 
-    if raw_gauges:
-        gauges = []
-        for g in raw_gauges:
-            gd = dict(g)
-            # Migrate old 'channels' field name to 'multi_channels'
-            if 'channels' in gd and 'multi_channels' not in gd and gd.get('channel') == 'multi':
-                gd['multi_channels'] = gd.pop('channels')
-            gauges.append(gd)
-    else:
-        gauges = _default_gauges()
+    gauges = migrate_gauges(raw_gauges) if raw_gauges else _default_gauges()
 
     return OverlayLayout(
         is_bike          = overlay_data.get('is_bike', False),
@@ -358,4 +385,8 @@ def _from_dict(data: dict) -> AppConfig:
         auto_sync_enabled    = bool(data.get('auto_sync_enabled', False)),
         track_map_selections = data.get('track_map_selections', {}),
         linked_camera_folders = data.get('linked_camera_folders', []),
+        secondary_source          = data.get('secondary_source',          {}),
+        secondary_offsets         = data.get('secondary_offsets',         {}),
+        secondary_offset_sources  = data.get('secondary_offset_sources',  {}),
+        secondary_sync_failed     = data.get('secondary_sync_failed',     []),
     )

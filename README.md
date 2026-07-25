@@ -69,7 +69,7 @@ The sync offset tells OpenLap exactly where in the video the lap timer starts. W
 Click **Open in Overlay →** on any session to jump to the editor.
 
 - Use the lap selector (◀ ▶ or dropdown) to switch between laps
-- Click **Add Gauge** to place a new element — pick a channel (Speed, RPM, G-force, etc.) and a style
+- Click **Add Gauge** to place a new element, then pick a **Gauge Type** (Dial, Bar, Numeric, Line, Multi-Line, Session Info, Circuit Map, etc.). For single-value types, a **Data Channel** dropdown appears below it — pick from the fixed channel set plus anything your telemetry file actually captured (e.g. ECU coolant temp, throttle position, gear paddle) and, if you've attached a secondary file, its channels too
 - Drag gauges to reposition; drag the corner handle to resize
 - Switch themes (Dark · Light · Colorful · Monochrome) using the theme picker
 - Save your layout as a named preset so you can reuse it
@@ -116,6 +116,10 @@ Click **+ Export** on the lap or session you want, then go to the **Export tab**
 - If confidence was too low the result is discarded. Use manual sync via the Align Video panel
 - A manually set offset (`✓ user`) is never overwritten by auto-sync
 
+**Secondary telemetry Auto-sync found no confident match**
+- This tries RPM, G-force, Speed, and Altitude in turn and keeps whichever matches best — if neither file has usable data for any of those (e.g. a very short test capture, or one file barely overlapping the other in time), there's nothing to correlate against. Set the offset manually instead
+- A prior failed attempt no longer blocks retrying — click **Auto-sync** again any time after fixing the underlying issue (e.g. re-exporting the file)
+
 **Export failed or produced no output**
 - Check the log in the Export tab for the specific error
 - Make sure the Export Folder is set in Settings and the folder actually exists
@@ -139,13 +143,19 @@ Click **+ Export** on the lap or session you want, then go to the **Export tab**
 - RaceBox cloud download directly from the app (requires a RaceBox account)
 - AIM `.xrk` / `.xrz` / `.drk` files are converted to CSV on first scan using the AIM MatLabXRK DLL
 
+### Multi-File Sessions (Secondary Telemetry)
+- Attach a second telemetry file to a session (e.g. a MoTeC ECU log alongside an AIM GPS log) to combine both into one overlay
+- The Data tab lists every channel each file actually has, side by side — no manual "which file wins" configuration needed
+- Every channel from both files is selectable as a gauge's Data Channel; if both files have a channel with the same name, both stay available, labeled by file (e.g. `Speed` and `Speed (MoTeC Data.ld)`)
+- **Auto-sync** between the two files tries RPM, G-force, Speed, and Altitude in turn and keeps whichever channel gives the highest-confidence match — works even when the files don't share an RPM channel
+
 ### Overlay Editor
 - Live video preview with scrub bar — see exactly how gauges look on your footage before exporting
 - Freely positionable, resizable gauge elements — drag to move, drag corner handle to resize
 - Element-to-element snapping with cyan alignment guides; size snaps to 5% grid
 - Lap selector — switch between laps while the video preview stays in sync
 - **4 overlay themes**: Dark · Light · Colorful · Monochrome
-- **Gauge styles**: Numeric · Bar · Dial · Line · Delta · Compare · Lean · G-Meter · Splits · Sector Bar · Multi-Line · Circuit Map · Zoomed Map · Scoreboard · Info · Image/Logo
+- **Gauge types**: Numeric · Bar · Dial · Line · Delta · Compare · Lean · G-Meter · Splits · Sector Bar · Multi-Line · Circuit Map · Zoomed Map · Scoreboard · Info · Image/Logo — most types take any data channel, not just the fixed set (see below)
 - Bike mode — enables Lean gauge and reads lean angle from compatible devices
 - Reference lap overlay — compare any lap against a reference with live delta time
 - Named preset layouts — save, load, and switch overlay configurations
@@ -181,6 +191,8 @@ Click **+ Export** on the lap or session you want, then go to the **Export tab**
 
 ### Telemetry channels
 
+The fixed set, always available regardless of data source:
+
 | Channel | Label | Unit |
 |---|---|---|
 | `speed` | Speed | km/h |
@@ -192,6 +204,9 @@ Click **+ Export** on the lap or session you want, then go to the **Export tab**
 | `altitude` | Altitude | m |
 | `lap_time` | Lap Time | s |
 | `delta_time` | Delta | s |
+| `gear` | Gear | — |
+
+Beyond this fixed set, OpenLap also discovers whatever else your file actually logged — MoTeC and AIM files in particular often carry dozens of extra CAN/ECU channels (coolant temp, throttle position, brake pressure, fuel pressure, and more). These show up automatically in the Overlay editor's Data Channel picker under "Session Channels," with a "Show all" toggle to reveal noisier diagnostic/state channels that are hidden by default.
 
 ---
 

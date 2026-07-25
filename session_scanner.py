@@ -270,6 +270,30 @@ def solve_camera_offset(video_groups: List[VideoGroup],
 XRK_EXTENSIONS = {'.xrk', '.xrz', '.drk', '.XRK', '.XRZ', '.DRK'}
 
 
+def resolve_xrk_csv(path: str) -> str:
+    """If *path* is a raw AIM XRK/XRZ/DRK file, resolve it to the .csv
+    sibling produced by convert_xrk_files() during a scan — XRK is a binary
+    format none of the telemetry loaders read directly, only the converted
+    CSV. Every session-loading entry point (WebviewAPI._load_one_session,
+    auto_sync._load_session, ...) must call this before dispatching on
+    extension/content, or an XRK path silently falls through to the RaceBox
+    CSV loader and fails with a UTF-8 decode error on the binary data.
+
+    Raises FileNotFoundError if the sibling hasn't been converted yet (e.g.
+    an XRK reached here from outside a scanned folder). Returns *path*
+    unchanged for every other extension.
+    """
+    if Path(path).suffix in XRK_EXTENSIONS:
+        csv_path = os.path.splitext(path)[0] + '.csv'
+        if not os.path.isfile(csv_path):
+            raise FileNotFoundError(
+                f"{path} is a raw AIM XRK file — scan its folder first so "
+                f"OpenLap can convert it to {csv_path}"
+            )
+        return csv_path
+    return path
+
+
 def convert_xrk_files(folder: str, progress_cb: Optional[Callable[[str], None]] = None) -> List[str]:
     """
     Walk *folder* for AIM XRK/XRZ/DRK files.  Any file that does not yet have
@@ -493,6 +517,8 @@ def scan_pending_xrk(folder: str) -> List[Tuple[str, str]]:
 def _csv_source(path: str) -> str:
     """Quick peek at a file to determine its data source."""
     suffix = Path(path).suffix.lower()
+    if suffix in {'.xrk', '.xrz', '.drk'}:
+        return 'AIM Mychron'
     if suffix == '.vbo':
         return 'VBOX'
     if suffix == '.gpx':

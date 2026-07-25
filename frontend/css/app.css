@@ -368,6 +368,7 @@ body {
 
 .dl-time  { width: 52px; flex-shrink: 0; color: var(--text2); font-size: 10px; font-variant-numeric: tabular-nums; }
 .dl-track { flex: 1; padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.dl-secondary-badge { margin-left: 5px; padding: 1px 5px; font-size: 8px; border-radius: 3px; background: rgba(100,181,246,0.12); color: #64b5f6; }
 .dl-source{ width: 74px; flex-shrink: 0; font-size: 9px; color: var(--acc); }
 .dl-num   { width: 46px; flex-shrink: 0; text-align: right; font-size: 10px; color: var(--text2); font-variant-numeric: tabular-nums; }
 

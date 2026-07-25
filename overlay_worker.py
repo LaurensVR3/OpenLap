@@ -22,11 +22,11 @@ def default_layout() -> dict:
         'is_bike': False,
         'theme':   'Dark',
         'gauges': [
-            {'channel': 'map',        'style': 'Circuit', 'visible': True, 'x': 0.74, 'y': 0.02, 'w': 0.24, 'h': 0.30},
-            {'channel': 'speed',      'style': 'Dial',    'visible': True, 'x': 0.01, 'y': 0.74, 'w': 0.13, 'h': 0.23},
-            {'channel': 'gforce_lat', 'style': 'Bar',     'visible': True, 'x': 0.15, 'y': 0.74, 'w': 0.10, 'h': 0.23},
-            {'channel': 'gforce_lon', 'style': 'Bar',     'visible': True, 'x': 0.26, 'y': 0.74, 'w': 0.10, 'h': 0.23},
-            {'channel': 'lap_time',   'style': 'Numeric', 'visible': True, 'x': 0.37, 'y': 0.74, 'w': 0.13, 'h': 0.23},
+            {'type': 'Circuit', 'visible': True, 'x': 0.74, 'y': 0.02, 'w': 0.24, 'h': 0.30},
+            {'type': 'Dial',    'channel': 'speed',      'visible': True, 'x': 0.01, 'y': 0.74, 'w': 0.13, 'h': 0.23},
+            {'type': 'Bar',     'channel': 'gforce_lat', 'visible': True, 'x': 0.15, 'y': 0.74, 'w': 0.10, 'h': 0.23},
+            {'type': 'Bar',     'channel': 'gforce_lon', 'visible': True, 'x': 0.26, 'y': 0.74, 'w': 0.10, 'h': 0.23},
+            {'type': 'Numeric', 'channel': 'lap_time',   'visible': True, 'x': 0.37, 'y': 0.74, 'w': 0.13, 'h': 0.23},
         ],
     }
 
@@ -52,7 +52,7 @@ def render_frame_worker(args: Tuple) -> bytes:
     """
     import numpy as np
     from style_registry  import render_style
-    from gauge_channels  import gauge_data, GAUGE_CHANNELS, build_multi_data, MULTI_CHANNEL
+    from gauge_channels  import gauge_data, GAUGE_CHANNELS, build_multi_data
 
     (frame_bytes, shape, cur_pt_idx,
      lap_lats, lap_lons,
@@ -89,14 +89,14 @@ def render_frame_worker(args: Tuple) -> bytes:
     for g in layout.get('gauges', []):
         if not g.get('visible', True):
             continue
+        gtype   = g.get('type', 'Dial')
         channel = g.get('channel', 'speed')
-        style   = g.get('style',   'Numeric')
         gx      = int(g.get('x', 0.0) * vw)
         gy      = int(g.get('y', 0.0) * vh)
         gw      = max(32, int(g.get('w', 0.12) * vw))
         gh      = max(24, int(g.get('h', 0.20) * vh))
 
-        if channel == 'info':
+        if gtype == 'Info':
             gd = dict(session_meta)
             # Per-gauge overrides only fill fields that the session doesn't provide,
             # so actual session data always wins over stale overlay-editor text.
@@ -106,24 +106,24 @@ def render_frame_worker(args: Tuple) -> bytes:
             gd['selected_fields'] = g.get('selected_fields') or g.get('channels') or []
             gd['_theme'] = theme
             try:
-                img = render_style('gauge', style, gd, gw, gh)
+                img = render_style('gauge', gtype, gd, gw, gh)
                 _blend(frame, img, gx, gy)
             except Exception as e:
-                logger.debug('Failed to render info gauge %s: %s', style, e)
+                logger.debug('Failed to render info gauge %s: %s', gtype, e)
             continue
 
-        if channel == 'lap_info':
+        if gtype == 'Scoreboard':
             gd = gauge_data_lap_info(history)
             gd['selected_fields'] = g.get('selected_fields') or ['lap', 'best', 'current', 'delta']
             gd['_theme'] = theme
             try:
-                img = render_style('gauge', style, gd, gw, gh)
+                img = render_style('gauge', gtype, gd, gw, gh)
                 _blend(frame, img, gx, gy)
             except Exception as e:
-                logger.debug('Failed to render lap_info gauge %s: %s', style, e)
+                logger.debug('Failed to render lap_info gauge %s: %s', gtype, e)
             continue
 
-        if channel == 'image':
+        if gtype == 'Image':
             image_path = g.get('image_path', '')
             if not image_path or not os.path.isfile(image_path):
                 continue
@@ -151,7 +151,7 @@ def render_frame_worker(args: Tuple) -> bytes:
                 logger.debug('Failed to render image gauge %s: %s', image_path, e)
             continue
 
-        if channel == 'map':
+        if gtype in ('Circuit', 'Zoomed'):
             if not (show_map and lap_lats):
                 continue
             if ref_lats:
@@ -178,12 +178,12 @@ def render_frame_worker(args: Tuple) -> bytes:
                 'track_map_areas': track_map_areas if osm_on else [],
             }
             try:
-                mi = render_style('map', style, data, max(60, gw), max(60, gh))
+                mi = render_style('map', gtype, data, max(60, gw), max(60, gh))
                 _blend(frame, mi, gx, gy)
             except Exception as e:
-                logger.debug('Failed to render map gauge %s: %s', style, e)
+                logger.debug('Failed to render map gauge %s: %s', gtype, e)
         elif show_telemetry and history:
-            if channel == MULTI_CHANNEL:
+            if gtype == 'Multi-Line':
                 sub_channels = g.get('multi_channels') or g.get('channels') or []
                 if not sub_channels:
                     continue
@@ -191,6 +191,8 @@ def render_frame_worker(args: Tuple) -> bytes:
                                       ref_history if ref_history else [], unit=speed_unit)
                 gd['_theme'] = theme
             else:
+                if gtype == 'G-Meter':
+                    channel = 'g_meter'   # fixed by the type itself, not user-selectable
                 gd = gauge_data(channel, history, unit=speed_unit)
                 gd['lap_duration'] = lap_duration
                 gd['is_bike']      = is_bike
@@ -210,14 +212,14 @@ def render_frame_worker(args: Tuple) -> bytes:
                         factor = KMH_PER_UNIT.get(speed_unit, 1.0)
                         ref_vals = [v * factor for v in ref_vals]
                     gd['ref_history_vals'] = ref_vals
-                if channel == 'g_meter':
+                if gtype == 'G-Meter':
                     gd['history_gy'] = [p.get('gy', 0.0) for p in history]
                     gd['value_gy']   = history[-1].get('gy', 0.0) if history else 0.0
             try:
-                img = render_style('gauge', style, gd, gw, gh)
+                img = render_style('gauge', gtype, gd, gw, gh)
                 _blend(frame, img, gx, gy)
             except Exception as e:
-                logger.debug('Failed to render gauge %s/%s: %s', channel, style, e)
+                logger.debug('Failed to render gauge %s/%s: %s', gtype, channel, e)
                 # A style's render() may have called plt.figure() before
                 # raising, and never reached the fig_to_rgba()/plt.close()
                 # that normally cleans it up. Pool workers are long-lived for

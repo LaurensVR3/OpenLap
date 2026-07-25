@@ -234,3 +234,118 @@ def test_load_ld_elapsed_monotonic():
         assert pts[i].elapsed >= pts[i - 1].elapsed - 1e-6, (
             f'elapsed went backwards at index {i}: {pts[i-1].elapsed:.3f} -> {pts[i].elapsed:.3f}'
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Integration tests — real M150 hardware .ld export (no TIME channel, skipped
+# when absent). Exercises the branch added for real M1 hardware exports,
+# distinct from the ACC sim path covered by the fixture above.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_HW_LD_PATH = (
+    r'C:\Users\Laurens\Downloads\OneDrive_1_7-25-2026\Testing Bennett.ld'
+)
+_HW_LD_AVAILABLE = os.path.isfile(_HW_LD_PATH)
+_skip_no_hw_file = pytest.mark.skipif(
+    not _HW_LD_AVAILABLE, reason='real M150 hardware .ld file not available'
+)
+
+
+@_skip_no_hw_file
+def test_load_ld_hardware_source():
+    s = motec_data.load_ld(_HW_LD_PATH)
+    assert s.source == 'MoTeC'
+
+
+@_skip_no_hw_file
+def test_load_ld_hardware_has_points():
+    s = motec_data.load_ld(_HW_LD_PATH)
+    assert len(s.all_points) > 1000
+
+
+@_skip_no_hw_file
+def test_load_ld_hardware_has_laps():
+    s = motec_data.load_ld(_HW_LD_PATH)
+    assert len(s.laps) > 0
+
+
+@_skip_no_hw_file
+def test_load_ld_hardware_elapsed_monotonic():
+    s = motec_data.load_ld(_HW_LD_PATH)
+    pts = s.all_points
+    for i in range(1, len(pts)):
+        assert pts[i].elapsed >= pts[i - 1].elapsed - 1e-6, (
+            f'elapsed went backwards at index {i}: {pts[i-1].elapsed:.3f} -> {pts[i].elapsed:.3f}'
+        )
+
+
+@_skip_no_hw_file
+def test_load_ld_hardware_speed_in_kmh():
+    # 'Vehicle Speed' is untagged in this file; the hardware path must default
+    # to km/h (not the sim path's m/s default) — verified against this file's
+    # full sample distribution during planning (median/p90/p99, not just max).
+    s = motec_data.load_ld(_HW_LD_PATH)
+    assert s.source_speed_unit == 'kmh'
+    speeds = [p.speed for p in s.all_points]
+    assert 100.0 < max(speeds) < 150.0, 'FSAE top speed should be well under 150 km/h'
+
+
+@_skip_no_hw_file
+def test_load_ld_hardware_rpm_reasonable():
+    s = motec_data.load_ld(_HW_LD_PATH)
+    rpms = [p.rpm for p in s.all_points]
+    assert 8000.0 < max(rpms) < 15000.0
+
+
+@_skip_no_hw_file
+def test_load_ld_hardware_gear_populated():
+    # dtype=2 (int16) channel — exercises the generalized sample reader.
+    s = motec_data.load_ld(_HW_LD_PATH)
+    gears = {p.gear for p in s.all_points}
+    assert len(gears) > 1, 'expected more than one distinct gear value'
+
+
+@_skip_no_hw_file
+def test_load_ld_hardware_lap_duration_matches_ldx():
+    # The .ldx sidecar records "Fastest Time: 11:23.940" for this single-lap file.
+    s = motec_data.load_ld(_HW_LD_PATH)
+    assert len(s.laps) == 1
+
+
+@_skip_no_hw_file
+def test_load_ld_hardware_extra_channels_populated():
+    # 'Coolant Temperature' isn't one of the fixed DataPoint fields — it
+    # should surface via the generic extra bag instead.
+    s = motec_data.load_ld(_HW_LD_PATH)
+    assert 'Coolant Temperature' in s.extra_channel_meta
+    assert s.extra_channel_meta['Coolant Temperature']['label'] == 'Coolant Temperature'
+    vals = [p.extra.get('Coolant Temperature') for p in s.all_points[:100]]
+    assert all(v is not None for v in vals)
+
+
+@_skip_no_hw_file
+def test_load_ld_hardware_extra_channels_exclude_fixed_fields():
+    # Channels already mapped to a fixed DataPoint field (e.g. 'Gear',
+    # 'Vehicle Speed') must not also show up as extras.
+    s = motec_data.load_ld(_HW_LD_PATH)
+    assert 'Gear' not in s.extra_channel_meta
+    assert 'Vehicle Speed' not in s.extra_channel_meta
+
+
+@_skip_no_hw_file
+def test_load_ld_hardware_extra_channel_interpolation_offset():
+    # Regression guard for the numpy-vectorised extras path: values at
+    # different points should actually differ (not all defaulted to the
+    # same value), confirming per-sample interpolation really ran.
+    s = motec_data.load_ld(_HW_LD_PATH)
+    vals = {p.extra.get('Coolant Temperature') for p in s.all_points[::5000]}
+    assert len(vals) > 1
+
+
+@_skip_no_file
+def test_load_ld_sim_extra_channels_populated():
+    # ACC sim path also captures leftover channels (e.g. 'STEERANGLE').
+    s = motec_data.load_ld(_LD_PATH)
+    assert len(s.extra_channel_meta) > 0
+    for name in s.extra_channel_meta:
+        assert name not in ('SPEED', 'G_LAT', 'G_LON', 'RPMS', 'TIME')

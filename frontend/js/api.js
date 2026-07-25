@@ -92,8 +92,8 @@ const API = (() => {
     getConfig:         ()              => call('get_config'),
     saveConfig:        (data)          => call('save_config', data),
 
-    openFolderDialog:  ()              => call('open_folder_dialog'),
-    openFileDialog:    (filters)       => call('open_file_dialog', filters),
+    openFolderDialog:  (startDir)      => call('open_folder_dialog', startDir),
+    openFileDialog:    (filters, startDir) => call('open_file_dialog', filters, startDir),
 
     scanSessions:      (folder)        => call('scan_sessions', folder),
     scanAllSessions:   (paths)         => call('scan_all_sessions', paths),
@@ -137,6 +137,12 @@ const API = (() => {
 
     startAutoSync:              (sessions)           => call('start_auto_sync', sessions),
     cancelAutoSync:             ()                   => call('cancel_auto_sync'),
+
+    startChannelSync:           (sessions)           => call('start_channel_sync', sessions),
+    cancelChannelSync:          ()                   => call('cancel_channel_sync'),
+
+    listSessionChannels:        (csvPath)            => call('list_session_channels', csvPath),
+    getAvailableChannels:       (csvPath)            => call('get_available_channels', csvPath),
 
     confirmClearQueue:          ()                   => call('confirm_clear_queue'),
   };

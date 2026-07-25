@@ -245,7 +245,7 @@ describe('Overlay editor — HTML-attribute escaping', () => {
       getConfig:          vi.fn(async () => ({ overlay: { is_bike: false, theme: 'Dark', gauges: [] } })),
       getOverlay:         vi.fn(async () => ({
         is_bike: false, theme: 'Dark',
-        gauges: [{ channel: 'map', style: 'Circuit', visible: true, x: 0.1, y: 0.1, w: 0.3, h: 0.3 }],
+        gauges: [{ type: 'Circuit', visible: true, x: 0.1, y: 0.1, w: 0.3, h: 0.3 }],
       })),
       listPresets:        vi.fn(async () => ({})),
       getSessionMeta:     vi.fn(async () => ({ track: 'Spa-Francorchamps' })),

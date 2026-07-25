@@ -34,6 +34,8 @@ CHECK_EVERY_S        = 20.0
 # ── Telemetry loading ─────────────────────────────────────────────────────────
 
 def _load_session(csv_path: str, source: str):
+    from session_scanner import resolve_xrk_csv
+    csv_path = resolve_xrk_csv(csv_path)
     if source == 'RaceBox':
         from racebox_data import load_csv
         return load_csv(csv_path)
@@ -70,6 +72,117 @@ def _load_telemetry(csv_path: str, source: str, fps: float) -> np.ndarray:
         gmag = np.abs(np.gradient(speed_ms, t)) / 9.81
     out_t = np.arange(t[0], t[-1], 1.0 / fps)
     return np.interp(out_t, t, gmag)
+
+
+def _resample(pts: list, vals: np.ndarray, fps: float) -> np.ndarray:
+    t = np.array([p.elapsed for p in pts], dtype=np.float64)
+    out_t = np.arange(t[0], t[-1], 1.0 / fps)
+    return np.interp(out_t, t, vals)
+
+
+def _rpm_signal(pts: list, fps: float) -> Optional[np.ndarray]:
+    """RPM channel — the sharpest signal when both files log the same
+    ECU/CAN feed (gearshifts and rev-matching are very distinctive), but
+    absent on GPS-only loggers (which leave it at a uniform 0.0)."""
+    if not pts:
+        return None
+    rpm = np.array([p.rpm for p in pts], dtype=np.float64)
+    if rpm.max() < 1.0:
+        return None
+    return _resample(pts, rpm, fps)
+
+
+def _gforce_signal(pts: list, fps: float) -> Optional[np.ndarray]:
+    """G-force magnitude from the accelerometer — the same signal
+    run_auto_sync() correlates against video motion; braking/cornering
+    events give it a sharp, distinctive shape. Unlike _load_telemetry()'s
+    single-candidate video-sync path, this deliberately does *not* fall back
+    to a speed-derivative approximation when accelerometer data is absent —
+    Speed is already its own separate, more honestly-labeled candidate below."""
+    if not pts:
+        return None
+    gx = np.array([p.gforce_x for p in pts], dtype=np.float64)
+    gy = np.array([p.gforce_y for p in pts], dtype=np.float64)
+    gmag = np.sqrt(gx**2 + gy**2)
+    if gmag.max() < 0.05:
+        return None
+    return _resample(pts, gmag, fps)
+
+
+def _speed_signal(pts: list, fps: float) -> Optional[np.ndarray]:
+    """Speed channel — near-universal (GPS or wheel speed), a good fallback
+    when one file has neither engine nor accelerometer data."""
+    if not pts:
+        return None
+    speed = np.array([p.speed for p in pts], dtype=np.float64)
+    if speed.max() < 1.0:
+        return None
+    return _resample(pts, speed, fps)
+
+
+def _altitude_signal(pts: list, fps: float) -> Optional[np.ndarray]:
+    """Altitude — last-resort candidate; only useful on hilly tracks, so a
+    minimum-range check keeps flat circuits from matching on GPS noise."""
+    if not pts:
+        return None
+    alt = np.array([p.alt for p in pts], dtype=np.float64)
+    if (alt.max() - alt.min()) < 2.0:
+        return None
+    return _resample(pts, alt, fps)
+
+
+# Tried in order of how distinctive a match each usually gives (RPM/G-force
+# have sharp, well-defined events; speed is smoother; altitude is the
+# weakest signal) — but every usable candidate is tried regardless, since
+# checking one costs nothing (already-loaded points, no I/O), and whichever
+# gives the best confidence wins.
+_CORRELATION_CANDIDATES: List[Tuple[str, Callable[[list, float], Optional[np.ndarray]]]] = [
+    ('RPM', _rpm_signal),
+    ('G-Force', _gforce_signal),
+    ('Speed', _speed_signal),
+    ('Altitude', _altitude_signal),
+]
+
+
+def correlate_channels(
+    primary_csv:      str,
+    secondary_csv:    str,
+    primary_source:   str,
+    secondary_source: str,
+    search_window_s:  float = 60.0,
+    fps:              float = FPS,
+) -> Tuple[float, float, str]:
+    """
+    Cross-correlate two telemetry files logged during the same run (e.g. a
+    MoTeC ECU log and an AIM GPS log) to find the offset between their two
+    independent clocks. Tries every channel both files actually have usable
+    data for — RPM, G-force, Speed, Altitude — and keeps whichever produces
+    the highest-confidence match, the same "try candidates, keep the best"
+    approach run_auto_sync() uses for video-vs-telemetry sync.
+
+    Returns (offset, confidence, channel_name) with offset in
+    session_merge.py's convention: secondary_elapsed = primary_elapsed +
+    offset. This is the reverse argument order from _correlate()'s own
+    (vid_sig, tel_sig) convention documented at the top of this file —
+    verified empirically: _correlate(secondary_sig, primary_sig, ...) is
+    what yields offset in the secondary-relative-to-primary sense used here.
+
+    Returns (0.0, 0.0, '') if no candidate channel has usable data on both
+    sides.
+    """
+    primary_pts   = _load_session(primary_csv,   primary_source).all_points
+    secondary_pts = _load_session(secondary_csv, secondary_source).all_points
+
+    best_offset, best_conf, best_channel = 0.0, 0.0, ''
+    for name, extractor in _CORRELATION_CANDIDATES:
+        primary_sig   = extractor(primary_pts,   fps)
+        secondary_sig = extractor(secondary_pts, fps)
+        if primary_sig is None or secondary_sig is None:
+            continue
+        offset, conf = _correlate(secondary_sig, primary_sig, fps, search_window_s)
+        if conf > best_conf:
+            best_offset, best_conf, best_channel = offset, conf, name
+    return best_offset, best_conf, best_channel
 
 
 # ── Video probing ─────────────────────────────────────────────────────────────

@@ -189,6 +189,11 @@ export function makeAPI(overrides = {}) {
     saveSessionsCache:  vi.fn(async () => null),
     linkCameraFolder:   vi.fn(async () => ({ offset_seconds: 0, matched_count: 0, total_groups: 0, total_sessions: 0 })),
     unlinkCameraFolder: vi.fn(async () => null),
+    loadLapHistory:      vi.fn(async () => []),
+    getAvailableChannels: vi.fn(async () => []),
+    listSessionChannels: vi.fn(async () => []),
+    startChannelSync:    vi.fn(async () => ({ queued: 0 })),
+    cancelChannelSync:   vi.fn(async () => null),
     ...overrides,
   };
 }

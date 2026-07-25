@@ -723,6 +723,9 @@ def render_lap(
                         'li_lap_num':     pt.lap,
                         'li_total_laps':  _total_timed,
                         'li_best_so_far': reference_lap.duration if reference_lap else _best_by_lap.get(pt.lap, _best_fallback),
+                        # Generic dynamic channels (see channel_discovery.py) — only
+                        # Numeric/Bar/Line gauges read these, no reference-lap support.
+                        **pt.extra,
                     })
 
                 # ── Map nearest-point (vectorised numpy, one call per frame) ───

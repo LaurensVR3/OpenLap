@@ -13,15 +13,20 @@ Channel mapping (fuzzy, case-insensitive substring matching):
   gforce_y ← AccelerY / AccelY  (lateral)
   gforce_z ← AccelerZ / AccelZ  (vertical)
   lap      ← GPS_LapBeacon / Lap
+  gear     ← ECU_GEAR / Gear    (CAN-fed ECU channel, when the logger is wired to the bus)
+
+Every other column becomes a generic DataPoint.extra entry, keyed by the
+column's own name (see Session.extra_channel_meta for label/unit).
 """
 
 from __future__ import annotations
 import logging
 import math
 import os
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from data_model import DataPoint, Lap, Session
 from exceptions import NoDataRowsError
@@ -38,25 +43,68 @@ _PATTERNS: dict[str, list[str]] = {
     'lat':      ['gps_latitude', 'latitude', 'gps_lat'],
     'lon':      ['gps_longitude', 'longitude', 'gps_lon'],
     'alt':      ['gps_altitude', 'altitude', 'gps_alt'],
-    # Prefer GPS-computed accelerations; fall back to raw accelerometer channels
-    'gforce_x': ['gps_lonacc', 'lonacc', 'lon_acc', 'accelerometerx', 'accelerx', 'accel_x', 'accelx'],
-    'gforce_y': ['gps_latacc', 'latacc', 'lat_acc', 'accelerometery', 'accelery', 'accel_y', 'accely'],
-    'gforce_z':    ['accelerometerz', 'accelerz', 'accel_z', 'accelz', 'vertaccel'],
+    # Prefer GPS-computed accelerations; fall back to raw accelerometer
+    # channels — 'inlineacc'/'lateralacc'/'verticalacc' are the longitudinal/
+    # lateral/vertical axis names used by some AIM dash-logger CAN exports
+    # (e.g. Formula SAE cars), distinct from the "AccelX/Y/Z" naming this
+    # list otherwise expects.
+    'gforce_x': ['gps_lonacc', 'lonacc', 'lon_acc', 'inlineacc', 'accelerometerx', 'accelerx', 'accel_x', 'accelx'],
+    'gforce_y': ['gps_latacc', 'latacc', 'lat_acc', 'lateralacc', 'accelerometery', 'accelery', 'accel_y', 'accely'],
+    'gforce_z':    ['accelerometerz', 'accelerz', 'accel_z', 'accelz', 'vertaccel', 'verticalacc'],
     'lap':         ['gps_lapbeacon', 'lapbeacon', 'gps_lap', 'lap_beacon', 'lap'],
-    'rpm':         ['rpm'],
+    # Prefer a CAN/ECU-fed RPM channel when present — on some loggers a
+    # generic "RPM" column exists but is never actually wired/populated
+    # (stays all-zero) while "ECU RPM" carries the real data.
+    'rpm':         ['ecu_rpm', 'rpm'],
     'exhaust_temp':['exhaust_temp', 'exhaust', 'egt', 'exh_temp'],
+    'gear':        ['ecu_gear', 'gear'],
 }
 
 
-def _find_col(columns: List[str], field: str) -> Optional[str]:
-    """Return the first column whose normalised name contains any pattern."""
+# Fields where a column that's flat 0.0 across the *entire* session is far
+# more likely to mean "exists in the header but was never actually wired/
+# populated for this recording" than a genuine physical reading — an engine
+# truly never turning over, or a car experiencing exactly 0.000 g for the
+# whole session, are implausible. Deliberately excludes discrete state
+# fields like gear/lap, which legitimately CAN be constant (neutral the
+# whole session, a single-lap capture) — for those, a same-priority
+# "alternate" column found only because the preferred one is flat isn't
+# even guaranteed to be the same kind of data (e.g. a raw sensor voltage
+# mislabeled with a gear-like name), so second-guessing a flat value there
+# risks swapping in outright wrong data rather than better data.
+_PREFER_NONZERO_FIELDS = {'rpm', 'gforce_x', 'gforce_y', 'gforce_z'}
+
+
+def _find_col(df, field: str) -> Optional[str]:
+    """Return the first column whose normalised name contains any pattern.
+
+    For _PREFER_NONZERO_FIELDS, prefers a candidate that actually carries
+    non-zero data — a higher-priority pattern can match a column that exists
+    in the header but was never actually populated for this particular
+    recording (e.g. a GPS-computed accel channel with no GPS lock during a
+    short capture); in that case a lower-priority but genuinely-populated
+    candidate (e.g. a raw accelerometer channel) is preferred. Only falls
+    back to a flat/empty match if every candidate is flat/empty."""
+    import pandas as pd
     patterns = _PATTERNS[field]
+    if field not in _PREFER_NONZERO_FIELDS:
+        for pat in patterns:
+            for col in df.columns:
+                norm = col.lower().replace(' ', '_')
+                if pat in norm:
+                    return col
+        return None
+
+    flat_fallback: Optional[str] = None
     for pat in patterns:
-        for col in columns:
+        for col in df.columns:
             norm = col.lower().replace(' ', '_')
             if pat in norm:
-                return col
-    return None
+                if pd.to_numeric(df[col], errors='coerce').fillna(0.0).ne(0.0).any():
+                    return col
+                if flat_fallback is None:
+                    flat_fallback = col
+    return flat_fallback
 
 
 def sniff_speed_unit(text: Optional[str]) -> str:
@@ -70,6 +118,14 @@ def sniff_speed_unit(text: Optional[str]) -> str:
     if '[m/s]' in low:
         return 'ms'
     return 'kmh'
+
+
+def _parse_col_name(col: str) -> Tuple[str, str]:
+    """Split a "Name [unit]" AIM column header into (name, unit)."""
+    m = re.match(r'^(.*?)\s*\[([^\]]*)\]\s*$', col)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+    return col.strip(), ''
 
 
 def _safe(val, default: float = 0.0) -> float:
@@ -128,7 +184,7 @@ def load_csv(path: str) -> Session:
     columns = list(df.columns)
 
     # Locate channels
-    col = {field: _find_col(columns, field) for field in _PATTERNS}
+    col = {field: _find_col(df, field) for field in _PATTERNS}
 
     # Pull numeric series; interpolate NaNs so sparse GPS data is still usable.
     # Lap beacon is forward-filled only (it's a step function — no interpolation).
@@ -153,6 +209,27 @@ def load_csv(path: str) -> Session:
     s_lap   = _series('lap', step=True)
     s_rpm   = _series('rpm')
     s_exht  = _series('exhaust_temp')
+    s_gear  = _series('gear', step=True)
+
+    # Every column not already mapped to a fixed field becomes a generic
+    # DataPoint.extra entry (e.g. CAN-fed ECU channels like coolant temp,
+    # throttle, MAP). Vectorised with pandas rather than a per-sample Python
+    # loop — AIM CSVs converted from CAN-wired loggers can have 80+ columns.
+    consumed_cols = {c for c in col.values() if c is not None}
+    extra_cols = [c for c in columns if c not in consumed_cols]
+    extra_names: List[str] = []
+    extra_channel_meta: Dict[str, dict] = {}
+    if extra_cols:
+        extra_df = (df[extra_cols].apply(pd.to_numeric, errors='coerce')
+                    .interpolate(method='index', limit_direction='both')
+                    .fillna(0.0))
+        for raw_col in extra_cols:
+            name, unit = _parse_col_name(raw_col)
+            extra_names.append(name)
+            extra_channel_meta[name] = {'label': name, 'unit': unit}
+        extra_rows = extra_df.values.tolist()
+    else:
+        extra_rows = [[] for _ in range(len(df))]
 
     # Speed unit conversion: AIM exports GPS Speed in m/s (untagged columns are km/h)
     speed_col = col['speed']
@@ -193,6 +270,12 @@ def load_csv(path: str) -> Session:
         else:
             lap_num = 1  # no lap channel — treat whole session as one timed lap
 
+        if s_gear is not None:
+            raw_gear = s_gear[i]
+            gear = int(round(raw_gear)) if (raw_gear is not None and math.isfinite(raw_gear)) else 0
+        else:
+            gear = 0
+
         pt = DataPoint(
             record   = i,
             time     = t0_dt,                              # constant; elapsed is used for sync
@@ -210,6 +293,8 @@ def load_csv(path: str) -> Session:
             exhaust_temp = ((_safe(s_exht[i]) - 32.0) / 1.8
                             if exht_fahrenheit and s_exht is not None
                             else _safe(s_exht[i] if s_exht is not None else None)),
+            gear         = gear,
+            extra        = dict(zip(extra_names, extra_rows[i])),
         )
         all_pts.append(pt)
 
@@ -266,4 +351,5 @@ def load_csv(path: str) -> Session:
         is_bike       = False,
         csv_path      = path,
         source_speed_unit = source_speed_unit,
+        extra_channel_meta = extra_channel_meta,
     )

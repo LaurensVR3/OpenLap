@@ -129,14 +129,237 @@ class TestSaveConfigFields:
         assert api.get_config()['unipro_path'] == r'C:\Telemetry\Unipro'
 
 
+class TestSecondarySourceConfigFields:
+    """
+    save_config()'s merge-dict handling for the dual-telemetry-source fields
+    (secondary_source, secondary_offsets, secondary_offset_sources) follows
+    the same hand-written allowlist pattern as offsets/offset_sources/
+    bike_overrides — same failure mode as TestSaveConfigFields above if a
+    field is ever added to AppConfig but forgotten in save_config()'s
+    merge-dict block.
+    """
+
+    def test_secondary_source_round_trips(self, api):
+        api.save_config({'secondary_source': {'/primary.csv': '/secondary.ld'}})
+        assert api.get_config()['secondary_source'] == {'/primary.csv': '/secondary.ld'}
+
+    def test_secondary_offsets_round_trips(self, api):
+        api.save_config({'secondary_offsets': {'/primary.csv': 4.5}})
+        assert api.get_config()['secondary_offsets'] == {'/primary.csv': 4.5}
+
+    def test_secondary_offset_sources_round_trips(self, api):
+        api.save_config({'secondary_offset_sources': {'/primary.csv': 'user'}})
+        assert api.get_config()['secondary_offset_sources'] == {'/primary.csv': 'user'}
+
+    def test_secondary_source_merges_rather_than_overwrites(self, api):
+        api.save_config({'secondary_source': {'/a.csv': '/a2.ld'}})
+        api.save_config({'secondary_source': {'/b.csv': '/b2.ld'}})
+        assert api.get_config()['secondary_source'] == {'/a.csv': '/a2.ld', '/b.csv': '/b2.ld'}
+
+
+# ── _load_session secondary-source merge ──────────────────────────────────────
+
+class TestLoadSessionMerge:
+    """
+    _load_session() transparently merges in a secondary telemetry source
+    when one is configured for that csv_path (see session_merge.merge_sessions).
+    This is the single funnel every session consumer (get_session_meta,
+    get_laps, export, ...) goes through, so a bug here silently affects the
+    whole app rather than one feature.
+    """
+
+    def test_no_secondary_returns_primary_unchanged(self, api, monkeypatch):
+        sentinel = object()
+        monkeypatch.setattr(api, '_load_one_session', lambda p: sentinel)
+        assert api._load_session('/primary.csv') is sentinel
+
+    def test_secondary_configured_but_file_missing_returns_primary_unchanged(self, api, monkeypatch, tmp_path):
+        sentinel = object()
+        monkeypatch.setattr(api, '_load_one_session', lambda p: sentinel)
+        api._config.secondary_source['/primary.csv'] = str(tmp_path / 'does_not_exist.ld')
+        assert api._load_session('/primary.csv') is sentinel
+
+    def test_secondary_configured_and_present_calls_merge(self, api, monkeypatch, tmp_path):
+        secondary_file = tmp_path / 'secondary.ld'
+        secondary_file.write_text('x')
+
+        primary_sentinel   = object()
+        secondary_sentinel = object()
+        merged_sentinel    = object()
+
+        def fake_load_one(path):
+            return primary_sentinel if path == '/primary.csv' else secondary_sentinel
+        monkeypatch.setattr(api, '_load_one_session', fake_load_one)
+
+        captured = {}
+
+        def fake_merge(primary, secondary, offset):
+            captured['args'] = (primary, secondary, offset)
+            return merged_sentinel
+        monkeypatch.setattr('session_merge.merge_sessions', fake_merge)
+
+        api._config.secondary_source['/primary.csv']   = str(secondary_file)
+        api._config.secondary_offsets['/primary.csv']  = 2.5
+
+        result = api._load_session('/primary.csv')
+        assert result is merged_sentinel
+        assert captured['args'] == (primary_sentinel, secondary_sentinel, 2.5)
+
+    def test_secondary_load_failure_falls_back_to_primary(self, api, monkeypatch, tmp_path):
+        secondary_file = tmp_path / 'secondary.ld'
+        secondary_file.write_text('x')
+
+        primary_sentinel = object()
+
+        def fake_load_one(path):
+            if path == '/primary.csv':
+                return primary_sentinel
+            raise RuntimeError('corrupt file')
+        monkeypatch.setattr(api, '_load_one_session', fake_load_one)
+
+        api._config.secondary_source['/primary.csv'] = str(secondary_file)
+        assert api._load_session('/primary.csv') is primary_sentinel
+
+
+# ── Dynamic channel listing RPCs ────────────────────────────────────────────────
+
+class TestChannelListingRPCs:
+    """list_session_channels() (one file, no merge) vs get_available_channels()
+    (the possibly-merged session) — both wrap channel_discovery.list_channels()."""
+
+    @staticmethod
+    def _fake_session(extra_channel_meta):
+        from data_model import DataPoint, Session
+        pt = DataPoint(
+            record=0, time=None, lat=0.0, lon=0.0, alt=0.0, speed=0.0,
+            gforce_x=0.0, gforce_y=0.0, gforce_z=0.0, lap=0,
+            gyro_x=0.0, gyro_y=0.0, gyro_z=0.0, elapsed=0.0,
+            extra={k: 1.0 for k in extra_channel_meta},
+        )
+        return Session(
+            source='Test', date_utc='', track='', configuration='',
+            session_type='', best_lap_time=0.0, all_points=[pt], laps=[],
+            extra_channel_meta=extra_channel_meta,
+        )
+
+    def test_list_session_channels_includes_extras(self, api, monkeypatch):
+        session = self._fake_session({'Coolant Temperature': {'label': 'Coolant Temperature', 'unit': 'C'}})
+        monkeypatch.setattr(api, '_load_one_session', lambda p: session)
+        result = api.list_session_channels('/primary.csv')
+        assert 'Coolant Temperature' in {c['key'] for c in result}
+
+    def test_list_session_channels_includes_fixed_channels(self, api, monkeypatch):
+        from gauge_channels import GAUGE_CHANNELS
+        session = self._fake_session({})
+        monkeypatch.setattr(api, '_load_one_session', lambda p: session)
+        result = api.list_session_channels('/primary.csv')
+        keys = {c['key'] for c in result}
+        assert set(GAUGE_CHANNELS.keys()).issubset(keys)
+
+    def test_list_session_channels_returns_empty_list_on_error(self, api, monkeypatch):
+        def raise_err(p):
+            raise RuntimeError('bad file')
+        monkeypatch.setattr(api, '_load_one_session', raise_err)
+        assert api.list_session_channels('/bad.csv') == []
+
+    def test_get_available_channels_uses_load_session_not_load_one_session(self, api, monkeypatch):
+        # get_available_channels must go through the merge-aware _load_session,
+        # not the single-file _load_one_session, so it reflects a merged result.
+        merged_session = self._fake_session({'Merged Channel': {'label': 'Merged Channel', 'unit': ''}})
+        monkeypatch.setattr(api, '_load_session', lambda p: merged_session)
+        monkeypatch.setattr(api, '_load_one_session',
+                             lambda p: (_ for _ in ()).throw(AssertionError('should not be called')))
+        result = api.get_available_channels('/primary.csv')
+        assert 'Merged Channel' in {c['key'] for c in result}
+
+    def test_get_available_channels_returns_empty_list_on_error(self, api, monkeypatch):
+        def raise_err(p):
+            raise RuntimeError('bad file')
+        monkeypatch.setattr(api, '_load_session', raise_err)
+        assert api.get_available_channels('/bad.csv') == []
+
+
+# ── start_channel_sync eligibility ───────────────────────────────────────────
+
+class TestStartChannelSync:
+    """start_channel_sync() must only queue sessions that have a secondary
+    source assigned and no offset yet. Unlike start_auto_sync(), a prior
+    'known to fail' marker does NOT exclude a session — see
+    test_previously_failed_session_is_still_queued_on_manual_retry."""
+
+    def test_no_secondary_source_configured_queues_nothing(self, api):
+        result = api.start_channel_sync([{'csv_path': '/a.csv', 'source': 'MoTeC'}])
+        assert result == {'queued': 0}
+
+    def test_session_with_secondary_and_no_offset_is_queued(self, api, monkeypatch):
+        api._config.secondary_source['/a.csv'] = '/a2.ld'
+        monkeypatch.setattr(api, '_run_channel_sync_bg', lambda sessions: None)
+        result = api.start_channel_sync([{'csv_path': '/a.csv', 'source': 'MoTeC'}])
+        assert result == {'queued': 1}
+
+    def test_session_with_existing_offset_is_skipped(self, api, monkeypatch):
+        api._config.secondary_source['/a.csv']  = '/a2.ld'
+        api._config.secondary_offsets['/a.csv'] = 1.0
+        monkeypatch.setattr(api, '_run_channel_sync_bg', lambda sessions: None)
+        result = api.start_channel_sync([{'csv_path': '/a.csv', 'source': 'MoTeC'}])
+        assert result == {'queued': 0}
+
+    def test_previously_failed_session_is_still_queued_on_manual_retry(self, api, monkeypatch):
+        # Unlike start_auto_sync() (bulk, automatic), this is only ever
+        # triggered by an explicit single-session button click — a prior
+        # failure must not silently block the user from retrying.
+        api._config.secondary_source['/a.csv'] = '/a2.ld'
+        api._config.secondary_sync_failed.append('/a.csv')
+        monkeypatch.setattr(api, '_run_channel_sync_bg', lambda sessions: None)
+        result = api.start_channel_sync([{'csv_path': '/a.csv', 'source': 'MoTeC'}])
+        assert result == {'queued': 1}
+
+
+class TestRunChannelSyncBg:
+    """_run_channel_sync_bg() is the worker start_channel_sync() threads off
+    to — tested directly (synchronously) here rather than through the thread."""
+
+    def test_success_clears_a_stale_failed_marker(self, api, monkeypatch, tmp_path):
+        secondary_file = tmp_path / 'secondary.ld'
+        secondary_file.write_text('x')
+
+        api._config.secondary_source['/a.csv'] = str(secondary_file)
+        api._config.secondary_sync_failed.append('/a.csv')  # stale, from an earlier failed attempt
+
+        monkeypatch.setattr('auto_sync.correlate_channels',
+                             lambda **kwargs: (1.23, 9.0, 'RPM'))
+        monkeypatch.setattr('session_scanner._csv_source', lambda path: 'MoTeC')
+
+        api._run_channel_sync_bg([{'csv_path': '/a.csv', 'source': 'RaceBox'}])
+
+        assert api._config.secondary_offsets['/a.csv'] == pytest.approx(1.23)
+        assert '/a.csv' not in api._config.secondary_sync_failed
+
+    def test_low_confidence_adds_to_failed_list(self, api, monkeypatch, tmp_path):
+        secondary_file = tmp_path / 'secondary.ld'
+        secondary_file.write_text('x')
+
+        api._config.secondary_source['/a.csv'] = str(secondary_file)
+
+        monkeypatch.setattr('auto_sync.correlate_channels',
+                             lambda **kwargs: (0.0, 0.0, ''))
+        monkeypatch.setattr('session_scanner._csv_source', lambda path: 'MoTeC')
+
+        api._run_channel_sync_bg([{'csv_path': '/a.csv', 'source': 'RaceBox'}])
+
+        assert '/a.csv' not in api._config.secondary_offsets
+        assert '/a.csv' in api._config.secondary_sync_failed
+
+
 # ── _load_session format dispatch ─────────────────────────────────────────────
 
 class TestLoadSessionDispatch:
     """
-    _load_session's format dispatch is a hardcoded if/elif chain of is_X(path)
-    checks, the same shape as export_runner.load_any_session and
-    auto_sync._load_session — every format must have a branch here too, or
-    the Data/Overlay/Export tabs silently misparse it.
+    _load_one_session's format dispatch (called by _load_session, which adds
+    an optional secondary-source merge on top) is a hardcoded if/elif chain
+    of is_X(path) checks, the same shape as export_runner.load_any_session
+    and auto_sync._load_session — every format must have a branch here too,
+    or the Data/Overlay/Export tabs silently misparse it.
     """
 
     @pytest.mark.parametrize('is_check,module,load_fn', [
@@ -161,7 +384,7 @@ class TestLoadSessionDispatch:
         sentinel = object()
         monkeypatch.setattr(target_mod, load_fn, lambda p: sentinel)
 
-        assert WebviewAPI._load_session('/fake/path') is sentinel
+        assert WebviewAPI._load_one_session('/fake/path') is sentinel
 
 
 # ── Thread safety ─────────────────────────────────────────────────────────────
