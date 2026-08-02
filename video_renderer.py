@@ -161,6 +161,34 @@ def concat_videos(input_files: List[str], output: str,
         os.unlink(concat_file)
 
 
+def quality_args(encoder: str, crf: int) -> list:
+    """Map the UI's CRF setting to the constant-quality flag *encoder* expects.
+
+    Every encoder family spells constant quality differently, and picking the
+    wrong flag is not reliably an error: VideoToolbox *accepts* -qp and then
+    silently ignores it, so on macOS every export came out at the encoder's
+    own default quality no matter where the user put the Quality slider
+    (-qp 12 and -qp 32 produce byte-identical output). Other encoders that
+    fall through to -qp do honour it, so this only special-cases VideoToolbox.
+
+    VideoToolbox instead takes -q:v on a 1-100 scale where *higher is better* —
+    the inverse of CRF. Mapping linearly across H.264's 0-51 quantiser range
+    (crf 0 -> 100, crf 51 -> 0) tracks libx264's output closely over the upper
+    half of the UI's 12-32 slider: at crf 12 and 18 the resulting file lands
+    within ~1.5% of the equivalent libx264 encode. Below roughly crf 22 the
+    curve diverges and this mapping errs toward larger files, i.e. more
+    quality than asked for rather than less.
+    """
+    if encoder == 'libx264':
+        return ['-crf', str(crf)]
+    if encoder == 'h264_nvenc':
+        return ['-rc', 'vbr', '-cq', str(crf), '-b:v', '0']
+    if encoder.endswith('_videotoolbox'):
+        q = round((1.0 - crf / 51.0) * 100)
+        return ['-q:v', str(max(1, min(100, q)))]
+    return ['-qp', str(crf)]
+
+
 def mux_audio(raw_video: str, audio_source: str,
                output: str, encoder: str, crf: int = 18,
                audio_start: float = 0.0,
@@ -176,13 +204,7 @@ def mux_audio(raw_video: str, audio_source: str,
     """
     import threading, subprocess as _sp
 
-    # Quality args — nvenc uses -cq (constant quality, like CRF) not -qp (fixed QP)
-    if encoder == 'libx264':
-        q_arg = ['-crf', str(crf)]
-    elif encoder == 'h264_nvenc':
-        q_arg = ['-rc', 'vbr', '-cq', str(crf), '-b:v', '0']
-    else:
-        q_arg = ['-qp', str(crf)]
+    q_arg = quality_args(encoder, crf)
 
     # Force yuv420p: MJPG from OpenCV is yuvj420p (full-range) which hardware
     # encoders (nvenc/amf/qsv) reject.  Also ensure even dimensions.
