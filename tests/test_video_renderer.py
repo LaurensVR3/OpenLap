@@ -290,3 +290,65 @@ class TestConcatVideosProgress:
                               progress_cb=lambda pct, msg: None,
                               stall_timeout_s=0.05)
         assert procs and all(p.kill.assert_called_once() is None for p in procs)
+
+
+# ── quality_args ───────────────────────────────────────────────────────────────
+
+class TestQualityArgs:
+    """Constant-quality flag selection per encoder family.
+
+    The VideoToolbox cases are the reason this helper exists: ffmpeg accepts
+    -qp for h264_videotoolbox but ignores it, so the Quality slider silently
+    did nothing on macOS. These assertions run anywhere — no VideoToolbox
+    hardware or ffmpeg needed.
+    """
+
+    def test_libx264_uses_crf(self):
+        from video_renderer import quality_args
+        assert quality_args('libx264', 18) == ['-crf', '18']
+
+    def test_nvenc_uses_cq(self):
+        from video_renderer import quality_args
+        assert quality_args('h264_nvenc', 20) == ['-rc', 'vbr', '-cq', '20', '-b:v', '0']
+
+    def test_videotoolbox_uses_qv_not_qp(self):
+        from video_renderer import quality_args
+        args = quality_args('h264_videotoolbox', 18)
+        assert '-qp' not in args
+        assert args[0] == '-q:v'
+
+    def test_videotoolbox_scale_is_inverted(self):
+        """Higher CRF means worse quality; higher -q:v means better."""
+        from video_renderer import quality_args
+        best  = int(quality_args('h264_videotoolbox', 12)[1])
+        worst = int(quality_args('h264_videotoolbox', 32)[1])
+        assert best > worst
+
+    def test_videotoolbox_matches_measured_libx264_equivalents(self):
+        """Anchors: measured against libx264 output size on the same source.
+
+        crf 12 -> q:v 76 and crf 18 -> q:v 65 each landed within ~1.5% of the
+        equivalent libx264 encode. If the mapping is reworked, re-measure
+        rather than just updating these numbers.
+        """
+        from video_renderer import quality_args
+        assert quality_args('h264_videotoolbox', 12) == ['-q:v', '76']
+        assert quality_args('h264_videotoolbox', 18) == ['-q:v', '65']
+
+    def test_videotoolbox_clamped_to_valid_range(self):
+        """-q:v outside 1-100 is rejected by ffmpeg; CRF is not hard-bounded."""
+        from video_renderer import quality_args
+        assert quality_args('h264_videotoolbox', 0)[1]   == '100'
+        assert quality_args('h264_videotoolbox', 51)[1]  == '1'
+        assert quality_args('h264_videotoolbox', 99)[1]  == '1'
+        assert quality_args('h264_videotoolbox', -10)[1] == '100'
+
+    def test_hevc_videotoolbox_also_covered(self):
+        from video_renderer import quality_args
+        assert quality_args('hevc_videotoolbox', 18) == ['-q:v', '65']
+
+    def test_other_encoders_unchanged(self):
+        """AMF/QSV/libx265 honour -qp — this fix must not alter them."""
+        from video_renderer import quality_args
+        for enc in ('libx265', 'h264_amf', 'h264_qsv', 'hevc_nvenc'):
+            assert quality_args(enc, 22) == ['-qp', '22']
