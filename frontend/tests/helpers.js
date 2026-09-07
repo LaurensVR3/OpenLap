@@ -193,6 +193,10 @@ export function makeAPI(overrides = {}) {
     getAvailableChannels: vi.fn(async () => []),
     listSessionChannels: vi.fn(async () => []),
     startChannelSync:    vi.fn(async () => ({ queued: 0 })),
+    clearOffset:         vi.fn(async () => null),
+    unassignVideo:       vi.fn(async () => null),
+    assignVideo:         vi.fn(async () => null),
+    startAutoSync:       vi.fn(async () => ({ queued: 0 })),
     cancelChannelSync:   vi.fn(async () => null),
     ...overrides,
   };

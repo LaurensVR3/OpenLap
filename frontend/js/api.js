@@ -55,6 +55,8 @@ const API = (() => {
       save_sessions_cache:      () => null,
       convert_xrk_session:       () => ({ ok: false, error: 'mock' }),
       assign_video:              () => null,
+      unassign_video:            () => null,
+      clear_offset:              () => null,
       link_camera_folder:        () => ({ offset_seconds: 0, matched_count: 0, total_groups: 0, total_sessions: 0 }),
       unlink_camera_folder:      () => null,
       aim_dll_status:                () => ({ found: false, path: '' }),
@@ -126,6 +128,8 @@ const API = (() => {
 
     convertXrkSession:        (csvPath)            => call('convert_xrk_session', csvPath),
     assignVideo:              (csvPath, videoPath) => call('assign_video', csvPath, videoPath),
+    unassignVideo:            (csvPath)            => call('unassign_video', csvPath),
+    clearOffset:              (csvPath)            => call('clear_offset', csvPath),
     linkCameraFolder:   (day, folder, daySessions) => call('link_camera_folder', day, folder, daySessions),
     unlinkCameraFolder:       (day, folder)        => call('unlink_camera_folder', day, folder),
     aimDllStatus:               ()                   => call('aim_dll_status'),

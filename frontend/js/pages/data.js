@@ -376,6 +376,8 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
   <div class="dr-hint" style="color:var(--warn)">No matching video found.</div>
   <div class="dr-actions" style="margin-top:8px">
     <button class="btn btn-secondary btn-sm" id="dr-assign-vid-btn">Browse for video…</button>
+    ${off != null ? `<button class="btn btn-secondary btn-sm" id="sv-unset"
+        title="Forget the offset still stored for this session">Unset offset</button>` : ''}
     <span id="dr-assign-vid-msg" class="status-msg"></span>
   </div>
 </div>`}
@@ -535,6 +537,12 @@ ${renderSecondaryCard(s)}
     <span class="sync-mark-val" id="sv-mark-val">${off!=null && !isAuto ? '✓ saved' : ''}</span>
   </div>
   ${vidPaths.length > 1 ? `<div style="font-size:9px;color:var(--text3);margin-top:4px">+ ${vidPaths.length-1} more clip(s)</div>` : ''}
+  <div class="dr-actions" style="margin-top:6px">
+    ${off != null ? `<button class="btn btn-secondary btn-sm" id="sv-unset"
+        title="Forget this offset and let auto-sync try again">Unset offset</button>` : ''}
+    ${s.video_override ? `<button class="btn btn-secondary btn-sm" id="sv-unlink-vid"
+        title="Unlink ${esc(baseName(vidPaths[0]))} and clear its sync offset — the next scan may match a video automatically again">Unlink video</button>` : ''}
+  </div>
 </div>`;
   }
 
@@ -730,8 +738,9 @@ ${renderSecondaryCard(s)}
       if (!videoPath) { btn.disabled = false; return; }
       try {
         await API.assignVideo(s.csv_path, videoPath);
-        s.video_paths = [videoPath];
-        s.matched     = true;
+        s.video_paths    = [videoPath];
+        s.matched        = true;
+        s.video_override = true;   // shows the Unlink button without a rescan
         // Update previewSession so editor picks up the new video immediately
         const prev = State.get('previewSession');
         if (prev?.csv_path === s.csv_path) {
@@ -766,6 +775,7 @@ ${renderSecondaryCard(s)}
     });
 
     // Video sync
+    wireSyncReset(s, pane);
     wireVideoSync(s, pane);
 
     // Secondary telemetry
@@ -845,6 +855,61 @@ ${renderSecondaryCard(s)}
     // "Show all channels" toggle (includes noisy/diagnostic channels)
     pane.querySelector('#dr-show-all-channels')?.addEventListener('change', e => {
       _showAllChannels = e.target.checked;
+      renderRight();
+    });
+  }
+
+  // Undo controls for the sync offset and a hand-assigned video. Wired
+  // separately from wireVideoSync because they must also work when the video
+  // is gone (an unreachable NAS, a moved file) — which is exactly when a
+  // stored offset is most likely to need clearing.
+  function wireSyncReset(s, pane) {
+    // Forget the stored offset (manual or auto-detected) and let auto-sync
+    // treat the session as a fresh candidate again.
+    function forgetOffset() {
+      s.sync_offset      = null;
+      s.sync_source      = null;
+      s.auto_sync_failed = false;
+      if (_config) {
+        const offsets        = { ...(_config.offsets || {}) };
+        const offset_sources = { ...(_config.offset_sources || {}) };
+        delete offsets[s.csv_path];
+        delete offset_sources[s.csv_path];
+        _config = { ..._config, offsets, offset_sources,
+                    auto_sync_failed: (_config.auto_sync_failed || [])
+                      .filter(p => p !== s.csv_path) };
+      }
+      const prev = State.get('previewSession');
+      if (prev?.csv_path === s.csv_path) {
+        State.set('previewSession', { ...prev, sync_offset: 0 });
+      }
+    }
+
+    pane.querySelector('#sv-unset')?.addEventListener('click', async () => {
+      await API.clearOffset(s.csv_path);
+      forgetOffset();
+      setStatus('Sync offset cleared.');
+      renderLeft();
+      renderRight();
+    });
+
+    // Unlink a hand-assigned video. The offset goes with it: it means "video
+    // time at telemetry zero" for *that* video, so leaving it behind would
+    // silently apply it to whatever video a later scan matches instead.
+    pane.querySelector('#sv-unlink-vid')?.addEventListener('click', async () => {
+      await API.unassignVideo(s.csv_path);
+      await API.clearOffset(s.csv_path);
+      s.video_paths    = [];
+      s.matched        = false;
+      s.video_override = false;
+      forgetOffset();
+      const prev = State.get('previewSession');
+      if (prev?.csv_path === s.csv_path) {
+        State.set('previewSession', { ...prev, video_paths: [] });
+      }
+      await API.saveSessionsCache(_sessions).catch(() => {});
+      setStatus('Video unlinked and sync offset cleared.');
+      renderLeft();
       renderRight();
     });
   }

@@ -459,14 +459,19 @@ class WebviewAPI:
         result = []
         for m in matches:
             csv = m.csv_path
+            override = self._video_override_for(csv)
+            if override:
+                _register_known_video_path(override)
             result.append({
                 'csv_path':         csv,
                 'source':           m.source,
                 'csv_start':        m.csv_start.isoformat() if m.csv_start else None,
-                'matched':          m.matched,
+                'matched':          True if override else m.matched,
                 'needs_conversion': m.needs_conversion,
                 'xrk_path':        m.xrk_path,
-                'video_paths':     m.video_group.paths if m.video_group else [],
+                'video_paths':     [override] if override
+                                   else (m.video_group.paths if m.video_group else []),
+                'video_override':  bool(override),
                 'sync_offset':     offsets.get(csv),
                 'sync_source':     offset_sources.get(csv),
                 'auto_sync_failed': csv in auto_failed,
@@ -572,7 +577,11 @@ class WebviewAPI:
         result = []
         for s in sessions:
             csv = s.get('csv_path', '')
-            vpaths = s.get('video_paths', [])
+            # A hand-assigned video is authoritative over the cached path,
+            # which may predate the assignment. (Clearing one is the caller's
+            # job: the Data page re-saves this cache right after unassigning.)
+            override = self._video_override_for(csv)
+            vpaths = [override] if override else s.get('video_paths', [])
             # Re-register on every cache load (not just live scans) so playback
             # still works for a session restored from disk before any rescan
             # has run in this process.
@@ -582,10 +591,11 @@ class WebviewAPI:
                 'csv_path':         csv,
                 'source':           s.get('source', 'RaceBox'),
                 'csv_start':        s.get('csv_start'),
-                'matched':          s.get('matched', False),
+                'matched':          True if override else s.get('matched', False),
                 'needs_conversion': s.get('needs_conversion', False),
                 'xrk_path':        s.get('xrk_path'),
                 'video_paths':     vpaths,
+                'video_override':  bool(override),
                 'sync_offset':     offsets.get(csv),
                 'sync_source':     offset_sources.get(csv),
                 'auto_sync_failed': csv in auto_failed,
@@ -1594,6 +1604,71 @@ class WebviewAPI:
         with self._config_lock:
             si = self._config.session_info.setdefault(abs_csv, {})
             si['_video_override'] = abs_video
+            self._config.save()
+
+    def unassign_video(self, csv_path: str) -> None:
+        """Undo assign_video() — drop the manual video link for a session.
+
+        Leaves everything else about the session alone; a rescan is then free
+        to match it to a video automatically again, exactly as if it had never
+        been assigned by hand.
+        """
+        with self._config_lock:
+            for key in self._session_info_keys(csv_path):
+                si = self._config.session_info.get(key)
+                if not si:
+                    continue
+                si.pop('_video_override', None)
+                if not si:                       # nothing else was overridden
+                    self._config.session_info.pop(key, None)
+            self._config.save()
+
+    def _session_info_keys(self, csv_path: str) -> list:
+        """Both spellings a session may be keyed under in config.
+
+        Offsets are written from JS with the path exactly as the scan produced
+        it, while assign_video() resolves it first. They are normally the same
+        string, but a session reached through a different spelling (a mapped
+        drive, a UNC path, a symlinked folder) would otherwise leave a stale
+        entry behind that no later lookup can find.
+        """
+        keys = [csv_path]
+        try:
+            resolved = str(Path(csv_path).resolve())
+            if resolved != csv_path:
+                keys.append(resolved)
+        except OSError:
+            pass
+        return keys
+
+    def _video_override_for(self, csv_path: str) -> Optional[str]:
+        """The manually assigned video for a session, or None.
+
+        Applied on every scan and cache load so a hand-assigned video survives
+        a rescan — without this the assignment lives only in the scan cache and
+        the next scan silently reverts it to whatever automatic matching finds.
+        """
+        for key in self._session_info_keys(csv_path):
+            override = (self._config.session_info.get(key) or {}).get('_video_override')
+            if override:
+                return override
+        return None
+
+    # ── Sync offset ───────────────────────────────────────────────────────────
+    def clear_offset(self, csv_path: str) -> None:
+        """Forget a session's sync offset, whether set by hand or auto-detected.
+
+        Needs its own method because save_config() merges dict fields, so JS
+        can overwrite an offset but never remove one. Also clears the
+        auto-sync failure marker, so the session goes back to being a
+        candidate for auto-sync rather than staying permanently skipped.
+        """
+        with self._config_lock:
+            for key in self._session_info_keys(csv_path):
+                self._config.offsets.pop(key, None)
+                self._config.offset_sources.pop(key, None)
+                while key in self._config.auto_sync_failed:
+                    self._config.auto_sync_failed.remove(key)
             self._config.save()
 
     # ── RaceBox session download ──────────────────────────────────────────────

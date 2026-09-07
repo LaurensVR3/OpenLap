@@ -425,3 +425,131 @@ class TestThreadSafety:
         assert hasattr(api, '_thread_lock')
         import threading as _t
         assert isinstance(api._thread_lock, type(_t.Lock()))
+
+
+# ── Clearing a stored offset / a manual video link ────────────────────────────
+
+class TestClearOffset:
+    """save_config() *merges* its dict fields (offsets.update(...)), so the
+    frontend can overwrite an offset but has no way to remove one. Clearing
+    therefore needs its own endpoint — without it a session set by hand while
+    testing something else stays set forever."""
+
+    CSV = r'C:\Telemetry\RaceBox\session.csv'
+
+    def test_clear_offset_removes_value_and_source(self, api):
+        api.save_config({'offsets':        {self.CSV: 12.5},
+                         'offset_sources': {self.CSV: 'user'}})
+        assert api.get_config()['offsets'][self.CSV] == 12.5
+
+        api.clear_offset(self.CSV)
+
+        cfg = api.get_config()
+        assert self.CSV not in cfg['offsets']
+        assert self.CSV not in cfg['offset_sources']
+
+    def test_clear_offset_makes_the_session_an_auto_sync_candidate_again(self, api):
+        """A session auto-sync gave up on is skipped forever after; unsetting
+        the offset must also lift that marker, or 'Unset' leaves the session
+        unable to be re-synced by any means except a manual mark."""
+        api._config.auto_sync_failed.append(self.CSV)
+        api.save_config({'offsets': {self.CSV: 3.0}})
+
+        api.clear_offset(self.CSV)
+
+        assert self.CSV not in api.get_config()['auto_sync_failed']
+
+    def test_clear_offset_leaves_other_sessions_alone(self, api):
+        other = r'C:\Telemetry\RaceBox\other.csv'
+        api.save_config({'offsets':        {self.CSV: 1.0, other: 2.0},
+                         'offset_sources': {self.CSV: 'user', other: 'auto'}})
+
+        api.clear_offset(self.CSV)
+
+        cfg = api.get_config()
+        assert cfg['offsets'] == {other: 2.0}
+        assert cfg['offset_sources'] == {other: 'auto'}
+
+    def test_clear_offset_on_an_unset_session_is_a_no_op(self, api):
+        api.clear_offset(self.CSV)   # must not raise
+        assert api.get_config()['offsets'] == {}
+
+    def test_offset_can_be_set_again_after_clearing(self, api):
+        api.save_config({'offsets': {self.CSV: 12.5}})
+        api.clear_offset(self.CSV)
+        api.save_config({'offsets': {self.CSV: 4.25}})
+        assert api.get_config()['offsets'][self.CSV] == 4.25
+
+
+class TestUnassignVideo:
+    """assign_video() records a manual link in session_info['_video_override'];
+    unassign_video() is the only way back out of it."""
+
+    CSV   = r'C:\Telemetry\RaceBox\session.csv'
+    VIDEO = r'C:\Videos\clip.mp4'
+
+    def test_unassign_removes_the_override(self, api):
+        api.assign_video(self.CSV, self.VIDEO)
+        assert api._video_override_for(self.CSV)
+
+        api.unassign_video(self.CSV)
+
+        assert api._video_override_for(self.CSV) is None
+
+    def test_unassign_keeps_other_session_info_overrides(self, api):
+        """The video link shares session_info with the track-name override —
+        dropping the whole entry would silently wipe a renamed track."""
+        api.edit_session_info(self.CSV, {'info_track': 'Spa'})
+        api.assign_video(self.CSV, self.VIDEO)
+
+        api.unassign_video(self.CSV)
+
+        keys = api._session_info_keys(self.CSV)
+        stored = {}
+        for k in keys:
+            stored.update(api.get_config()['session_info'].get(k, {}))
+        assert stored.get('info_track') == 'Spa'
+        assert '_video_override' not in stored
+
+    def test_unassign_on_an_unlinked_session_is_a_no_op(self, api):
+        api.unassign_video(self.CSV)   # must not raise
+        assert api._video_override_for(self.CSV) is None
+
+    def test_video_can_be_assigned_again_after_unassigning(self, api):
+        api.assign_video(self.CSV, self.VIDEO)
+        api.unassign_video(self.CSV)
+        api.assign_video(self.CSV, r'C:\Videos\other.mp4')
+        assert api._video_override_for(self.CSV).endswith('other.mp4')
+
+
+class TestVideoOverrideSurvivesRescan:
+    """A hand-assigned video used to live only in the scan cache: the override
+    was written to config but never read back, so the next scan silently
+    reverted the session to whatever automatic matching found."""
+
+    CSV   = r'C:\Telemetry\RaceBox\session.csv'
+    VIDEO = r'C:\Videos\clip.mp4'
+
+    def test_cached_sessions_apply_the_override(self, api, monkeypatch):
+        monkeypatch.setattr('webview_api.load_scan_cache', lambda: {'sessions': [
+            {'csv_path': self.CSV, 'source': 'RaceBox', 'video_paths': [], 'matched': False},
+        ]})
+        api.assign_video(self.CSV, self.VIDEO)
+
+        session = api._cached_sessions()[0]
+
+        assert session['video_paths'] == [api._video_override_for(self.CSV)]
+        assert session['matched'] is True
+        assert session['video_override'] is True
+
+    def test_cached_sessions_report_no_override_once_unassigned(self, api, monkeypatch):
+        monkeypatch.setattr('webview_api.load_scan_cache', lambda: {'sessions': [
+            {'csv_path': self.CSV, 'source': 'RaceBox', 'video_paths': [], 'matched': False},
+        ]})
+        api.assign_video(self.CSV, self.VIDEO)
+        api.unassign_video(self.CSV)
+
+        session = api._cached_sessions()[0]
+
+        assert session['video_paths'] == []
+        assert session['video_override'] is False
