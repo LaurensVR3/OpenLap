@@ -30,6 +30,32 @@ SEARCH_WINDOW_S      = 120.0
 RESIZE_W             = 320
 CHECK_EVERY_S        = 20.0
 
+# A winning correlation peak must beat the best rival peak (at least
+# PEAK_EXCLUSION_S away from it) by this factor. Confidence alone measures the
+# peak against the noise floor, which does not notice that several offsets fit
+# about equally well - the normal situation on circuit footage, where every lap
+# resembles every other lap one lap time away. See _correlate_full.
+#
+# Measured over five real karting sessions, comparing each detected offset
+# against the one the driver had confirmed by hand:
+#
+#     session     error      confidence   margin
+#     ----------  ---------  ----------   ------
+#     69959e4b      0.115s      6.33       1.84
+#     6995a5f8      0.006s      6.45       2.85
+#     69d10475      0.080s      6.40       1.78
+#     6a86eaea      0.092s      6.29       1.40
+#     6a86c23f     78.115s      6.14       1.16   <- wrong, and accepted
+#
+# Confidence spans 6.14-6.45 across both the correct and the wrong results, so
+# it cannot separate them at any threshold. The margin puts the wrong one below
+# every correct one. 1.25 sits in that gap. The costs are asymmetric: a
+# rejected match sends the user to the manual Mark button and says so, while an
+# accepted wrong one is stored as 'auto' and silently misplaces every exported
+# lap - so err toward rejecting. Re-measure rather than nudging this number.
+MIN_PEAK_MARGIN      = 1.25
+PEAK_EXCLUSION_S     = 5.0
+
 # Smallest inter-clip gap (seconds) treated as a real recording stop. Video
 # creation_time tags have 1-second resolution and chaptered recordings
 # (GoPro/DJI split one continuous recording into ~4 GB files) are frame-
@@ -315,12 +341,27 @@ def _parabolic_peak(xcorr: np.ndarray, idx: int) -> float:
     return idx + 0.5 * (y0 - y2) / denom
 
 
-def _correlate(
+def _correlate_full(
     vid_sig: np.ndarray,
     tel_sig: np.ndarray,
     fps: float,
     search_window_s: float,
-) -> Tuple[float, float]:
+) -> Tuple[float, float, float]:
+    """Cross-correlate and return (offset, confidence, margin).
+
+    *confidence* is the winning peak measured against the correlation's own
+    RMS. It says the peak stands out from the noise floor, but says nothing
+    about whether a *rival* peak is nearly as good — and on circuit footage
+    rivals are the normal case, because every lap looks roughly like every
+    other lap, one lap time apart.
+
+    *margin* is the winning peak over the best rival at least
+    PEAK_EXCLUSION_S away from it. Near 1.0 means "several places fit about
+    equally well", which is how a confidently wrong offset gets produced: on
+    a real session that landed 78s from the hand-set offset, confidence was
+    6.14 (comfortably over the acceptance threshold) while the margin was
+    1.16, against 1.40 and 1.78 for sessions that resolved correctly.
+    """
     v = _z_normalize(vid_sig)
     t = _z_normalize(tel_sig)
     xcorr = sp_signal.correlate(v, t, mode='full')
@@ -328,14 +369,34 @@ def _correlate(
     lag_s = lags / fps
     mask = np.abs(lag_s) <= search_window_s
     if not mask.any():
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
     win_indices = np.where(mask)[0]
     best_in_win = win_indices[np.argmax(xcorr[mask])]
     sub_idx = _parabolic_peak(xcorr, best_in_win)
     offset = (sub_idx - (len(tel_sig) - 1)) / fps
     rms = float(np.sqrt(np.mean(xcorr**2)))
-    confidence = float(xcorr[best_in_win]) / rms if rms > 0 else 0.0
-    return float(offset), confidence
+    peak = float(xcorr[best_in_win])
+    confidence = peak / rms if rms > 0 else 0.0
+
+    # Best rival peak, excluding the shoulder of the winner itself.
+    rivals = win_indices[np.abs(lag_s[win_indices] - lag_s[best_in_win]) > PEAK_EXCLUSION_S]
+    if rivals.size and peak > 0:
+        runner_up = float(np.max(xcorr[rivals]))
+        margin = peak / runner_up if runner_up > 0 else float('inf')
+    else:
+        margin = float('inf')   # nothing else competes within the window
+    return float(offset), confidence, margin
+
+
+def _correlate(
+    vid_sig: np.ndarray,
+    tel_sig: np.ndarray,
+    fps: float,
+    search_window_s: float,
+) -> Tuple[float, float]:
+    """(offset, confidence) — see _correlate_full for the ambiguity measure."""
+    offset, confidence, _margin = _correlate_full(vid_sig, tel_sig, fps, search_window_s)
+    return offset, confidence
 
 
 # ── Main entry point ──────────────────────────────────────────────────────────
@@ -374,6 +435,7 @@ def run_auto_sync(
     cumulative           = 0.0
     best_offset          = 0.0
     best_conf            = 0.0
+    best_margin          = 0.0
     frames_per_check     = max(1, int(CHECK_EVERY_S * fps))
     prev_vpath:    Optional[str] = None
     prev_duration        = 0.0
@@ -454,21 +516,29 @@ def run_auto_sync(
 
             if frame_idx % frames_per_check == 0 and len(all_sig) > 10:
                 vid_s  = np.array(all_sig)
-                offset, conf = _correlate(vid_s, tel_sig, fps, search_window_s)
+                offset, conf, margin = _correlate_full(vid_s, tel_sig, fps, search_window_s)
                 vid_t_now = cumulative + frame_idx / fps
                 if progress_cb:
                     try:
                         progress_cb(vid_t_now, offset, conf)
                     except Exception:
                         pass
+                # Deliberately *not* gated on the margin. Letting an
+                # ambiguous match decode further sounds better, but measured
+                # on a real session it simply found a different peak that
+                # passed both gates, replacing one unverified answer with
+                # another. Stopping at the same point as before and rejecting
+                # at the end keeps this change strictly conservative: an
+                # ambiguous session can only turn into "set it manually",
+                # never into a different automatic answer.
                 if conf >= confidence_threshold:
                     proc.kill()
                     proc.wait()
-                    best_offset, best_conf = offset, conf
+                    best_offset, best_conf, best_margin = offset, conf, margin
                     stopped_early = True
                     cumulative += frame_idx / fps
                     break
-                best_offset, best_conf = offset, conf
+                best_offset, best_conf, best_margin = offset, conf, margin
 
         if not stopped_early:
             proc.wait()
@@ -480,8 +550,18 @@ def run_auto_sync(
     # Final correlation on everything if we never hit threshold
     if all_sig and best_conf < confidence_threshold:
         vid_s = np.array(all_sig)
-        best_offset, best_conf = _correlate(vid_s, tel_sig, fps, search_window_s)
+        best_offset, best_conf, best_margin = _correlate_full(
+            vid_s, tel_sig, fps, search_window_s)
 
     if best_conf < min_confidence:
+        return None, best_conf
+    if best_margin < MIN_PEAK_MARGIN:
+        # Several offsets fit about equally well. Reporting no match sends the
+        # user to the manual Mark button, which is far cheaper than an offset
+        # that looks confident, gets stored as 'auto', and silently puts every
+        # exported lap in the wrong place.
+        logger.info('auto_sync: rejecting ambiguous match for %s '
+                    '(confidence %.2f, peak margin %.2f < %.2f)',
+                    csv_path, best_conf, best_margin, MIN_PEAK_MARGIN)
         return None, best_conf
     return best_offset, best_conf

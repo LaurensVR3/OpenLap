@@ -515,3 +515,115 @@ class TestUnprobeableClipDoesNotShiftLaterClips:
         monkeypatch.setattr(a.subprocess, 'Popen', fake_popen)
         a.run_auto_sync('s.csv', ['clip1.mp4', 'clip2.mp4', 'clip3.mp4'], 'RaceBox')
         assert attempts == ['clip1.mp4', 'clip2.mp4']   # clip3 never attempted
+
+
+# ── Peak margin: telling a unique match from an ambiguous one ─────────────────
+
+class TestPeakMargin:
+    """Confidence measures the winning peak against the noise floor, which
+    says nothing about a rival peak being nearly as good. On circuit footage
+    rivals are the normal case: every lap resembles every other lap, one lap
+    time away. A real session landed 78s from the hand-set offset with
+    confidence 6.14, comfortably over the acceptance threshold, while its
+    peak margin was 1.16 against 1.40 and 1.78 for sessions that resolved
+    correctly.
+    """
+
+    FPS = 5.0
+
+    def _unique_event_signals(self, offset_s=5.0, dur_s=200.0):
+        """One distinctive event: exactly one lag can explain it."""
+        n = int(dur_s * self.FPS)
+        t = np.arange(n) / self.FPS
+        rng = np.random.default_rng(7)
+        tel = np.exp(-0.5 * ((t - 120.0) / 1.0) ** 2) + rng.normal(0, 0.01, n)
+        shift = int(round(offset_s * self.FPS))
+        vid = np.zeros(n)
+        vid[shift:] = tel[:n - shift]
+        return vid + rng.normal(0, 0.01, n), tel
+
+    def _lap_periodic_signals(self, lap_s=60.0, dur_s=600.0):
+        """The same burst once per lap: several lags fit about equally well.
+
+        Aligning at the true lag matches all N bursts while aligning one lap
+        out matches N-1, so the margin tends towards N/(N-1) and shrinks as a
+        session gets longer. At the 9 laps here that is about 1.13, close to
+        the 1.16 measured on the real session that resolved to a wrong offset.
+        """
+        n = int(dur_s * self.FPS)
+        t = np.arange(n) / self.FPS
+        rng = np.random.default_rng(9)
+        tel = np.zeros(n)
+        for k in range(1, int(dur_s // lap_s)):
+            tel += np.exp(-0.5 * ((t - k * lap_s) / 1.0) ** 2)
+        tel += rng.normal(0, 0.01, n)
+        return tel + rng.normal(0, 0.01, n), tel
+
+    def test_a_unique_event_has_a_wide_margin(self):
+        from auto_sync import _correlate_full, MIN_PEAK_MARGIN
+        vid, tel = self._unique_event_signals()
+        offset, conf, margin = _correlate_full(vid, tel, self.FPS, 120.0)
+        assert offset == pytest.approx(5.0, abs=0.3)
+        assert margin > MIN_PEAK_MARGIN
+
+    def test_a_lap_periodic_signal_has_a_narrow_margin(self):
+        from auto_sync import _correlate_full, MIN_PEAK_MARGIN
+        vid, tel = self._lap_periodic_signals()
+        _offset, conf, margin = _correlate_full(vid, tel, self.FPS, 120.0)
+        # Confidence alone is happy; the margin is what notices the rivals.
+        assert conf > 3.0
+        assert margin < MIN_PEAK_MARGIN
+
+    def test_correlate_still_returns_two_values(self):
+        """Kept as a wrapper so existing callers and tests are unaffected."""
+        from auto_sync import _correlate
+        vid, tel = self._unique_event_signals()
+        offset, conf = _correlate(vid, tel, self.FPS, 120.0)
+        assert offset == pytest.approx(5.0, abs=0.3)
+        assert conf > 1.0
+
+    def test_margin_is_infinite_when_nothing_competes(self):
+        """A search window too narrow to hold a rival must not divide by zero."""
+        from auto_sync import _correlate_full
+        vid, tel = self._unique_event_signals()
+        _o, _c, margin = _correlate_full(vid, tel, self.FPS, 1.0)
+        assert margin == float('inf')
+
+
+class TestAmbiguousMatchIsRejected:
+    """An ambiguous offset stored as 'auto' silently puts every exported lap
+    in the wrong place. Reporting no match sends the user to the manual Mark
+    button instead, which is much cheaper to recover from."""
+
+    @staticmethod
+    def _run(monkeypatch, margin, conf=9.0):
+        import auto_sync as a
+        monkeypatch.setattr(a, '_load_telemetry', lambda *args, **kw: np.zeros(50))
+        monkeypatch.setattr(a, '_probe_video',
+                            lambda p: {'fps': 5.0, 'width': 320, 'height': 240,
+                                       'duration': 10.0})
+        monkeypatch.setattr(a, '_video_gap_seconds', lambda *args, **kw: 0.0)
+        monkeypatch.setattr(a, '_correlate_full',
+                            lambda *args, **kw: (42.0, conf, margin))
+
+        frames = [b'\x00' * (a.RESIZE_W * 240)] * 30 + [b'']
+
+        def fake_popen(cmd, **kwargs):
+            proc = MagicMock()
+            proc.stdout.read.side_effect = frames
+            proc.wait.return_value = 0
+            return proc
+
+        monkeypatch.setattr(a.subprocess, 'Popen', fake_popen)
+        return a.run_auto_sync('s.csv', ['clip.mp4'], 'RaceBox')
+
+    def test_high_confidence_but_ambiguous_is_refused(self, monkeypatch):
+        from auto_sync import MIN_PEAK_MARGIN
+        offset, conf = self._run(monkeypatch, margin=MIN_PEAK_MARGIN - 0.05)
+        assert offset is None
+        assert conf > 0        # the score is still reported back to the UI
+
+    def test_high_confidence_and_a_clear_winner_is_accepted(self, monkeypatch):
+        from auto_sync import MIN_PEAK_MARGIN
+        offset, _conf = self._run(monkeypatch, margin=MIN_PEAK_MARGIN + 0.5)
+        assert offset == pytest.approx(42.0)
