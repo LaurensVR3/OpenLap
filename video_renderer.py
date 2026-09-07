@@ -16,7 +16,7 @@ from typing import Callable, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-from utils import _run, _popen
+from utils import _run, _popen, ffmpeg_path, ffprobe_path
 import cv2
 import numpy as np
 
@@ -145,11 +145,11 @@ def concat_videos(input_files: List[str], output: str,
     total_s = sum(_probe_duration_s(p) for p in input_files) if progress_cb else 0.0
 
     try:
-        cmd = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0',
+        cmd = [ffmpeg_path(), '-y', '-f', 'concat', '-safe', '0',
                '-i', concat_file, '-c', 'copy']
         r = _run_ffmpeg_join(cmd, output, progress_cb, total_s, stall_timeout_s)
         if r.returncode != 0:
-            cmd2 = ['ffmpeg', '-y', '-f', 'concat', '-safe', '0',
+            cmd2 = [ffmpeg_path(), '-y', '-f', 'concat', '-safe', '0',
                     '-i', concat_file,
                     '-c:v', 'libx264', '-crf', '18', '-c:a', 'aac']
             r2 = _run_ffmpeg_join(cmd2, output, progress_cb, total_s, stall_timeout_s)
@@ -212,7 +212,7 @@ def mux_audio(raw_video: str, audio_source: str,
 
     # -profile:v main + -g 60: broad player compatibility + regular keyframes
     # -movflags +faststart: moov atom at file start, required for proper seeking
-    base_cmd = ['ffmpeg', '-y', '-hide_banner',
+    base_cmd = [ffmpeg_path(), '-y', '-hide_banner',
                 '-i', raw_video,
                 '-ss', f'{audio_start:.6f}', '-i', audio_source,
                 '-map', '0:v', '-map', '1:a?',
@@ -555,7 +555,7 @@ def render_lap(
         import subprocess as _sp, threading as _th, queue as _q_mod
         _ov_blank = np.zeros((vh, vw, 4), dtype=np.uint8)
         _ov_proc  = _popen(
-            ['ffmpeg', '-y', '-hide_banner',
+            [ffmpeg_path(), '-y', '-hide_banner',
              '-f', 'rawvideo', '-vcodec', 'rawvideo',
              '-s', f'{vw}x{vh}', '-r', str(fps),
              '-pix_fmt', 'rgba', '-i', 'pipe:0',
@@ -587,7 +587,33 @@ def render_lap(
                     _ov_write_error.append(e)
                     break
 
-        _th.Thread(target=lambda: _ov_stderr.extend(_ov_proc.stderr), daemon=True).start()
+        _ov_stderr_thread = _th.Thread(
+            target=lambda: _ov_stderr.extend(_ov_proc.stderr), daemon=True)
+        _ov_stderr_thread.start()
+
+        def _ov_pipe_error() -> str:
+            """Explain why the ProRes pipe died, using ffmpeg's own words.
+
+            When ffmpeg exits at startup (an encoder the build lacks, an
+            unwritable output path, bad args) the *first* thing to fail is
+            our write to its stdin, which on Windows surfaces as a bare
+            "[Errno 22] Invalid argument". Reporting only that told the user
+            nothing at all (issue #20) while the actual explanation sat
+            unread in ffmpeg's stderr. Wait briefly for that to arrive and
+            lead with it.
+            """
+            _ov_proc.poll()
+            _ov_stderr_thread.join(timeout=2.0)
+            detail = b''.join(_ov_stderr).decode(errors='replace').strip()
+            rc = _ov_proc.returncode
+            if detail:
+                lines = [ln for ln in detail.splitlines() if ln.strip()]
+                return ('FFmpeg could not write the overlay video'
+                        + (f' (exit code {rc})' if rc not in (None, 0) else '')
+                        + ':\n' + '\n'.join(lines[-6:]))
+            return (f'FFmpeg could not write the overlay video and gave no reason '
+                    f'(exit code {rc}, pipe error: {_ov_write_error[0]}). '
+                    f'Check that your FFmpeg build works: Settings, then Detect Encoders.')
         _ov_writer = _th.Thread(target=_ov_write_loop, daemon=False)
         _ov_writer.start()
         writer  = None
@@ -801,8 +827,7 @@ def render_lap(
                     # between attempts so a dead writer fails fast instead.
                     while True:
                         if _ov_write_error:
-                            raise VideoMuxError(
-                                f"FFmpeg ProRes pipe failed: {_ov_write_error[0]}")
+                            raise VideoMuxError(_ov_pipe_error())
                         try:
                             _ov_queue.put(raw, timeout=1.0)
                             break

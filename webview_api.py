@@ -1418,26 +1418,42 @@ class WebviewAPI:
     def check_encoders(self) -> dict:
         """
         Probe FFmpeg and report which video encoders are available.
-        Returns {version, encoders: [{name, label, available}]} or {error}.
-        """
-        import subprocess, shutil, os, sys
+        Returns {version, ffmpeg_path, encoders: [{name, label, available,
+        detail}]} or {error} when FFmpeg itself could not be run.
 
-        ffmpeg_bin = os.environ.get('FFMPEG_BIN') or shutil.which('ffmpeg')
-        if not ffmpeg_bin:
-            base = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-            fname = 'ffmpeg.exe' if sys.platform == 'win32' else 'ffmpeg'
-            candidate = os.path.join(base, fname)
-            if os.path.isfile(candidate):
-                ffmpeg_bin = candidate
-        if not ffmpeg_bin:
-            return {'error': 'FFmpeg not found in PATH.'}
+        Reports the *reason* for a failure rather than a cheerful "unknown".
+        A broken-but-present FFmpeg used to render as version "unknown" with
+        every encoder unavailable, which reads like "this machine has no
+        encoders" instead of "FFmpeg is not working" (issue #20).
+        """
+        from utils import _run, ffmpeg_path
+        from exceptions import FFmpegNotFoundError
+
+        ffmpeg_bin = ffmpeg_path()
+
+        def _ff(args, timeout):
+            """Run FFmpeg, returning (returncode, stdout, stderr)."""
+            r = _run([ffmpeg_bin] + args, text=True, timeout=timeout)
+            return r.returncode, (r.stdout or ''), (r.stderr or '')
 
         try:
-            r = subprocess.run([ffmpeg_bin, '-version'], capture_output=True, text=True, timeout=10)
-            first = r.stdout.splitlines()[0] if r.stdout else ''
-            version = first.split('version')[-1].strip().split(' ')[0] if 'version' in first else 'unknown'
+            rc, out, err = _ff(['-hide_banner', '-version'], 10)
+        except FFmpegNotFoundError as e:
+            return {'error': str(e)}
         except Exception as e:
-            return {'error': f'FFmpeg error: {e}'}
+            return {'error': f'Could not run FFmpeg at {ffmpeg_bin}: {e}'}
+
+        if rc != 0:
+            detail = (err or out).strip().splitlines()
+            return {'error': f'FFmpeg at {ffmpeg_bin} exited with code {rc}: '
+                             f'{detail[0] if detail else "no output"}'}
+
+        first = out.splitlines()[0] if out else ''
+        if 'version' not in first:
+            return {'error': f'{ffmpeg_bin} ran but did not report a version, so it is '
+                             f'probably not FFmpeg. First line of output: '
+                             f'{first.strip()[:120] or "(nothing)"}'}
+        version = first.split('version')[-1].strip().split(' ')[0]
 
         candidates = [
             ('libx264',           'H.264 software'),
@@ -1449,22 +1465,55 @@ class WebviewAPI:
             ('h264_qsv',          'H.264 Intel QSV'),
         ]
 
+        # What this build was compiled with. Definitive for "absent", but not
+        # for "works": nvenc is compiled into most builds and still fails
+        # without the matching hardware.
+        built_in: set = set()
+        try:
+            rc_e, out_e, _ = _ff(['-hide_banner', '-encoders'], 15)
+            if rc_e == 0:
+                for line in out_e.splitlines():
+                    parts = line.split()
+                    # " V....D name   Description"
+                    if len(parts) >= 2 and len(parts[0]) == 6 and parts[0][0] in 'VAS':
+                        built_in.add(parts[1])
+        except Exception:
+            logger.debug('check_encoders: -encoders listing failed', exc_info=True)
+
+        # The functional probe needs the lavfi input to synthesise a source.
+        # Builds without it would otherwise fail every probe and report the
+        # whole machine as having no encoders at all, software ones included.
+        try:
+            probe_usable = _ff(
+                ['-hide_banner', '-f', 'lavfi', '-i', 'nullsrc=s=64x64:d=0.1',
+                 '-f', 'null', '-'], 8)[0] == 0
+        except Exception:
+            probe_usable = False
+
         def _probe(enc):
             try:
-                r = subprocess.run(
-                    [ffmpeg_bin, '-f', 'lavfi', '-i', 'nullsrc=s=64x64:d=0.1',
-                     '-vcodec', enc, '-f', 'null', '-'],
-                    capture_output=True, timeout=8
-                )
-                return r.returncode == 0
+                return _ff(['-hide_banner', '-f', 'lavfi', '-i', 'nullsrc=s=64x64:d=0.1',
+                            '-vcodec', enc, '-f', 'null', '-'], 8)[0] == 0
             except Exception:
                 return False
 
-        encoders = [
-            {'name': n, 'label': l, 'available': _probe(n)}
-            for n, l in candidates
-        ]
-        return {'version': version, 'encoders': encoders}
+        encoders = []
+        for name, label in candidates:
+            if built_in and name not in built_in:
+                encoders.append({'name': name, 'label': label, 'available': False,
+                                 'detail': 'not in this FFmpeg build'})
+            elif probe_usable:
+                ok = _probe(name)
+                encoders.append({'name': name, 'label': label, 'available': ok,
+                                 'detail': '' if ok else 'present but failed to encode'})
+            else:
+                # Cannot test for real; report what the build claims.
+                listed = name in built_in
+                encoders.append({'name': name, 'label': label, 'available': listed,
+                                 'detail': 'in this build (not verified)' if listed
+                                           else 'not in this FFmpeg build'})
+
+        return {'version': version, 'ffmpeg_path': ffmpeg_bin, 'encoders': encoders}
 
     # ── About ──────────────────────────────────────────────────────────────────
     def get_about_info(self) -> dict:

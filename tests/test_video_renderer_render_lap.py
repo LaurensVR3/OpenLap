@@ -157,3 +157,62 @@ class TestCleanupOnException:
                     padding=0.0,
                 )
         cap.release.assert_called_once()
+
+
+class TestOverlayOnlyFailureExplainsItself:
+    """Issue #20: an overlay-only export reported only
+    'FFmpeg ProRes pipe failed: [Errno 22] Invalid argument'.
+
+    When ffmpeg exits at startup the first thing to fail is our write to its
+    stdin, and that OSError was the entire error message. FFmpeg's own
+    explanation was collected into a buffer this path never read, leaving the
+    user with nothing to act on.
+    """
+
+    @staticmethod
+    def _dying_ffmpeg(stderr_lines, returncode=1):
+        proc = MagicMock()
+        proc.stdin.write.side_effect = OSError(22, 'Invalid argument')
+        proc.stderr = iter(stderr_lines)
+        proc.poll.return_value = returncode
+        proc.returncode = returncode
+        proc.wait.return_value = returncode
+        return proc
+
+    def _render(self, tmp_path, proc):
+        import numpy as np
+        from video_renderer import render_lap
+        from exceptions import VideoMuxError
+        sess, job = _make_session_and_job()
+        cap = _fake_capture(n_frames=0, fps=0.0, w=0, h=0)   # forces synthetic size
+        with patch('cv2.VideoCapture', return_value=cap), \
+             patch('video_renderer._popen', return_value=proc), \
+             patch('video_renderer.render_frame_worker',
+                   return_value=np.zeros((48, 64, 3), dtype=np.uint8).tobytes()):
+            with pytest.raises(VideoMuxError) as exc:
+                render_lap(video_path='', out_path=str(tmp_path / 'ov.mov'),
+                           session=sess, job=job, sync_offset=0.0, encoder='libx264',
+                           crf=18, n_workers=1, show_map=False, show_telemetry=False,
+                           padding=0.0, overlay_only=True, log_cb=lambda m: None)
+        return str(exc.value)
+
+    def test_ffmpeg_stderr_reaches_the_user(self, tmp_path):
+        msg = self._render(tmp_path, self._dying_ffmpeg(
+            [b"[vost#0:0] Unknown encoder 'prores_ks'\n",
+             b'Error selecting an encoder\n']))
+        assert "Unknown encoder 'prores_ks'" in msg
+
+    def test_the_bare_errno_is_no_longer_the_whole_message(self, tmp_path):
+        msg = self._render(tmp_path, self._dying_ffmpeg([b'Permission denied\n']))
+        assert 'Permission denied' in msg
+        assert msg.strip() != 'FFmpeg ProRes pipe failed: [Errno 22] Invalid argument'
+
+    def test_exit_code_is_included(self, tmp_path):
+        msg = self._render(tmp_path, self._dying_ffmpeg([b'boom\n'], returncode=3))
+        assert '3' in msg
+
+    def test_silent_ffmpeg_still_gives_actionable_advice(self, tmp_path):
+        """Some broken builds exit without writing anything at all, which is
+        what the issue #20 reporter's mux did."""
+        msg = self._render(tmp_path, self._dying_ffmpeg([]))
+        assert 'Detect Encoders' in msg

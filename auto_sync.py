@@ -199,9 +199,19 @@ def correlate_channels(
 _NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
 
 
+def _ffmpeg() -> str:
+    from utils import ffmpeg_path
+    return ffmpeg_path()
+
+
+def _ffprobe() -> str:
+    from utils import ffprobe_path
+    return ffprobe_path()
+
+
 def _probe_video(vpath: str) -> dict:
     result = subprocess.run(
-        ['ffprobe', '-v', 'quiet', '-print_format', 'json',
+        [_ffprobe(), '-v', 'quiet', '-print_format', 'json',
          '-show_streams', '-select_streams', 'v:0', vpath],
         capture_output=True, text=True, check=True,
         creationflags=_NO_WINDOW,
@@ -226,7 +236,7 @@ def _probe_creation_time(vpath: str) -> Optional[datetime]:
     never fatal to the sync pipeline if it fails."""
     try:
         result = subprocess.run(
-            ['ffprobe', '-v', 'quiet', '-print_format', 'json',
+            [_ffprobe(), '-v', 'quiet', '-print_format', 'json',
              '-show_entries', 'format_tags=creation_time', vpath],
             capture_output=True, text=True, check=True,
             creationflags=_NO_WINDOW,
@@ -395,7 +405,7 @@ def run_auto_sync(
         duration = info['duration']
 
         cmd = [
-            'ffmpeg', '-i', vpath,
+            _ffmpeg(), '-i', vpath,
             '-vf', f'fps={fps},scale={RESIZE_W}:{new_h}',
             '-f', 'rawvideo', '-pix_fmt', 'gray',
             '-loglevel', 'error', 'pipe:1',

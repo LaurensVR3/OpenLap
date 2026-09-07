@@ -26,7 +26,7 @@ import threading
 
 logger = logging.getLogger(__name__)
 
-from utils import _run
+from utils import _run, ffprobe_path
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -73,7 +73,7 @@ class VideoFile:
 def _ffprobe_creation_time(path: str) -> Tuple[Optional[datetime], float]:
     """Extract (creation_time, duration_seconds) from video metadata via ffprobe."""
     try:
-        r = _run(['ffprobe', '-v', 'quiet', '-print_format', 'json',
+        r = _run([ffprobe_path(), '-v', 'quiet', '-print_format', 'json',
              '-show_entries', 'format_tags=creation_time:format=duration',
              path], text=True, timeout=10)
         data = json.loads(r.stdout)

@@ -45,6 +45,15 @@ class VideoError(OpenLapError):
     """Problems with video processing."""
 
 
+class FFmpegNotFoundError(VideoError):
+    """FFmpeg (or ffprobe) could not be run at all.
+
+    Distinct from a step that ran and failed: nothing was executed, so
+    there is no exit code or stderr to report and the user needs to be
+    told to install it or point OpenLap at it, not shown a codec error.
+    """
+
+
 class VideoMuxError(VideoError):
     """FFmpeg mux step failed."""
 
