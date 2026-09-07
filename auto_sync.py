@@ -30,6 +30,15 @@ SEARCH_WINDOW_S      = 120.0
 RESIZE_W             = 320
 CHECK_EVERY_S        = 20.0
 
+# Smallest inter-clip gap (seconds) treated as a real recording stop. Video
+# creation_time tags have 1-second resolution and chaptered recordings
+# (GoPro/DJI split one continuous recording into ~4 GB files) are frame-
+# contiguous, yet their tags routinely imply 0.5-2 s "gaps". Inserting those
+# shifts every offset found after the chapter boundary — and with it the
+# Lap 1 start position — by that amount. Anything below this is timestamp
+# noise; a camera the driver actually stopped and restarted is far longer.
+MIN_SEGMENT_GAP_S    = 3.0
+
 
 # ── Telemetry loading ─────────────────────────────────────────────────────────
 
@@ -243,14 +252,19 @@ def _video_gap_seconds(prev_path: str, prev_duration: float, cur_path: str) -> f
 
     Returns 0.0 (i.e. "assume back-to-back") if either file's creation_time
     can't be read — failing safe to the old behaviour rather than guessing.
-    Never negative (overlapping/out-of-order timestamps clamp to 0).
+    Never negative (overlapping/out-of-order timestamps clamp to 0), and
+    anything shorter than MIN_SEGMENT_GAP_S is treated as a chapter boundary
+    (0.0): see the constant's comment for why sub-second tag noise must not
+    be inserted into the timeline.
     """
     prev_ct = _probe_creation_time(prev_path)
     cur_ct  = _probe_creation_time(cur_path)
     if prev_ct is None or cur_ct is None:
         return 0.0
     gap = (cur_ct - prev_ct).total_seconds() - prev_duration
-    return max(0.0, gap)
+    if gap < MIN_SEGMENT_GAP_S:
+        return 0.0
+    return gap
 
 
 def _append_gap_frames(all_sig: list, gap_s: float, fps: float) -> int:

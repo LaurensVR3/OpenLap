@@ -377,3 +377,65 @@ class TestCorrelateChannels:
         assert offset == 0.0
         assert confidence == 0.0
         assert channel == ''
+
+
+# ── _video_gap_seconds — chapter boundaries are NOT gaps ───────────────────────
+# creation_time tags have 1 s resolution; GoPro/DJI chapter files of one
+# continuous recording routinely imply 0.5–2 s "gaps". Inserting those shifted
+# every offset found after the boundary — and the Lap 1 start position — by
+# that much (seen on real DJI sessions: 0.6 s, 0.8 s, 1.6 s, 1.8 s).
+
+@pytest.mark.parametrize('tag_gap_s', [0.3, 0.62, 0.82, 1.62, 1.8, 2.99])
+def test_video_gap_seconds_ignores_sub_threshold_chapter_gaps(monkeypatch, tag_gap_s):
+    # Values seen on real DJI chapter boundaries in the user's own sessions.
+    from datetime import datetime, timezone, timedelta
+    t0 = datetime(2026, 8, 20, 11, 42, 15, tzinfo=timezone.utc)
+    cts = {'a.mp4': t0, 'b.mp4': t0 + timedelta(seconds=409.376 + tag_gap_s)}
+    monkeypatch.setattr('auto_sync._probe_creation_time', lambda path: cts[path])
+    assert _video_gap_seconds('a.mp4', prev_duration=409.376, cur_path='b.mp4') == 0.0
+
+
+def test_video_gap_seconds_keeps_real_recording_stops(monkeypatch):
+    from datetime import datetime, timezone, timedelta
+    t0 = datetime(2026, 8, 20, 11, 42, 15, tzinfo=timezone.utc)
+    real_gap = 5.88   # a genuine stop/restart, from the same real session
+    cts = {'a.mp4': t0, 'b.mp4': t0 + timedelta(seconds=250.1 + real_gap)}
+    monkeypatch.setattr('auto_sync._probe_creation_time', lambda path: cts[path])
+    assert _video_gap_seconds('a.mp4', prev_duration=250.1, cur_path='b.mp4') == pytest.approx(real_gap)
+
+
+def test_min_segment_gap_threshold_sits_between_tag_noise_and_a_real_stop():
+    """The boundary itself: chapter tags are off by ~1-2 s, a driver stopping
+    and restarting the camera is many seconds. 3 s separates the two."""
+    from auto_sync import MIN_SEGMENT_GAP_S
+    assert 2.0 < MIN_SEGMENT_GAP_S <= 5.0
+
+
+def test_chapter_boundary_insertion_would_shift_the_offset_by_the_bogus_gap():
+    """Why MIN_SEGMENT_GAP_S exists, at signal level.
+
+    Two chapter files of ONE continuous recording are frame-contiguous (real
+    gap 0), but their creation_time tags imply ~0.8 s. Inserting that shifts
+    the recovered offset — and with it the Lap 1 start position — by roughly
+    the bogus gap. _video_gap_seconds returning 0.0 below the threshold is
+    what keeps the contiguous case accurate.
+    """
+    fps = 5.0
+    contiguous, _same, tel_sig, true_offset_s = _build_gap_scenario(
+        true_offset_s=5.0, gap_s=0.0)
+
+    # What the pre-threshold code did: honour the tag and pad the timeline.
+    bogus_gap_s = 0.82
+    split = int(80.0 * fps)
+    with_bogus = list(contiguous[:split])
+    n_inserted = _append_gap_frames(with_bogus, bogus_gap_s, fps)
+    with_bogus.extend(contiguous[split:])
+    assert n_inserted == 4          # 0.82 s at 5 fps
+
+    good_offset, _ = _correlate(contiguous, tel_sig, fps=fps, search_window_s=120.0)
+    bad_offset, _  = _correlate(np.array(with_bogus), tel_sig, fps=fps, search_window_s=120.0)
+
+    assert abs(good_offset) == pytest.approx(true_offset_s, abs=0.3)
+    # The bogus insertion moves the answer by about the inserted duration.
+    shift = abs(abs(bad_offset) - abs(good_offset))
+    assert shift == pytest.approx(n_inserted / fps, abs=0.3)

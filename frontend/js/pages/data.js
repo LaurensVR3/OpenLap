@@ -869,6 +869,25 @@ ${renderSecondaryCard(s)}
       return (firstTimed?.elapsed_start) || 0;
     }
 
+    // Lap data arrives asynchronously (loadLaps → getLaps RPC). Until it is
+    // here, outlapDur is unknown, so neither the auto-seek nor Mark may run:
+    // treating a missing outlap as 0 silently puts "Lap 1 start" at the
+    // session start instead — off by the whole outlap (typically 15–25 s).
+    // A session always has at least one lap, so an empty list means "not
+    // loaded yet" or "load failed" — never a legitimate zero-lap answer.
+    function lapsLoaded() {
+      return (_lapDetails[s.csv_path] || []).length > 0;
+    }
+    async function ensureLapsLoaded() {
+      if (lapsLoaded()) return;
+      try {
+        _lapDetails[s.csv_path] = await API.getLaps(s.csv_path);
+      } catch (err) {
+        console.warn('getLaps failed for', s.csv_path, err);
+        _lapDetails[s.csv_path] = [];
+      }
+    }
+
     function fmtVTime(t) {
       const m = Math.floor(t / 60);
       const sec = (t % 60).toFixed(3).padStart(6, '0');
@@ -879,6 +898,7 @@ ${renderSecondaryCard(s)}
 
     function seekToLap1() {
       if (s.sync_offset == null || !video.duration) return;
+      if (!lapsLoaded()) return; // loadLaps() re-renders this pane once laps are in
       const outlapDur = getOutlapDur();
       const lap1Vid = Math.max(0, Math.min(video.duration, s.sync_offset + outlapDur));
       _sought = true;
@@ -927,6 +947,16 @@ ${renderSecondaryCard(s)}
     // vid_t = sync_offset + lap.elapsed_start works correctly for all laps.
     pane.querySelector('#sv-mark')?.addEventListener('click', async () => {
       const rawTime   = video.currentTime;
+      await ensureLapsLoaded();
+      if (!lapsLoaded()) {
+        // Without the outlap duration the offset would be wrong by the whole
+        // outlap. Say so instead of silently saving a bad one.
+        if (markEl) {
+          markEl.textContent = '✗ lap data unavailable';
+          markEl.className   = 'sync-mark-val status-err';
+        }
+        return;
+      }
       const outlapDur = getOutlapDur();
       const offset    = rawTime - outlapDur;
       s.sync_offset = offset;
@@ -956,6 +986,7 @@ ${renderSecondaryCard(s)}
     const vid  = pane?.querySelector('#sync-video');
     if (!vid || vid.readyState < 1 || !vid.duration) return;
     const laps       = _lapDetails[s.csv_path] || [];
+    if (!laps.length) return; // outlap unknown yet — loadLaps() re-renders and seeks
     const firstTimed = laps.find(l => !l.is_outlap);
     const outlapDur  = firstTimed?.elapsed_start || 0;
     const lap1Vid    = Math.max(0, Math.min(vid.duration, syncOffset + outlapDur));
@@ -1242,10 +1273,15 @@ ${renderSecondaryCard(s)}
             State.set('previewSession', { ...prev, video_paths: s.video_paths || prev.video_paths, sync_offset: detail.offset });
           }
           renderLeft();
-          renderRight();
-          // If the video element is already loaded (WebView2 cache), wireVideoSync's
-          // readyState check runs before load() triggers metadata — seek it now.
-          _seekVideoAfterAutoSync(s, detail.offset);
+          // Only the pane showing *this* session changes; re-rendering it for
+          // any other session's result would recreate the <video> and throw
+          // away the scrub position the user is aligning on.
+          if (_selCsv === s.csv_path) {
+            renderRight();
+            // If the video element is already loaded (WebView2 cache), wireVideoSync's
+            // readyState check runs before load() triggers metadata — seek it now.
+            _seekVideoAfterAutoSync(s, detail.offset);
+          }
         }
         const off = detail.offset >= 0 ? `+${detail.offset.toFixed(3)}s` : `${detail.offset.toFixed(3)}s`;
         setStatus(`Auto-sync: offset detected ${off} at ${detail.confidence?.toFixed(2)}× confidence`);
@@ -1254,7 +1290,7 @@ ${renderSecondaryCard(s)}
         s.auto_sync_failed = true;
         setStatus(`Auto-sync: no confident match (${detail.confidence?.toFixed(2)}× confidence) — set offset manually`);
         renderLeft();
-        renderRight();
+        if (_selCsv === s.csv_path) renderRight();
       }
     }));
     _unlistenFns.push(API.on('auto_sync_done', () => {
