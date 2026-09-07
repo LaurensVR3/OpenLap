@@ -5,6 +5,7 @@ All tests use small synthetic numpy signal arrays (no real video files or
 ffmpeg/ffprobe subprocess calls, except where explicitly monkeypatched).
 """
 from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -439,3 +440,78 @@ def test_chapter_boundary_insertion_would_shift_the_offset_by_the_bogus_gap():
     # The bogus insertion moves the answer by about the inserted duration.
     shift = abs(abs(bad_offset) - abs(good_offset))
     assert shift == pytest.approx(n_inserted / fps, abs=0.3)
+
+
+# ── An unusable clip must not shift the timeline ──────────────────────────────
+
+class TestUnprobeableClipDoesNotShiftLaterClips:
+    """A clip that cannot be probed contributes no frames, but its real
+    duration still separates the clips around it. Skipping it and carrying on
+    left every later clip sitting earlier in the concatenated timeline than it
+    really was, by an unknown amount — the same error the inter-clip gap
+    handling exists to prevent, and reachable whenever a network share
+    hiccups (it does, in the logs).
+    """
+
+    @staticmethod
+    def _run_with(monkeypatch, failing, n_clips=3):
+        import auto_sync as a
+        seen = []
+
+        def fake_probe(path):
+            if path in failing:
+                raise OSError('probe failed')
+            return {'fps': 5.0, 'width': 320, 'height': 240, 'duration': 100.0}
+
+        def fake_popen(cmd, **kwargs):
+            seen.append(cmd[cmd.index('-i') + 1])
+            proc = MagicMock()
+            proc.stdout.read.return_value = b''      # no frames, ends at once
+            proc.wait.return_value = 0
+            return proc
+
+        monkeypatch.setattr(a, '_probe_video', fake_probe)
+        monkeypatch.setattr(a, '_load_telemetry', lambda *args, **kw: np.zeros(50))
+        monkeypatch.setattr(a, '_video_gap_seconds', lambda *args, **kw: 0.0)
+        monkeypatch.setattr(a.subprocess, 'Popen', fake_popen)
+        clips = [f'clip{i}.mp4' for i in range(1, n_clips + 1)]
+        result = a.run_auto_sync('s.csv', clips, 'RaceBox')
+        return result, seen
+
+    def test_clips_after_an_unprobeable_one_are_not_decoded(self, monkeypatch):
+        _result, decoded = self._run_with(monkeypatch, failing={'clip2.mp4'})
+        assert decoded == ['clip1.mp4']
+
+    def test_a_failure_on_the_first_clip_yields_no_offset(self, monkeypatch):
+        """Nothing usable was collected, so 'set it manually' is the honest
+        answer — not an offset measured against a timeline missing clip 1."""
+        (offset, _conf), decoded = self._run_with(monkeypatch, failing={'clip1.mp4'})
+        assert decoded == []
+        assert offset is None
+
+    def test_all_clips_are_used_when_probing_works(self, monkeypatch):
+        _result, decoded = self._run_with(monkeypatch, failing=set())
+        assert decoded == ['clip1.mp4', 'clip2.mp4', 'clip3.mp4']
+
+    def test_a_clip_ffmpeg_cannot_open_also_stops_the_run(self, monkeypatch):
+        import auto_sync as a
+        attempts = []
+
+        def fake_popen(cmd, **kwargs):
+            path = cmd[cmd.index('-i') + 1]
+            attempts.append(path)
+            if path == 'clip2.mp4':
+                raise OSError('launch failed')
+            proc = MagicMock()
+            proc.stdout.read.return_value = b''
+            proc.wait.return_value = 0
+            return proc
+
+        monkeypatch.setattr(a, '_probe_video',
+                            lambda p: {'fps': 5.0, 'width': 320, 'height': 240,
+                                       'duration': 100.0})
+        monkeypatch.setattr(a, '_load_telemetry', lambda *args, **kw: np.zeros(50))
+        monkeypatch.setattr(a, '_video_gap_seconds', lambda *args, **kw: 0.0)
+        monkeypatch.setattr(a.subprocess, 'Popen', fake_popen)
+        a.run_auto_sync('s.csv', ['clip1.mp4', 'clip2.mp4', 'clip3.mp4'], 'RaceBox')
+        assert attempts == ['clip1.mp4', 'clip2.mp4']   # clip3 never attempted

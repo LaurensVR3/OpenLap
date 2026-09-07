@@ -384,8 +384,17 @@ def run_auto_sync(
         try:
             info = _probe_video(vpath)
         except Exception:
-            logger.warning('auto_sync: probe failed for %s', vpath)
-            continue
+            # Skipping the clip would drop its real duration from the
+            # timeline while every later clip kept contributing frames, so
+            # any offset drawn from those clips would be wrong by an unknown
+            # amount — the same failure the inter-clip gap handling exists to
+            # prevent. Correlate on the contiguous prefix collected so far
+            # instead, and if that is nothing, report no match rather than a
+            # confidently wrong offset. Reachable in practice: probing fails
+            # on unreachable network shares.
+            logger.warning('auto_sync: probe failed for %s — ignoring it and every '
+                           'later clip, since its duration is unknown', vpath)
+            break
 
         # Account for any real elapsed-time gap between this segment and the
         # previous one (e.g. camera stopped/restarted) — otherwise the
@@ -414,8 +423,11 @@ def run_auto_sync(
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                     creationflags=_NO_WINDOW)
         except Exception:
-            logger.warning('auto_sync: ffmpeg launch failed for %s', vpath)
-            continue
+            # Same reasoning as a failed probe: this clip contributes no
+            # frames, so keeping later ones would shift the timeline.
+            logger.warning('auto_sync: ffmpeg launch failed for %s — ignoring it and '
+                           'every later clip', vpath)
+            break
 
         frame_size    = RESIZE_W * new_h
         prev          = None
