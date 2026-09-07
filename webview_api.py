@@ -1105,7 +1105,8 @@ class WebviewAPI:
         self._auto_sync_cancel.set()
 
     def _run_auto_sync_bg(self, sessions: list) -> None:
-        from auto_sync import run_auto_sync
+        from auto_sync import (run_auto_sync, CONFIDENCE_THRESHOLD,
+                               MIN_CONFIDENCE)
 
         total = len(sessions)
         progress_lock = threading.Lock()
@@ -1126,10 +1127,22 @@ class WebviewAPI:
                        status='processing', csv_path=csv_path,
                        current=idx, total=total)
 
-            def _progress(vid_t, offset, conf, _csv=csv_path):
+            # Every event carries the session it belongs to and the
+            # thresholds it is judged against. The UI used to latch those from
+            # the first 'processing' event into page-local state, which reset
+            # whenever the Data page was reopened (showing "session 0 of 0")
+            # and was shared between the two sessions syncing concurrently, so
+            # the count did not identify whose confidence was being reported.
+            # The thresholds travel too rather than being repeated as a
+            # literal in the JS, where the displayed one had already drifted
+            # away from the real acceptance floor.
+            def _progress(vid_t, offset, conf, _csv=csv_path, _idx=idx):
                 self._push('auto_sync_progress',
                            status='checking', csv_path=_csv,
-                           vid_t=vid_t, offset=offset, confidence=conf)
+                           current=_idx, total=total,
+                           vid_t=vid_t, offset=offset, confidence=conf,
+                           early_exit_confidence=CONFIDENCE_THRESHOLD,
+                           min_confidence=MIN_CONFIDENCE)
 
             offset, confidence = run_auto_sync(
                 csv_path    = csv_path,
@@ -1153,6 +1166,7 @@ class WebviewAPI:
                         self._config.save()
                         self._push('auto_sync_progress',
                                    status='done', csv_path=csv_path,
+                                   current=idx, total=total,
                                    offset=offset, confidence=confidence)
                 else:
                     if csv_path not in self._config.auto_sync_failed:
@@ -1160,6 +1174,7 @@ class WebviewAPI:
                     self._config.save()
                     self._push('auto_sync_progress',
                                status='failed', csv_path=csv_path,
+                               current=idx, total=total,
                                confidence=confidence)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=AUTO_SYNC_WORKERS) as ex:

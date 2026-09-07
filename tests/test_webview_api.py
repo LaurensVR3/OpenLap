@@ -553,3 +553,56 @@ class TestVideoOverrideSurvivesRescan:
 
         assert session['video_paths'] == []
         assert session['video_override'] is False
+
+
+class TestAutoSyncProgressPayload:
+    """Every auto-sync event must carry the session it belongs to and the
+    thresholds it is judged against.
+
+    The UI used to latch position from the first 'processing' event into
+    page-local state that reset when the Data page was reopened, producing
+    "Auto-syncing session 0 of 0", and it hardcoded the threshold as a
+    literal that had drifted from the real acceptance floor.
+    """
+
+    def _events(self, api, monkeypatch, result=(1.5, 7.0)):
+        events = []
+        monkeypatch.setattr(api, '_push',
+                            lambda evt, **kw: events.append((evt, kw)))
+
+        def fake_run(csv_path, video_paths, source, cancel_event=None,
+                     progress_cb=None, **kwargs):
+            progress_cb(809.0, 1.5, 4.06)      # one mid-run check
+            return result
+
+        monkeypatch.setattr('auto_sync.run_auto_sync', fake_run)
+        api._run_auto_sync_bg([
+            {'csv_path': r'C:\a.csv', 'video_paths': ['a.mp4'], 'source': 'RaceBox'},
+        ])
+        return events
+
+    def test_checking_events_carry_position(self, api, monkeypatch):
+        events = self._events(api, monkeypatch)
+        checking = [kw for evt, kw in events if kw.get('status') == 'checking']
+        assert checking, 'no checking event was pushed'
+        assert checking[0]['current'] == 1
+        assert checking[0]['total'] == 1
+
+    def test_checking_events_carry_both_thresholds(self, api, monkeypatch):
+        from auto_sync import CONFIDENCE_THRESHOLD, MIN_CONFIDENCE
+        events = self._events(api, monkeypatch)
+        kw = [k for e, k in events if k.get('status') == 'checking'][0]
+        assert kw['early_exit_confidence'] == CONFIDENCE_THRESHOLD
+        assert kw['min_confidence'] == MIN_CONFIDENCE
+        # The two are genuinely different; showing only one misleads.
+        assert MIN_CONFIDENCE < CONFIDENCE_THRESHOLD
+
+    def test_done_events_carry_position(self, api, monkeypatch):
+        events = self._events(api, monkeypatch, result=(1.5, 7.0))
+        done = [kw for evt, kw in events if kw.get('status') == 'done']
+        assert done and done[0]['current'] == 1 and done[0]['total'] == 1
+
+    def test_failed_events_carry_position(self, api, monkeypatch):
+        events = self._events(api, monkeypatch, result=(None, 2.0))
+        failed = [kw for evt, kw in events if kw.get('status') == 'failed']
+        assert failed and failed[0]['current'] == 1 and failed[0]['total'] == 1

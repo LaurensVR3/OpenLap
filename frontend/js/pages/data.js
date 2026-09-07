@@ -1314,18 +1314,47 @@ ${renderSecondaryCard(s)}
       if (_scanning) setStatus(detail.message || '');
     }));
 
-    // Listen to auto-sync push events to update session status in real-time
-    let _asIdx = 0, _asTotal = 0, _asDone = 0, _asFailed = 0;
+    // Listen to auto-sync push events to update session status in real-time.
+    // Position and thresholds come from the event itself, never from state
+    // held here: two sessions sync concurrently, so a counter kept on the page
+    // cannot say whose progress it is showing, and it reset to "0 of 0"
+    // whenever the Data page was reopened mid-run.
+    let _asDone = 0, _asFailed = 0;
+
+    function asWhere(detail) {
+      return detail.current && detail.total
+        ? `${detail.current} of ${detail.total}` : '';
+    }
+    // Name the session, since the position alone is ambiguous with two running.
+    function asLabel(s) {
+      const when = s.csv_start
+        ? new Date(s.csv_start).toLocaleTimeString(undefined,
+            { hour: '2-digit', minute: '2-digit' })
+        : '';
+      const track = _config?.session_info?.[s.csv_path]?.info_track
+                 || _meta[s.csv_path]?.track || baseName(s.csv_path);
+      return [when, track].filter(Boolean).join(' ');
+    }
+
     _unlistenFns.push(API.on('auto_sync_progress', detail => {
       const s = _sessions.find(x => x.csv_path === detail.csv_path);
       if (!s) return;
+      const where = asWhere(detail);
       if (detail.status === 'processing') {
-        _asIdx = detail.current; _asTotal = detail.total;
-        setStatus(`Auto-syncing session ${_asIdx} of ${_asTotal}…`);
+        setStatus(`Auto-syncing ${where}: ${asLabel(s)}…`);
       } else if (detail.status === 'checking') {
         const conf = detail.confidence?.toFixed(2);
         const secs = detail.vid_t?.toFixed(0);
-        setStatus(`Auto-syncing session ${_asIdx} of ${_asTotal} — ${secs}s of video decoded, confidence ${conf}× (need 6×)`);
+        // Thresholds come from the backend so this text cannot drift from the
+        // values actually applied. 6x only stops the search early; anything
+        // from 3x up is still accepted after the whole video is decoded, so
+        // the old "(need 6x)" read as a failure when it was not one.
+        const stop   = detail.early_exit_confidence;
+        const accept = detail.min_confidence;
+        const gates  = (stop != null && accept != null)
+          ? ` (${stop}× stops early, ${accept}× accepted)` : '';
+        setStatus(`Auto-syncing ${where}: ${asLabel(s)} — ${secs}s decoded, `
+                  + `confidence ${conf}×${gates}`);
       } else if (detail.status === 'done') {
         _asDone++;
         // Don't overwrite if the user already confirmed this session while we were processing
