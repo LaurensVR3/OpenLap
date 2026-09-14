@@ -19,4 +19,14 @@ import sys
 
 if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
     os.environ['PATH'] = sys._MEIPASS + os.pathsep + os.environ.get('PATH', '')
-    os.environ['PLAYWRIGHT_BROWSERS_PATH'] = os.path.join(sys._MEIPASS, 'ms-playwright')
+
+    # Only claim the bundled location if it is really there. The macOS build
+    # cannot ship Chromium (PyInstaller ad-hoc re-signs every Mach-O it
+    # collects, and Chromium arrives as a nested .app that cannot be signed
+    # that way), so pointing at a missing directory there would turn
+    # Playwright's own "run `playwright install chromium`" message into a
+    # confusing failure against a path the user has no reason to recognise.
+    # Leaving the variable unset lets Playwright fall back to the user's cache.
+    _browsers = os.path.join(sys._MEIPASS, 'ms-playwright')
+    if os.path.isdir(_browsers):
+        os.environ['PLAYWRIGHT_BROWSERS_PATH'] = _browsers
