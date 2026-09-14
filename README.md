@@ -280,7 +280,11 @@ Configuration is stored at `~/.openlap/config.json`.
 
 ---
 
-## Building from source (Windows)
+## Building from source
+
+The same spec builds on Windows and macOS; it picks up the platform it is run on.
+
+### Windows
 
 ```bash
 pip install pyinstaller
@@ -296,6 +300,30 @@ iscc /DMyAppVersion=0.2.0 installer\OpenLap.iss
 ```
 
 The installer is output to `installer/Output/OpenLap-Setup-0.2.0.exe`.
+
+### macOS
+
+```bash
+pip install pyinstaller
+pyinstaller OpenLap.spec --clean -y
+```
+
+Outputs `dist/OpenLap.app` alongside the `dist/OpenLap/` folder it is assembled
+from. FFmpeg is bundled if it is on your `PATH` at build time
+(`brew install ffmpeg`); there is no `.icns` in the repo yet, so the app takes
+the default icon.
+
+The bundle is ad-hoc signed, which is enough to run locally. A copy that has
+been downloaded rather than built in place is quarantined by Gatekeeper — open
+it once with right-click → **Open**, or clear the flag with
+`xattr -dr com.apple.quarantine OpenLap.app`.
+
+> **One thing is not self-contained on macOS: Chromium.** PyInstaller ad-hoc
+> re-signs every Mach-O binary it collects, and Playwright ships Chromium as a
+> nested, already-signed `.app` whose inner executable cannot be signed on its
+> own — so bundling it fails the build outright. Everything except **RaceBox
+> cloud download** is fully bundled; for that one feature, run
+> `playwright install chromium` once and it will be found in your own cache.
 
 ---
 
