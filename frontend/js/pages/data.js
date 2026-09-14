@@ -70,6 +70,20 @@
     return (p||'').replace(/\\/g,'/').split('/').pop() || p;
   }
 
+  // localStorage holds one cosmetic preference (the split ratio), so it is a
+  // convenience and never a requirement.  It is not always reachable: WKWebView
+  // refuses it outright on some origins and jsdom leaves it undefined, and a
+  // bare reference throws hard enough to abort mount().  Degrade to the default.
+  function storageGet(key) {
+    try { return globalThis.localStorage?.getItem(key) ?? null; }
+    catch { return null; }
+  }
+
+  function storageSet(key, value) {
+    try { globalThis.localStorage?.setItem(key, value); }
+    catch { /* preference simply does not persist */ }
+  }
+
   function videoUrl(winPath) {
     // Pass path as a query param so browser slash-normalization never mangles UNC paths
     if (_videoPort) return `http://127.0.0.1:${_videoPort}/?f=${encodeURIComponent(winPath)}`;
@@ -1216,7 +1230,7 @@ ${renderSecondaryCard(s)}
     if (!split || !leftPanel || !resizer) return;
 
     // Restore saved ratio (default 50%)
-    const saved = parseFloat(localStorage.getItem('data-split-ratio') || '0.5');
+    const saved = parseFloat(storageGet('data-split-ratio') || '0.5');
     leftPanel.style.flexBasis = (saved * 100).toFixed(2) + '%';
 
     let dragging = false;
@@ -1245,7 +1259,7 @@ ${renderSecondaryCard(s)}
       const rect      = split.getBoundingClientRect();
       const leftRect  = leftPanel.getBoundingClientRect();
       const ratio     = leftRect.width / rect.width;
-      localStorage.setItem('data-split-ratio', ratio.toFixed(4));
+      storageSet('data-split-ratio', ratio.toFixed(4));
     };
 
     document.addEventListener('mousemove', onMove);
