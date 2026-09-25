@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import http.server
+import math
 import logging
 import mimetypes
 import os
@@ -802,6 +803,51 @@ class WebviewAPI:
         except Exception as e:
             logger.exception('load_lap_history failed for %s lap %d: %s', csv_path, lap_idx, e)
             return []
+
+    def get_reference_preview(self, csv_path: str, lap_idx: int, ref_mode: str,
+                              ref_lap_csv_path: str = '', ref_lap_num: int = 0) -> dict:
+        """Reference-lap data for the editor preview of one lap, per
+        telemetry sample of that lap: the same delta, reference traces,
+        sectors and ghost track the export computes per frame (see
+        video_renderer.delta_and_reference_at), so Delta, Compare, Splits,
+        Sector Bar and the maps' ghost dot preview with real data.
+
+        Returns {ok, desc, delta[], ref{channel: []}, sectors[], ref_lats[],
+        ref_lons[], ref_duration} or {ok: False, desc}.
+        """
+        try:
+            if not ref_mode or ref_mode == 'none':
+                return {'ok': False, 'desc': 'none'}
+            from reference_resolver import resolve_reference_lap
+            from app_config import load_scan_cache
+            import video_renderer as vr
+            session = self._load_session(csv_path)
+            if not session or not (0 <= int(lap_idx) < len(session.laps)):
+                return {'ok': False, 'desc': 'no such lap'}
+            lap = session.laps[int(lap_idx)]
+            ref, desc = resolve_reference_lap(
+                ref_mode=ref_mode, sess=session, session_info=dict(self._config.session_info),
+                scan_cache=load_scan_cache(), ref_lap_csv_path=ref_lap_csv_path or '',
+                ref_lap_num=int(ref_lap_num or 0), current_lap_num=lap.lap_num,
+                load_session_fn=self._load_session)
+            if ref is None:
+                return {'ok': False, 'desc': desc}
+            dt_state = vr._setup_delta_time(ref, vr.RenderJob('', lap), session)
+            delta, channels = [], {k: [] for k in vr._REF_KEYS}
+            for p in lap.points:
+                d, rp = vr.delta_and_reference_at(dt_state, p.lap, p.lap_elapsed)
+                delta.append(d)
+                for k in vr._REF_KEYS:
+                    channels[k].append(rp[k] if rp else 0.0)
+            lats, lons = vr.reference_map_track(ref)
+            return {'ok': True, 'desc': desc, 'delta': delta, 'ref': channels,
+                    'sectors': [{**s, 'boundary_elapsed': (s['boundary_elapsed']
+                                 if math.isfinite(s['boundary_elapsed']) else None)}
+                                for s in dt_state['sectors']],
+                    'ref_lats': lats, 'ref_lons': lons, 'ref_duration': ref.duration}
+        except Exception:
+            logger.exception('get_reference_preview failed for %s lap %s', csv_path, lap_idx)
+            return {'ok': False, 'desc': 'error'}
 
     def list_session_channels(self, csv_path: str) -> list:
         """Return the gauge-selectable channels available in *one*

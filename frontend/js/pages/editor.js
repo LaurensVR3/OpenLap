@@ -138,6 +138,42 @@
                                  // channels beyond the fixed DATA_CHANNELS map
   let _showAllChannelsEditor = false; // "show noisy channels" toggle for the data-channel picker
   let _appConfig = null;   // AppConfig dict, refreshed on each mount() — see API.getConfig()
+  let _liveRef   = null;   // reference-lap data for the shown lap (getReferencePreview), or null
+  let _liveWeather = null; // {weather, wind} for the Info gauge, as the export fetches it
+
+  // Gauges show the same span of history in the preview and the export —
+  // mirrors HISTORY_WINDOW_S / HISTORY_POINTS in gauge_channels.py. A sample
+  // count showed a different span in each (telemetry rate vs video fps).
+  const HISTORY_WINDOW_S = 4.0;
+  const HISTORY_POINTS   = 120;
+
+  /** Indices of the live points in the history window ending at *idx*,
+   *  thinned evenly to at most HISTORY_POINTS, newest always included. */
+  function _historyIdx(idx) {
+    const tNow = _livePoints[idx].t;
+    let j = idx;
+    while (j > 0 && _livePoints[j - 1].t >= tNow - HISTORY_WINDOW_S) j--;
+    const n = idx - j + 1;
+    if (n <= HISTORY_POINTS) return Array.from({ length: n }, (_, k) => j + k);
+    const step = (n - 1) / (HISTORY_POINTS - 1);
+    return Array.from({ length: HISTORY_POINTS }, (_, k) => j + Math.round(k * step));
+  }
+
+  /** Reference-lap trace for a history key over the given indices, or []. */
+  function _refHist(key, hIdx, factor = 1.0) {
+    const arr = _liveRef?.ref?.[key];
+    return arr ? hIdx.map(i => (arr[i] ?? 0) * factor) : [];
+  }
+
+  /** Sector splits vs the reference, each marked done once the lap has
+   *  passed its boundary — as overlay_worker does per frame. */
+  function _liveSectors(t) {
+    return (_liveRef?.sectors || []).map(sec => ({
+      ...sec,
+      boundary_elapsed: sec.boundary_elapsed ?? Infinity,
+      done: !!sec.done && sec.boundary_elapsed != null && sec.boundary_elapsed <= t,
+    }));
+  }
 
   // ── Speed unit conversion (mirrors units.py on the Python side) ────────────
   const KMH_PER_UNIT      = { kmh: 1.0, mph: 0.621371, ms: 0.277778 };
@@ -269,18 +305,32 @@
 
   // ── Live data builder ──────────────────────────────────────────────────────
   // 'speed' bounds/unit depend on the effective display unit (Auto/km-h/mph/m-s).
+  // Labels and bounds mirror gauge_channels.GAUGE_CHANNELS, so a gauge scales
+  // the same in the preview as in the export.
   function _liveFields(effUnit) {
     return {
       speed:       { key:'speed',       label:'Speed',    unit:SPEED_UNIT_LABELS[effUnit], min:_kmhToUnit(0, effUnit), max:_kmhToUnit(250, effUnit), sym:false },
       gforce_lon:  { key:'gx',          label:'Long G',   unit:'G',    min:-3,  max:3,     sym:true  },
       gforce_lat:  { key:'gy',          label:'Lat G',    unit:'G',    min:-3,  max:3,     sym:true  },
       rpm:         { key:'rpm',         label:'RPM',      unit:'rpm',  min:0,   max:14000, sym:false },
-      exhaust_temp:{ key:'exhaust_temp',label:'Exh Temp', unit:'°C',   min:0,   max:900,   sym:false },
-      altitude:    { key:'alt',         label:'Altitude', unit:'m',    min:0,   max:500,   sym:false },
+      exhaust_temp:{ key:'exhaust_temp',label:'Exhaust Temp', unit:'°C', min:0, max:900,   sym:false },
+      altitude:    { key:'alt',         label:'Altitude', unit:'m',    min:0,   max:1000,  sym:false },
       lean:        { key:'lean',        label:'Lean',     unit:'°',    min:-60, max:60,    sym:true  },
-      lap_time:    { key:'t',           label:'Lap Time', unit:'',     min:0,   max:300,   sym:false },
+      lap_time:    { key:'t',           label:'Lap Time', unit:'',     min:0,   max:120,   sym:false },
+      delta_time:  { key:'delta_time',  label:'Delta',    unit:'s',    min:-30, max:30,    sym:true  },
       gear:        { key:'gear',        label:'Gear',     unit:'',     min:0,   max:6,     sym:false },
     };
+  }
+
+  /** Display range for a dynamic channel: the session-wide range from
+   *  getAvailableChannels (channel_discovery.channel_ranges), falling back to
+   *  the visible history only when the backend gave none. */
+  function _extraRange(meta, histVals, curVal) {
+    if (meta && meta.min != null && meta.max != null) return [meta.min, meta.max];
+    const lo = Math.min(...histVals, curVal);
+    const hi = Math.max(...histVals, curVal);
+    const pad = (hi - lo) * 0.1 || 1;
+    return [lo - pad, hi + pad];
   }
 
   function buildLiveData(type, channel, frameIdx, gauge = null) {
@@ -290,17 +340,22 @@
     if (!_livePoints || !_livePoints.length) return dummyData(type, channel, theme, gauge);
     const idx = Math.max(0, Math.min(frameIdx, _livePoints.length - 1));
     const p   = _livePoints[idx];
-    const histStart = Math.max(0, idx - 40);
-    const hist = _livePoints.slice(histStart, idx + 1);
+    const hIdx = _historyIdx(idx);
+    const hist = hIdx.map(i => _livePoints[i]);
 
     if (type === 'Circuit' || type === 'Zoomed') {
       const osmOn = gauge?.track_map_enabled !== false;
+      const refLats = _liveRef?.ref_lats || [];
+      const refDur  = _liveRef?.ref_duration || 0;
+      // Ghost dot: where the reference lap was at this lap time (overlay_worker).
+      const refCur  = refLats.length && refDur > 0
+        ? Math.round(Math.min(1, Math.max(0, p.t / refDur)) * (refLats.length - 1)) : 0;
       return {
         theme,
         lats: _liveLats || [], lons: _liveLons || [], cur_idx: idx,
         zoom_radius_m:  gauge?.zoom_radius_m ?? 150,
         show_ref:       gauge?.show_ref !== false,
-        ref_lats: [], ref_lons: [],
+        ref_lats: refLats, ref_lons: _liveRef?.ref_lons || [], ref_cur_idx: refCur,
         track_map_lats:  (osmOn && _trackMapGeometry) ? (_trackMapGeometry.lats  || []) : [],
         track_map_lons:  (osmOn && _trackMapGeometry) ? (_trackMapGeometry.lons  || []) : [],
         track_map_areas: (osmOn && _trackMapGeometry) ? (_trackMapGeometry.areas || []) : [],
@@ -329,21 +384,19 @@
             channel: ch, label: m.label, unit: m.unit,
             values:    hist.map(pt => (pt[m.key] ?? 0) * factor),
             value:     (p[m.key] ?? 0) * factor,
+            ref_values: _refHist(m.key, hIdx, factor),
             min_val:   m.min, max_val: m.max, symmetric: m.sym, color_idx: ci,
           };
         }
-        // Dynamic/arbitrary channel — same auto-range approach as the
-        // single-channel live path above.
+        // Dynamic/arbitrary channel — session-wide range, as the export uses.
         const extraMeta = _extraChannels.find(c => c.key === ch);
         const histVals  = hist.map(pt => pt[ch] ?? 0);
         const curVal    = p[ch] ?? 0;
-        const lo = Math.min(...histVals, curVal);
-        const hi = Math.max(...histVals, curVal);
-        const pad = (hi - lo) * 0.1 || 1;
+        const [lo, hi]  = _extraRange(extraMeta, histVals, curVal);
         return {
           channel: ch, label: extraMeta?.label || ch, unit: extraMeta?.unit || '',
-          values: histVals, value: curVal,
-          min_val: lo - pad, max_val: hi + pad, symmetric: false, color_idx: ci,
+          values: histVals, value: curVal, ref_values: [],
+          min_val: lo, max_val: hi, symmetric: false, color_idx: ci,
         };
       });
       return { theme, multi_channels };
@@ -359,23 +412,30 @@
           info_time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
         } catch (_) {}
       }
+      const si   = _appConfig?.session_info?.[_liveSession?.csv_path] || {};
       return {
         ...base,
-        info_track:      meta.track   || ov.track   || '',
+        // A renamed track (Data tab) wins, exactly as in the export.
+        info_track:      si.info_track || meta.track || ov.track || '',
         info_date:       info_date    || ov.date   || '',
         info_time:       info_time    || ov.time   || '',
         info_vehicle:    meta.vehicle || ov.vehicle || '',
         info_session:    meta.session || ov.session || '',
-        info_weather:    ov.weather  || '',
-        info_wind:       ov.wind     || '',
+        info_weather:    _liveWeather?.weather || ov.weather || '',
+        info_wind:       _liveWeather?.wind    || ov.wind    || '',
         selected_fields: gauge?.selected_fields || ['track', 'datetime', 'vehicle', 'weather', 'wind'],
       };
     }
     if (type === 'Scoreboard') {
       const laps      = _liveLaps || [];
       const timedLaps = laps.filter(l => !l.is_outlap && !l.is_inlap);
-      const timedDurs = timedLaps.map(l => l.duration).filter(d => d != null);
-      const best      = timedDurs.length ? Math.min(...timedDurs) : null;
+      // As the export: the reference lap when one is set, else the best
+      // timed lap completed *before* this one.
+      const prevDurs  = laps.slice(0, _selLapIdx ?? 0)
+                            .filter(l => !l.is_outlap && !l.is_inlap && l.duration != null)
+                            .map(l => l.duration);
+      const best      = _liveRef ? _liveRef.ref_duration
+                      : (prevDurs.length ? Math.min(...prevDurs) : null);
       const idx2      = Math.max(0, Math.min(frameIdx, (_livePoints?.length || 1) - 1));
       const p2        = _livePoints?.[idx2];
       // Count only timed laps up to and including current selection
@@ -408,14 +468,16 @@
     const m = _liveFields(effUnit)[channel];
     if (m) {
       const factor = (channel === 'speed') ? (KMH_PER_UNIT[effUnit] ?? 1.0) : 1.0;
+      const lapDur = _liveLaps?.[_selLapIdx]?.duration ?? 0;
       return {
         theme, channel,
         value:            (p[m.key] ?? 0) * factor,
         history_vals:     hist.map(pt => (pt[m.key] ?? 0) * factor),
-        ref_history_vals: [],
+        ref_history_vals: _refHist(m.key, hIdx, factor),
         label: m.label, unit: m.unit,
         min_val: m.min, max_val: m.max, symmetric: m.sym,
-        sectors: [],
+        sectors: _liveSectors(p.t),
+        lap_duration: lapDur,
       };
     }
     // Dynamic/arbitrary channel (see channel_discovery.py) — read directly
@@ -426,15 +488,13 @@
       const extraMeta = _extraChannels.find(c => c.key === channel);
       const histVals  = hist.map(pt => pt[channel] ?? 0);
       const curVal    = p[channel] ?? 0;
-      const lo = Math.min(...histVals, curVal);
-      const hi = Math.max(...histVals, curVal);
-      const pad = (hi - lo) * 0.1 || 1;
+      const [lo, hi]  = _extraRange(extraMeta, histVals, curVal);
       return {
         theme, channel,
         value: curVal, history_vals: histVals, ref_history_vals: [],
         label: extraMeta?.label || channel, unit: extraMeta?.unit || '',
-        min_val: lo - pad, max_val: hi + pad, symmetric: false,
-        sectors: [],
+        min_val: lo, max_val: hi, symmetric: false,
+        sectors: _liveSectors(p.t),
       };
     }
     return dummyData(type, channel, theme, gauge);
@@ -636,10 +696,43 @@
 
       // Immediately render frame 0 so gauges show real data without waiting for RAF
       _rerenderLive();
+      _loadReference(lapIdx, mountGen);
     } catch (e) {
       console.error('[_loadLapData] failed for lap', lapIdx, e);
       if (labelEl) labelEl.textContent = 'Telemetry load failed';
     }
+  }
+
+  // ── Reference lap for the preview (delta, compare, splits, ghost dot) ──────
+  async function _loadReference(lapIdx, mountGen) {
+    _liveRef = null;
+    const mode = _layout?.ref_mode;
+    if (_liveSession && mode && mode !== 'none') {
+      try {
+        const r = await API.getReferencePreview(_liveSession.csv_path, lapIdx, mode,
+                                                _layout.ref_lap_csv_path, _layout.ref_lap_num);
+        if (mountGen !== undefined && _mountGen !== mountGen) return;
+        if (lapIdx !== _selLapIdx) return;   // a newer lap is loading
+        _liveRef = r?.ok ? r : null;
+      } catch (e) {
+        console.warn('[_loadReference] failed', e);
+      }
+    }
+    // delta_time lives on the points like any other channel.
+    (_livePoints || []).forEach((pt, i) => { pt.delta_time = _liveRef?.delta?.[i] ?? 0; });
+    _rerenderLive();
+  }
+
+  async function _loadWeather(mountGen) {
+    _liveWeather = null;
+    const p0 = (_livePoints || []).find(pt => pt.lat && pt.lon);
+    if (!p0 || !_liveSession?.csv_start) return;
+    try {
+      const w = await API.getWeather(p0.lat, p0.lon, _liveSession.csv_start);
+      if (_mountGen !== mountGen) return;
+      _liveWeather = (w && w.weather && w.weather !== '—') ? w : null;
+      _rerenderLive();
+    } catch (_) { /* offline: the gauge just shows no weather */ }
   }
 
   // ── Switch lap (called from lap selector) ──────────────────────────────────
@@ -871,6 +964,7 @@
     // Fetch OSM track map AFTER telemetry is loaded — centroid comes from already-loaded
     // GPS data so Python never has to reload the session file for this call.
     _fetchTrackMapGeometry(myGen);
+    _loadWeather(myGen);
   }
 
   // ── Fetch OSM track map geometry using GPS centroid from loaded telemetry ────
@@ -2198,6 +2292,7 @@
               _layout.ref_lap_num      = parseInt(row.dataset.num);
               saveLayout();
               refreshManualPicker();
+              _loadReference(_selLapIdx, _mountGen);
             });
           });
         }
@@ -2212,6 +2307,7 @@
         _layout.ref_mode = e.target.value;
         saveLayout();
         refreshManualPicker();
+        _loadReference(_selLapIdx, _mountGen);
       });
       refreshManualPicker();
     }

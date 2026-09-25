@@ -432,6 +432,58 @@ def _setup_delta_time(reference_lap, job, session):
                 ref_channels=ref_channels, sectors=sectors)
 
 
+_REF_KEYS = ('speed', 'gx', 'gy', 'lean', 'rpm', 'exhaust_temp', 'alt', 'gear')
+
+
+def delta_and_reference_at(dt_state: dict, lap_num: int, lap_elapsed: float):
+    """(delta seconds, reference sample dict or None) at one point of the lap
+    being shown, compared by distance along the lap. Used per video frame by
+    the export and per telemetry sample by the editor preview, so both show
+    the same numbers."""
+    delta_fn = dt_state['delta_fn']
+    if delta_fn is None:
+        return 0.0, None
+    cur_d = 0.0
+    delta = 0.0
+    try:
+        if dt_state['cur_lap_t'] is not None:
+            cur_d = float(np.interp(lap_elapsed, dt_state['cur_lap_t'], dt_state['cur_lap_d']))
+        else:
+            profile = dt_state['cur_lap_profiles'].get(lap_num)
+            if profile is not None:
+                cur_d = float(np.interp(lap_elapsed, profile[0], profile[1]))
+        if not math.isfinite(cur_d):
+            cur_d = 0.0
+        delta = delta_fn(lap_elapsed, cur_d)
+    except Exception:
+        delta = 0.0
+    ref = None
+    ref_dist_u = dt_state['ref_dist_u']
+    if ref_dist_u is not None:
+        try:
+            d_ref = min(cur_d, float(ref_dist_u[-1]))
+            ref = {k: float(np.interp(d_ref, ref_dist_u, dt_state['ref_channels'][k])) for k in _REF_KEYS}
+            ref.update(t=0.0, delta_time=0.0)
+        except Exception:
+            ref = None
+    return delta, ref
+
+
+def reference_map_track(reference_lap) -> Tuple[list, list]:
+    """The reference lap's GPS track for the maps' ghost dot: ~600 points,
+    smoothed over 9 samples against GPS jitter."""
+    if not reference_lap or not reference_lap.points:
+        return [], []
+    step = max(1, len(reference_lap.points) // 600)
+    lats = [p.lat for p in reference_lap.points[::step]]
+    lons = [p.lon for p in reference_lap.points[::step]]
+    if len(lats) > 9:
+        w = np.ones(9) / 9
+        lats = np.convolve(lats, w, mode='same').tolist()
+        lons = np.convolve(lons, w, mode='same').tolist()
+    return lats, lons
+
+
 def _build_session_meta(session, info_overrides: dict = None) -> dict:
     """Assemble the session-info dict passed to the info gauge.
 
@@ -767,19 +819,8 @@ def _render(info, clips, clip_durations, out_path, session, job, sync_offset, en
 
     map_lats, map_lons, map_arr = _build_map_data(job, session, show_map)
 
-    ref_map_lats: list = []
-    ref_map_lons: list = []
-    ref_lap_duration = 0.0
-    if reference_lap and reference_lap.points:
-        step = max(1, len(reference_lap.points) // 600)
-        ref_map_lats = [p.lat for p in reference_lap.points[::step]]
-        ref_map_lons = [p.lon for p in reference_lap.points[::step]]
-        ref_lap_duration = reference_lap.duration
-        # Smooth the reference GPS track to reduce dot jitter from GPS noise.
-        if len(ref_map_lats) > 9:
-            _w = np.ones(9) / 9
-            ref_map_lats = np.convolve(ref_map_lats, _w, mode='same').tolist()
-            ref_map_lons = np.convolve(ref_map_lons, _w, mode='same').tolist()
+    ref_map_lats, ref_map_lons = reference_map_track(reference_lap)
+    ref_lap_duration = reference_lap.duration if reference_lap else 0.0
 
     dt_state = _setup_delta_time(reference_lap, job, session)
     import channel_discovery
@@ -928,13 +969,6 @@ def _feed_overlay_frames(proc, pool, ctx_id, ctx_blob, session, job, dt_state,
     """Compute each frame's telemetry, have the workers draw it, and write the
     canvases to FFmpeg in order. Workers draw the next chunk while this one
     is written. Returns (frames written, source ended early)."""
-    delta_fn         = dt_state['delta_fn']
-    cur_lap_t        = dt_state['cur_lap_t']
-    cur_lap_d        = dt_state['cur_lap_d']
-    cur_lap_profiles = dt_state['cur_lap_profiles']
-    ref_dist_u       = dt_state['ref_dist_u']
-    ref_channels     = dt_state['ref_channels']
-
     # Lap scoreboard: best completed timed lap *before* each lap started.
     total_timed = len(session.timed_laps)
     best_by_lap: dict = {}
@@ -956,30 +990,9 @@ def _feed_overlay_frames(proc, pool, ctx_id, ctx_blob, session, job, dt_state,
         cur_map_idx = 0
         if pt:
             lap_t_display = min(sess_t - lap_t0, lap_dur) if job.gpx_start is not None else pt.lap_elapsed
-            delta_val = 0.0
-            cur_d = 0.0
-            if delta_fn is not None:
-                try:
-                    if cur_lap_t is not None:
-                        cur_d = float(np.interp(pt.lap_elapsed, cur_lap_t, cur_lap_d))
-                    else:
-                        profile = cur_lap_profiles.get(pt.lap)
-                        if profile is not None:
-                            cur_d = float(np.interp(pt.lap_elapsed, profile[0], profile[1]))
-                    if not math.isfinite(cur_d):
-                        cur_d = 0.0
-                    delta_val = delta_fn(pt.lap_elapsed, cur_d)
-                except Exception:
-                    delta_val = 0.0
-            if ref_dist_u is not None:
-                try:
-                    d_ref = min(cur_d, float(ref_dist_u[-1]))
-                    rp = {k: float(np.interp(d_ref, ref_dist_u, ref_channels[k]))
-                          for k in ('speed', 'gx', 'gy', 'lean', 'rpm', 'exhaust_temp', 'alt', 'gear')}
-                    rp.update(t=0.0, delta_time=0.0)
-                    ref_hist.append(rp)
-                except Exception:
-                    pass
+            delta_val, ref_pt = delta_and_reference_at(dt_state, pt.lap, pt.lap_elapsed)
+            if ref_pt is not None:
+                ref_hist.append(ref_pt)
             history.append({
                 't': lap_t_display, 'speed': pt.speed, 'gx': pt.gforce_x, 'gy': pt.gforce_y,
                 'lean': pt.lean_angle, 'rpm': pt.rpm, 'exhaust_temp': pt.exhaust_temp,

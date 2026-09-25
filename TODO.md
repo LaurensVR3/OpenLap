@@ -29,10 +29,10 @@ Findings from the full code/feature review (2026-09-25). Roughly in suggested fi
 - [x] **Info gauge time is UTC in export, local in preview** — `video_renderer._build_session_meta` formats `date_utc` directly.
 - [x] **Multi-Line drops dynamic channels in export** — `gauge_channels.build_multi_data` skips anything not in `GAUGE_CHANNELS`.
 - [x] **Dynamic channels lose label/unit in export** — `overlay_worker.py` calls `gauge_data(channel, history, ...)` without `extra_label`/`extra_unit`; pass `session.extra_channel_meta` through.
-- [ ] **Line gauge history window differs** — preview: last 41 telemetry samples (`editor.js` `histStart`); export: last 120 video frames (`styles/gauge_line.py`). Make both time-based (e.g. N seconds).
-- [ ] **Reference-lap gauges can't be previewed** — Delta, Compare, Splits, Sector Bar and the ref ghost on maps use dummy/empty data in the editor. Compute delta/reference data for the preview too.
-- [ ] **Dynamic-channel auto-range rescales every frame** — makes Bar/Dial meaningless; use session-wide min/max.
-- [ ] **Preview ignores session_info track override** — editor uses raw `meta.track`; export uses the renamed track.
+- [x] **Line gauge history window differs** — preview: last 41 telemetry samples (`editor.js` `histStart`); export: last 120 video frames (`styles/gauge_line.py`). Make both time-based (e.g. N seconds).
+- [x] **Reference-lap gauges can't be previewed** — Delta, Compare, Splits, Sector Bar and the ref ghost on maps use dummy/empty data in the editor. Compute delta/reference data for the preview too.
+- [x] **Dynamic-channel auto-range rescales every frame** — makes Bar/Dial meaningless; use session-wide min/max.
+- [x] **Preview ignores session_info track override** — editor uses raw `meta.track`; export uses the renamed track.
 
 ## Performance / architecture
 
