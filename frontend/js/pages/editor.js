@@ -1838,10 +1838,14 @@
 
         ${_buildChannelProps(g)}
 
-        <button class="btn btn-sm" id="prop-delete"
-                style="margin-top:8px; border-color:var(--err); color:var(--err);">
-          Remove Gauge
-        </button>
+        <div style="display:flex; gap:6px; margin-top:8px;">
+          <button class="btn btn-sm" id="prop-duplicate" title="Duplicate (Ctrl+D)" style="flex:1">Duplicate</button>
+          <button class="btn btn-sm" id="prop-delete" title="Remove (Delete)"
+                  style="flex:1; border-color:var(--err); color:var(--err);">Remove</button>
+        </div>
+        <div style="font-size:9px; color:var(--text3); margin-top:6px;">
+          Arrow keys nudge (Shift: larger steps) · Ctrl+Z undo · Ctrl+Y redo
+        </div>
       </div>`;
 
     // Wire up change handlers
@@ -1888,14 +1892,8 @@
       });
     }
 
-    panel.querySelector('#prop-delete').addEventListener('click', () => {
-      _layout.gauges.splice(_selected, 1);
-      _selected = null;
-      rebuildGaugeCanvases();
-      rebuildGaugeList();
-      updatePropPanel();
-      saveLayout();
-    });
+    panel.querySelector('#prop-delete').addEventListener('click', _deleteSelected);
+    panel.querySelector('#prop-duplicate')?.addEventListener('click', _duplicateSelected);
 
     _bindChannelPropEvents(panel, g);
   }
@@ -2021,12 +2019,154 @@
   }
 
   // ── Save layout ──────────────────────────────────────────────────────────────
-  async function saveLayout() {
+  // ── Undo / redo ─────────────────────────────────────────────────────────────
+  // Every change to the layout ends in saveLayout(), so that is where history
+  // is kept: the layout as it was before each save. A burst of arrow-key
+  // nudges is one step, not one per key press.
+  const HISTORY_MAX = 100;
+  let _undo = [], _redo = [], _lastSnap = null, _coalesce = { key: null, at: 0 };
+
+  function _snap() { return JSON.stringify(_layout); }
+
+  function _resetHistory() {
+    _undo = []; _redo = []; _lastSnap = _layout ? _snap() : null;
+    _updateUndoButtons();
+  }
+
+  function _recordHistory(coalesceKey) {
+    const now = _snap();
+    if (_lastSnap !== null && now !== _lastSnap) {
+      const merge = coalesceKey && _coalesce.key === coalesceKey && Date.now() - _coalesce.at < 800;
+      if (!merge) {
+        _undo.push(_lastSnap);
+        if (_undo.length > HISTORY_MAX) _undo.shift();
+      }
+      _redo = [];
+    }
+    _coalesce = { key: coalesceKey || null, at: Date.now() };
+    _lastSnap = now;
+    _updateUndoButtons();
+  }
+
+  function _applySnap(snap) {
+    const selectedWas = _selected;
+    _layout = JSON.parse(snap);
+    _lastSnap = snap;
+    _selected = (selectedWas != null && selectedWas < _layout.gauges.length) ? selectedWas : null;
+    rebuildThemeSelector();
+    rebuildPresetSelector();
+    rebuildGaugeList();
+    rebuildGaugeCanvases();
+    updatePropPanel();
+    const rs = _container?.querySelector('#ref-mode-sel');
+    if (rs) rs.value = _layout.ref_mode || 'none';
+    _updateUndoButtons();
+    API.saveOverlay(_layout).catch(err => console.error('saveLayout failed:', err));
+  }
+
+  function undo() {
+    if (!_undo.length) return;
+    _redo.push(_snap());
+    _applySnap(_undo.pop());
+  }
+
+  function redo() {
+    if (!_redo.length) return;
+    _undo.push(_snap());
+    _applySnap(_redo.pop());
+  }
+
+  function _updateUndoButtons() {
+    const u = _container?.querySelector('#undo-btn');
+    const r = _container?.querySelector('#redo-btn');
+    if (u) u.disabled = !_undo.length;
+    if (r) r.disabled = !_redo.length;
+  }
+
+  async function saveLayout(coalesceKey) {
+    _recordHistory(typeof coalesceKey === 'string' ? coalesceKey : null);
     try {
       await API.saveOverlay(_layout);
     } catch (err) {
       console.error('saveLayout failed:', err);
     }
+  }
+
+  // ── Keyboard shortcuts ──────────────────────────────────────────────────────
+  function _duplicateSelected() {
+    if (_selected == null || !_layout?.gauges[_selected]) return;
+    const copy = JSON.parse(JSON.stringify(_layout.gauges[_selected]));
+    copy.x = Math.min(1 - (copy.w || 0.1), (copy.x || 0) + 0.02);
+    copy.y = Math.min(1 - (copy.h || 0.1), (copy.y || 0) + 0.02);
+    _layout.gauges.push(copy);
+    _selected = _layout.gauges.length - 1;
+    rebuildGaugeList();
+    rebuildGaugeCanvases();
+    updatePropPanel();
+    saveLayout();
+  }
+
+  function _deleteSelected() {
+    if (_selected == null || !_layout?.gauges[_selected]) return;
+    _layout.gauges.splice(_selected, 1);
+    _selected = null;
+    rebuildGaugeCanvases();
+    rebuildGaugeList();
+    updatePropPanel();
+    saveLayout();
+  }
+
+  let _onKeyDown = null;
+  function _setupKeyboard() {
+    _teardownKeyboard();
+    _onKeyDown = e => {
+      if (!_container || !_layout) return;
+      const tag = (e.target?.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target?.isContentEditable) return;
+      const mod = e.ctrlKey || e.metaKey;
+      const k = e.key;
+      if (mod && (k === 'z' || k === 'Z') && !e.shiftKey) { e.preventDefault(); undo(); return; }
+      if (mod && ((k === 'y' || k === 'Y') || ((k === 'z' || k === 'Z') && e.shiftKey))) { e.preventDefault(); redo(); return; }
+      if (mod && (k === 'd' || k === 'D')) { e.preventDefault(); _duplicateSelected(); return; }
+      if (_selected == null) return;
+      if (k === 'Delete' || k === 'Backspace') { e.preventDefault(); _deleteSelected(); return; }
+      if (k === 'Escape') { selectGauge(null); return; }
+      const step = e.shiftKey ? 0.02 : 0.005;
+      const d = { ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step] }[k];
+      if (!d) return;
+      e.preventDefault();
+      const g = _layout.gauges[_selected];
+      g.x = Math.max(0, Math.min(1 - g.w, g.x + d[0]));
+      g.y = Math.max(0, Math.min(1 - g.h, g.y + d[1]));
+      rebuildGaugeCanvases();
+      updatePropPanel();
+      saveLayout('nudge');
+    };
+    document.addEventListener('keydown', _onKeyDown);
+  }
+  function _teardownKeyboard() {
+    if (_onKeyDown) document.removeEventListener('keydown', _onKeyDown);
+    _onKeyDown = null;
+  }
+
+  // ── Preset rename / delete ──────────────────────────────────────────────────
+  async function renamePreset() {
+    const cur = _layout?.active_preset;
+    if (!cur) return;
+    const name = prompt('Rename preset:', cur);
+    if (!name || name === cur) return;
+    await API.renamePreset(cur, name);
+    _layout.active_preset = name;
+    await loadPresetList();
+  }
+
+  async function deletePreset() {
+    const cur = _layout?.active_preset;
+    if (!cur) return;
+    if (!confirm(`Delete preset "${cur}"? The current layout stays as it is.`)) return;
+    await API.deletePreset(cur);
+    delete _layout.active_preset;
+    await loadPresetList();
   }
 
   // ── Mount ────────────────────────────────────────────────────────────────────
@@ -2102,7 +2242,11 @@
           <select id="preset-select" style="font-size:10px; max-width:120px">
             <option value="">— No Preset —</option>
           </select>
+          <button class="btn btn-sm" id="rename-preset-btn" title="Rename this preset">Rename</button>
+          <button class="btn btn-sm" id="delete-preset-btn" title="Delete this preset">Delete</button>
           <button class="btn btn-sm" id="save-preset-btn">Save As…</button>
+          <button class="btn btn-sm" id="undo-btn" title="Undo (Ctrl+Z)" disabled>↶</button>
+          <button class="btn btn-sm" id="redo-btn" title="Redo (Ctrl+Y)" disabled>↷</button>
           <button class="btn btn-sm btn-accent" id="save-layout-btn">Save</button>
         </div>
 
@@ -2329,6 +2473,12 @@
     });
 
     container.querySelector('#save-preset-btn').addEventListener('click', saveAsPreset);
+    container.querySelector('#rename-preset-btn')?.addEventListener('click', renamePreset);
+    container.querySelector('#delete-preset-btn')?.addEventListener('click', deletePreset);
+    container.querySelector('#undo-btn')?.addEventListener('click', undo);
+    container.querySelector('#redo-btn')?.addEventListener('click', redo);
+    _setupKeyboard();
+    if (!sameSession || _lastSnap === null) _resetHistory(); else _updateUndoButtons();
 
     container.querySelector('#theme-select').addEventListener('change', e => {
       _layout.theme = e.target.value;
@@ -2341,6 +2491,7 @@
       if (!name) return;
       const presets = await API.getConfig().then(c => c.presets || {});
       if (presets[name]) {
+        _recordHistory();          // the layout before the switch stays undoable
         _layout = { ...presets[name], active_preset: name };
         _selected = null;
         rebuildThemeSelector();
@@ -2428,6 +2579,7 @@
     _stopLiveRaf();
     if (_resizeObserver) { _resizeObserver.disconnect(); _resizeObserver = null; }
     _teardownMouseEvents();
+    _teardownKeyboard();
     _container = null;
     // Live session state (_livePoints, _liveLaps, _liveSession, etc.) is intentionally
     // preserved so that returning to this page skips all Python round-trips.

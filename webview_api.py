@@ -391,6 +391,26 @@ class WebviewAPI:
     def list_presets(self) -> list:
         return list(self._config.presets.keys())
 
+    def rename_preset(self, old: str, new: str) -> None:
+        new = (new or '').strip()
+        with self._config_lock:
+            if not new or old not in self._config.presets or new in self._config.presets:
+                return
+            self._config.presets = {(new if k == old else k): v for k, v in self._config.presets.items()}
+            if self._config.active_preset == old:
+                self._config.active_preset = new
+            self._config.save()
+
+    def delete_preset(self, name: str) -> None:
+        """Remove a preset. The live layout is kept: it just stops being tied
+        to a preset, so the next launch reopens it instead of a deleted one."""
+        with self._config_lock:
+            if self._config.presets.pop(name, None) is None:
+                return
+            if self._config.active_preset == name:
+                self._config.active_preset = ''
+            self._config.save()
+
     # ── Session scanning ──────────────────────────────────────────────────────
     def scan_sessions(self, folder: str) -> list:
         """

@@ -687,3 +687,23 @@ class TestOffsetMigration:
         api._config.offset_review.append('/s.csv')
         api.save_config({'offsets': {'/s.csv': 1.0}, 'offset_sources': {'/s.csv': 'user'}})
         assert '/s.csv' not in api._config.offset_review
+
+
+class TestPresetManagement:
+    def test_rename_keeps_order_and_active_preset(self, api):
+        api._config.presets = {'A': {'gauges': []}, 'B': {'gauges': [1]}, 'C': {'gauges': []}}
+        api._config.active_preset = 'B'
+        api.rename_preset('B', 'Kart')
+        assert list(api._config.presets) == ['A', 'Kart', 'C']
+        assert api._config.presets['Kart'] == {'gauges': [1]} and api._config.active_preset == 'Kart'
+
+    def test_rename_never_overwrites_another_preset(self, api):
+        api._config.presets = {'A': {'x': 1}, 'B': {'x': 2}}
+        api.rename_preset('A', 'B')
+        assert api._config.presets == {'A': {'x': 1}, 'B': {'x': 2}}
+
+    def test_delete_unties_the_live_layout(self, api):
+        api._config.presets = {'A': {}, 'B': {}}
+        api._config.active_preset = 'A'
+        api.delete_preset('A')
+        assert list(api._config.presets) == ['B'] and api._config.active_preset == ''

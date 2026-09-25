@@ -61,6 +61,6 @@ Findings from the full code/feature review (2026-09-25). Roughly in suggested fi
 - [x] GPS lap detection with user-defined start/finish line and sectors (GPX is one lap; `.uni` is heuristic; sectors are fixed thirds).
 - [ ] Multi-camera / picture-in-picture.
 - [ ] Side-by-side / ghost comparison of two laps' videos.
-- [ ] Editor: undo/redo, keyboard nudge/delete/duplicate, delete/rename presets.
+- [x] Editor: undo/redo, keyboard nudge/delete/duplicate, delete/rename presets.
 - [ ] Export: output resolution/fps, bitrate control; persist export queue across restarts.
 - [ ] Update-available notification.
