@@ -53,6 +53,8 @@ const API = (() => {
       get_session_meta:  () => ({ track: '', laps: '', best: '', best_secs: null }),
       get_video_server_port:    () => 0,
       get_video_fps:            () => 30,
+      load_export_queue:        () => [],
+      save_export_queue:        () => null,
       rename_preset:            () => null,
       delete_preset:            () => null,
       get_track_lines:          () => ({ outline: { lats: [], lons: [] }, finish: null, sectors: [], user: false }),
@@ -115,6 +117,8 @@ const API = (() => {
 
     startExport:       (params)        => call('start_export', params),
     getVideoFps:       (path)          => call('get_video_fps', path),
+    loadExportQueue:   ()              => call('load_export_queue'),
+    saveExportQueue:   (items)         => call('save_export_queue', items),
     renamePreset:      (oldName, newName) => call('rename_preset', oldName, newName),
     deletePreset:      (name)          => call('delete_preset', name),
     getTrackLines:     (csv)           => call('get_track_lines', csv),

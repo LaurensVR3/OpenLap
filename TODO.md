@@ -62,5 +62,5 @@ Findings from the full code/feature review (2026-09-25). Roughly in suggested fi
 - [ ] Multi-camera / picture-in-picture.
 - [ ] Side-by-side / ghost comparison of two laps' videos.
 - [x] Editor: undo/redo, keyboard nudge/delete/duplicate, delete/rename presets.
-- [ ] Export: output resolution/fps, bitrate control; persist export queue across restarts.
+- [x] Export: output resolution/fps, bitrate control; persist export queue across restarts.
 - [ ] Update-available notification.

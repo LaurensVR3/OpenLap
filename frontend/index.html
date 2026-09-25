@@ -69,7 +69,13 @@
   <script src="js/pages/settings.js"></script>
   <script>
     // Bootstrap after pywebview injects its API
-    window.addEventListener('pywebviewready', () => {
+    window.addEventListener('pywebviewready', async () => {
+      // The export queue survives a restart; restore it before any page reads it.
+      try {
+        const saved = await API.loadExportQueue();
+        if (Array.isArray(saved) && saved.length) State.set('selectedItems', saved);
+      } catch (_) { /* start empty */ }
+      State.on('selectedItems', items => { API.saveExportQueue(items || []).catch(() => {}); });
       Router.init();
     });
     // Fallback for dev without pywebview (open index.html in browser)

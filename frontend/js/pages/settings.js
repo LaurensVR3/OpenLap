@@ -125,9 +125,13 @@
           <option value="libx264" ${cfg.encoder === 'libx264' || !cfg.encoder ? 'selected' : ''}>H.264 (libx264) — Universal</option>
           <option value="libx265" ${cfg.encoder === 'libx265' ? 'selected' : ''}>H.265 (libx265) — Smaller files</option>
           <option value="h264_nvenc" ${cfg.encoder === 'h264_nvenc' ? 'selected' : ''}>H.264 NVENC — NVIDIA GPU</option>
+          <option value="hevc_nvenc" ${cfg.encoder === 'hevc_nvenc' ? 'selected' : ''}>H.265 NVENC — NVIDIA GPU</option>
+          <option value="h264_amf" ${cfg.encoder === 'h264_amf' ? 'selected' : ''}>H.264 AMF — AMD GPU</option>
+          <option value="h264_qsv" ${cfg.encoder === 'h264_qsv' ? 'selected' : ''}>H.264 QSV — Intel GPU</option>
           <option value="h264_videotoolbox" ${cfg.encoder === 'h264_videotoolbox' ? 'selected' : ''}>H.264 VideoToolbox — Apple</option>
         </select>
       </div>
+      <p class="section-hint">A GPU encoder that is not usable on this machine falls back to H.264 (libx264) automatically, before rendering starts.</p>
       <div class="form-row">
         <label>Quality (CRF)</label>
         <div class="range-row">
@@ -135,6 +139,26 @@
                  min="12" max="32" step="1" value="${cfg.crf ?? 18}">
           <span class="range-val" id="enc-crf-val">${cfg.crf ?? 18}</span>
         </div>
+      </div>
+      <div class="form-row">
+        <label>Output size</label>
+        <select data-config-key="output_height" class="input-field">
+          ${[[0, 'As recorded'], [2160, '2160p (4K)'], [1440, '1440p'], [1080, '1080p'], [720, '720p']]
+            .map(([v, l]) => `<option value="${v}" ${Number(cfg.output_height || 0) === v ? 'selected' : ''}>${l}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Frame rate</label>
+        <select data-config-key="output_fps" class="input-field">
+          ${[[0, 'As recorded'], [60, '60 fps'], [50, '50 fps'], [30, '30 fps'], [25, '25 fps']]
+            .map(([v, l]) => `<option value="${v}" ${Number(cfg.output_fps || 0) === v ? 'selected' : ''}>${l}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-row">
+        <label>Bitrate (Mbit/s)</label>
+        <input type="number" data-config-key="bitrate_kbps" data-scale="1000" class="input-field input-narrow"
+               value="${cfg.bitrate_kbps ? cfg.bitrate_kbps / 1000 : ''}" min="0" max="500" step="1"
+               placeholder="auto" title="Leave empty to use the Quality setting; set a value for a predictable file size">
       </div>
       <div class="form-row">
         <label>Workers</label>
@@ -468,14 +492,20 @@
 
   async function _save(container) {
     const updated = { ..._config };
-    const _intKeys  = new Set(['crf', 'workers']);
+    const _intKeys  = new Set(['crf', 'workers', 'output_height', 'bitrate_kbps']);
+    const _numKeys  = new Set(['output_fps']);
     const _boolKeys = new Set(['auto_sync_enabled']);
     container.querySelectorAll('[data-config-key]').forEach(el => {
       const key = el.dataset.configKey;
+      const scale = parseFloat(el.dataset.scale || '1');   // e.g. Mbit/s shown, kbit/s stored
       if (_boolKeys.has(key) || el.type === 'checkbox') {
         updated[key] = el.checked;
+      } else if (_intKeys.has(key)) {
+        updated[key] = Math.round((parseFloat(el.value) || 0) * scale);
+      } else if (_numKeys.has(key)) {
+        updated[key] = parseFloat(el.value) || 0;
       } else {
-        updated[key] = _intKeys.has(key) ? (parseInt(el.value, 10) || 0) : el.value.trim();
+        updated[key] = el.value.trim();
       }
     });
     // Persist email (never password — that goes through the login flow only)

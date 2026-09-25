@@ -347,6 +347,12 @@ class WebviewAPI:
                 self._config.workers = int(data['workers'])
             if 'speed_unit' in data:
                 self._config.speed_unit = str(data['speed_unit'])
+            if 'output_height' in data:
+                self._config.output_height = _positive_int(data['output_height']) or 0
+            if 'output_fps' in data:
+                self._config.output_fps = _positive_float(data['output_fps']) or 0.0
+            if 'bitrate_kbps' in data:
+                self._config.bitrate_kbps = _positive_int(data['bitrate_kbps']) or 0
             # Merge dict fields (JS may send partial updates)
             if 'offsets' in data and isinstance(data['offsets'], dict):
                 self._config.offsets.update(data['offsets'])
@@ -387,6 +393,25 @@ class WebviewAPI:
             self._config.overlay = overlay_from_dict(data)
             self._config.active_preset = name
             self._config.save()
+
+    def load_export_queue(self) -> list:
+        """The export queue as it was when the app last closed."""
+        import json
+        from app_config import CONFIG_FILE
+        try:
+            with open(CONFIG_FILE.parent / 'export_queue.json', encoding='utf-8') as f:
+                items = json.load(f)
+            return items if isinstance(items, list) else []
+        except Exception:
+            return []
+
+    def save_export_queue(self, items: list) -> None:
+        from app_config import CONFIG_FILE
+        from utils import write_json_atomic
+        try:
+            write_json_atomic(CONFIG_FILE.parent / 'export_queue.json', list(items or []))
+        except Exception:
+            logger.exception('Could not save the export queue')
 
     def list_presets(self) -> list:
         return list(self._config.presets.keys())

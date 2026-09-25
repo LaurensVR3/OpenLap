@@ -85,6 +85,9 @@ class AppConfig:
     crf:     int   = 18
     workers: int   = 4
     speed_unit: str = 'auto'
+    output_height: int = 0      # export height in px (width follows); 0 = as recorded
+    output_fps:    float = 0.0  # export frame rate; 0 = as recorded
+    bitrate_kbps:  int = 0      # fixed bitrate instead of constant quality; 0 = use crf
     # 'auto' (use each session's detected source unit) | 'kmh' | 'mph' | 'ms'
     offset_sources:    Dict[str, str]  = field(default_factory=dict)
     # 'user' = manually confirmed, 'auto' = auto-detected (unconfirmed)
@@ -357,6 +360,9 @@ def _from_dict(data: dict) -> AppConfig:
         crf               = int(data.get('crf',           18)),
         workers           = int(data.get('workers',       4)),
         speed_unit        = data.get('speed_unit',        'auto'),
+        output_height     = int(data.get('output_height', 0) or 0),
+        output_fps        = float(data.get('output_fps', 0) or 0),
+        bitrate_kbps      = int(data.get('bitrate_kbps', 0) or 0),
         offset_sources       = data.get('offset_sources',       {}),
         auto_sync_failed     = data.get('auto_sync_failed',     []),
         auto_sync_enabled    = bool(data.get('auto_sync_enabled', False)),

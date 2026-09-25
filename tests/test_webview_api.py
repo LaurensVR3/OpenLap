@@ -707,3 +707,51 @@ class TestPresetManagement:
         api._config.active_preset = 'A'
         api.delete_preset('A')
         assert list(api._config.presets) == ['B'] and api._config.active_preset == ''
+
+
+class TestEverySettingsFieldSaves:
+    """Every input on the Settings page (data-config-key, including the
+    folder rows) must survive save_config(): its field list is hard-coded,
+    and a field missing from it looks saved but silently is not."""
+
+    @staticmethod
+    def _settings_keys():
+        import re
+        from pathlib import Path
+        js = (Path(__file__).resolve().parent.parent / 'frontend' / 'js' / 'pages' / 'settings.js').read_text(encoding='utf-8')
+        keys = set(re.findall(r'data-config-key="(\w+)"', js))
+        keys |= set(re.findall(r"_folderRow\('[^']*',\s*'(\w+)'", js))
+        keys.discard('${key}')
+        return sorted(keys)
+
+    def test_found_the_fields(self):
+        keys = self._settings_keys()
+        assert {'encoder', 'crf', 'output_height', 'output_fps', 'bitrate_kbps', 'racebox_path'} <= set(keys)
+
+    @pytest.mark.parametrize('key', _settings_keys.__func__())
+    def test_field_round_trips(self, api, key):
+        current = api.get_config()[key]
+        if isinstance(current, bool):
+            value = not current
+        elif isinstance(current, int):
+            value = current + 7
+        elif isinstance(current, float):
+            value = current + 12.5
+        else:
+            value = 'h264_qsv' if key == 'encoder' else ('mph' if key == 'speed_unit' else r'C:\x\y')
+        api.save_config({key: value})
+        assert api.get_config()[key] == value
+
+
+def test_export_queue_survives_a_restart(tmp_config_dir):
+    from webview_api import WebviewAPI
+    items = [{'csv_path': '/a.csv', 'scope': 'fastest', 'video_paths': ['/v.mp4']}]
+    WebviewAPI().save_export_queue(items)
+    assert WebviewAPI().load_export_queue() == items
+
+
+def test_export_params_carry_output_options():
+    from pathlib import Path
+    js = (Path(__file__).resolve().parent.parent / 'frontend' / 'js' / 'export_params.js').read_text(encoding='utf-8')
+    for key in ('output_height', 'output_fps', 'bitrate_kbps'):
+        assert f'{key}:' in js
