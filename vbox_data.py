@@ -16,18 +16,16 @@ from __future__ import annotations
 
 import logging
 import re
-from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from math import floor
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from data_model import DataPoint, Lap, Session
+from data_model import DataPoint, Lap, Session, build_laps
 from exceptions import MissingHeaderError, NoDataRowsError, CSVParseError
 
 logger = logging.getLogger(__name__)
 
-_INLAP_SLOWNESS_THRESHOLD = 1.5
 
 
 # ── Public detection ──────────────────────────────────────────────────────────
@@ -241,27 +239,8 @@ def load_vbo(path: str) -> Session:
 
     # ── Build laps ────────────────────────────────────────────────────────────
 
-    buckets: Dict[int, List[DataPoint]] = defaultdict(list)
-    for pt in all_pts:
-        buckets[pt.lap].append(pt)
-
-    laps: List[Lap] = []
-    for lap_num in sorted(buckets.keys()):
-        pts = buckets[lap_num]
-        if not pts:
-            continue
-        lap_t0 = pts[0].time
-        for pt in pts:
-            pt.lap_elapsed = (pt.time - lap_t0).total_seconds()
-        dur = (pts[-1].time - pts[0].time).total_seconds()
-        laps.append(Lap(lap_num=lap_num, points=pts, duration=dur,
-                        is_outlap=(lap_num == 0)))
-
-    timed = [l for l in laps if l.lap_num > 0]
-    if len(timed) >= 3:
-        med = sorted(l.duration for l in timed)[len(timed) // 2]
-        if timed[-1].duration > med * _INLAP_SLOWNESS_THRESHOLD:
-            timed[-1].is_inlap = True
+    laps  = build_laps(all_pts)
+    timed = [l for l in laps if not l.is_outlap and not l.is_inlap]
 
     best_lap_time = min((l.duration for l in timed), default=0.0)
     date_str = session_date.strftime('%Y-%m-%dT%H:%M:%SZ') if session_date else ''

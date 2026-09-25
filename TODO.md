@@ -13,7 +13,8 @@ Findings from the full code/feature review (2026-09-25). Roughly in suggested fi
 
 ## Correctness bugs
 
-- [ ] **Lap durations short by one sample interval** — all loaders use `pts[-1] - pts[0]` (`racebox_data.py`, `aim_data.py`, `vbox_data.py`, `unipro_data.py`, `motec_data.py`); 60.000s laps at 25 Hz show as 59.960s. Use next lap's start (or device-reported lap times).
+- [x] **RaceBox outlap and in-lap merged into one "lap 0"** (found while fixing the next item) — laps were grouped by lap number, and RaceBox numbers both the drive out and the drive back 0, so lap 0 spanned the whole session (747 s with a 600 s hole on a real file). Laps are now contiguous runs.
+- [x] **Lap durations short by one sample interval** — all loaders use `pts[-1] - pts[0]` (`racebox_data.py`, `aim_data.py`, `vbox_data.py`, `unipro_data.py`, `motec_data.py`); 60.000s laps at 25 Hz show as 59.960s. Use next lap's start (or device-reported lap times).
 - [x] **Export filenames collide / overwrite silently** — `selected_lap` labels by index incl. outlap (`Lap{lap_idx+1}`), `all_laps` by timed-lap ordinal; "Lap03" means different laps. Use `lap_num` consistently and never overwrite without a suffix.
 - [x] **Joined-video cache can serve the wrong video** — keyed by CSV basename + mtime only (`export_runner.py`, `joined_{basename}.mp4`). Key by hash of the clip list; add cleanup of `~/.openlap/video_cache`.
 - [ ] **Channel (telemetry-vs-telemetry) sync lacks peak-margin check** — `auto_sync.correlate_channels` uses confidence only; lap-periodic Speed traces will produce confidently wrong offsets. Apply `MIN_PEAK_MARGIN` like video sync.

@@ -100,6 +100,94 @@ class Lap:
         return f"{m}:{s:06.3f}"
 
 
+# A lap this much slower than the median is the drive back to the pits, and
+# one this much shorter is a lap cut off by the start or end of recording.
+_INLAP_SLOWNESS  = 1.5
+_PARTIAL_LAP     = 0.5
+# A gap between two samples this many sample intervals long is a pause in
+# recording, not the moment the lap changed.
+_GAP_INTERVALS   = 5.0
+
+
+def build_laps(points: List[DataPoint], keep_lap_elapsed: bool = False) -> List['Lap']:
+    """Cut a session's points into laps, the same way for every source.
+
+    *points* must be in time order with .elapsed and .lap (the logger's lap
+    number) set. Each *contiguous run* of one lap number is a lap. Grouping by
+    number instead merged runs that share a number: RaceBox numbers both the
+    drive out and the drive back 0, which made one "outlap" spanning the whole
+    session with a hole in the middle.
+
+    A lap's duration is the start of the next lap minus its own start. The
+    old last-sample-minus-first-sample left out one sample interval per lap
+    (40 ms at 25 Hz). Across a recording pause, and for the last lap, it is
+    the lap's own span plus one interval.
+
+    lap_elapsed is set from the lap's first point unless *keep_lap_elapsed*
+    (for loaders whose device logs its own lap clock; a first lap already
+    under way when recording began then counts that time too).
+
+    Laps are then classified by classify_laps(). Lap numbers stay unique: a
+    run whose number was already used gets the next free number.
+    """
+    if not points:
+        return []
+    runs: List[List[DataPoint]] = []
+    for pt in points:
+        if runs and runs[-1][-1].lap == pt.lap:
+            runs[-1].append(pt)
+        else:
+            runs.append([pt])
+
+    dts = sorted(b.elapsed - a.elapsed for a, b in zip(points, points[1:])
+                 if b.elapsed > a.elapsed)
+    dt = dts[len(dts) // 2] if dts else 0.0
+
+    laps: List[Lap] = []
+    used: set = set()
+    for i, run in enumerate(runs):
+        start = run[0].elapsed
+        if not keep_lap_elapsed:
+            for pt in run:
+                pt.lap_elapsed = pt.elapsed - start
+        nxt = runs[i + 1][0].elapsed if i + 1 < len(runs) else None
+        if nxt is not None and nxt - run[-1].elapsed <= max(dt * _GAP_INTERVALS, 1e-9):
+            dur = nxt - start
+        else:
+            dur = run[-1].elapsed - start + dt
+        if keep_lap_elapsed:
+            dur += max(0.0, run[0].lap_elapsed)
+        num = run[0].lap
+        if num in used:
+            num = max(used) + 1
+        used.add(num)
+        laps.append(Lap(lap_num=num, points=run, duration=dur, is_outlap=(num == 0 and i == 0)))
+
+    classify_laps(laps, runs)
+    return laps
+
+
+def classify_laps(laps: List['Lap'], runs: Optional[List[List[DataPoint]]] = None) -> None:
+    """Mark outlaps and inlaps, in place, by one rule set for every source:
+
+    * a leading lap numbered 0 is the outlap, a trailing one the inlap;
+    * with 3+ timed laps, the last one is an inlap if it is much slower than
+      the median (the drive back) or much shorter (cut off by the end of
+      recording), and the first one an outlap if much shorter (recording
+      started mid-lap).
+    """
+    if runs is not None and len(laps) > 1 and runs[-1][0].lap == 0:
+        laps[-1].is_inlap = True
+    timed = [l for l in laps if not l.is_outlap and not l.is_inlap]
+    if len(timed) >= 3:
+        med = sorted(l.duration for l in timed)[len(timed) // 2]
+        last = timed[-1]
+        if last.duration > med * _INLAP_SLOWNESS or last.duration < med * _PARTIAL_LAP:
+            last.is_inlap = True
+        if timed[0].duration < med * _PARTIAL_LAP:
+            timed[0].is_outlap = True
+
+
 @dataclass
 class Session:
     source:        str

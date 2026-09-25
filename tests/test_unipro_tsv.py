@@ -163,7 +163,9 @@ class TestLoadTsvLaps:
         assert sess.laps[0].is_outlap is True
         assert sess.laps[0].lap_num == 0
         assert sess.laps[1].lap_num == 1
-        assert sess.laps[1].duration == pytest.approx(39.0, abs=0.1)
+        # Lap 1 runs from its first sample (21 s) to lap 2's first (61 s);
+        # last-minus-first sample (39 s) left out one sample interval.
+        assert sess.laps[1].duration == pytest.approx(40.0, abs=0.1)
 
 
 # ── Stray-extra-block handling (_select_real_block) ───────────────────────────

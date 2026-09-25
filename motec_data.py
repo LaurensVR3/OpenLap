@@ -57,7 +57,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from data_model import DataPoint, Lap, Session
+from data_model import DataPoint, Lap, Session, build_laps, classify_laps
 from exceptions import NoDataRowsError
 
 logger = logging.getLogger(__name__)
@@ -660,33 +660,14 @@ def load_ld(path: str) -> Session:
         all_pts, source_speed_unit, extra_channel_meta = _load_hardware_points(data, channels, dt, path)
 
     # ── Group into laps ────────────────────────────────────────────────────
-    buckets: Dict[int, List[DataPoint]] = defaultdict(list)
-    for pt in all_pts:
-        buckets[pt.lap].append(pt)
+    # lap_elapsed was set above, lap-relative (from raw_time on sim exports,
+    # from elapsed-minus-lap-start on hardware exports), so keep it.
+    laps = build_laps(all_pts, keep_lap_elapsed=True)
 
-    laps: List[Lap] = []
-    for lap_num in sorted(buckets.keys()):
-        pts = buckets[lap_num]
-        # lap_elapsed was set above, lap-relative (from raw_time on sim exports,
-        # from elapsed-minus-lap-start on hardware exports)
-        dur = pts[-1].lap_elapsed - pts[0].lap_elapsed
-        # If the first sample already has lap_elapsed > 0 the lap was started
-        # before recording began; add that offset back for the true duration.
-        dur += pts[0].lap_elapsed
-        laps.append(Lap(
-            lap_num   = lap_num,
-            points    = pts,
-            duration  = max(dur, 0.0),
-            is_outlap = (lap_num == 0),
-        ))
-
-    # Classify laps:
-    # 1. Determine a "typical" lap length from the longest laps (ignoring very
-    #    short segments that are sector markers or aborted triggers in the sim).
-    # 2. Any lap shorter than 30% of the typical lap is treated as an outlap
-    #    (a beacon artifact, not a real timed lap).
-    # 3. The last long lap is marked as inlap if it is > 1.5× the median.
-    timed = [l for l in laps if not l.is_outlap]
+    # Sim exports also contain very short segments that are sector markers or
+    # aborted beacon triggers, not laps: take a "typical" lap length from the
+    # long laps and treat anything well under it as an outlap.
+    timed = [l for l in laps if not l.is_outlap and not l.is_inlap]
     if timed:
         long_laps = [l for l in timed if l.duration > 60.0]
         if len(long_laps) >= 1:
@@ -695,13 +676,9 @@ def load_ld(path: str) -> Session:
             for lap in timed:
                 if lap.duration < min_valid:
                     lap.is_outlap = True   # reclassify as beacon artifact
+    classify_laps(laps)   # medians again, now without the artifacts
 
     timed = [l for l in laps if not l.is_outlap]
-    if len(timed) >= 3:
-        med = sorted(l.duration for l in timed)[len(timed) // 2]
-        if timed[-1].duration > med * 1.5:
-            timed[-1].is_inlap = True
-
     best_timed = [l for l in timed if not l.is_inlap]
     best_lap_time = min((l.duration for l in best_timed), default=0.0)
 

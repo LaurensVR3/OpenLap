@@ -93,7 +93,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from data_model import DataPoint, Lap, Session
+from data_model import DataPoint, Lap, Session, build_laps
 from exceptions import MissingHeaderError, NoDataRowsError
 from gpx_data import _G, _SMOOTH_SIGMA, _angular_diff, _bearing_rad, _gaussian_smooth, _haversine_km
 
@@ -113,7 +113,6 @@ _SPD_RANGE = (0.0, 400.0)
 
 # Flag the final timed lap as an inlap if it's this much slower than the
 # session median — matching racebox_data.py / vbox_data.py.
-_INLAP_SLOWNESS_THRESHOLD = 1.5
 
 _M_PER_DEG_LAT = 110_540.0  # metres per degree of latitude (near-constant)
 
@@ -565,23 +564,8 @@ def load_uni(path: str) -> Session:
             lap_elapsed = float(elapsed_arr[i]) - lap_start_elapsed[ln],
         ))
 
-    from collections import defaultdict
-    buckets: dict = defaultdict(list)
-    for pt in all_pts:
-        buckets[pt.lap].append(pt)
-
-    laps: List[Lap] = []
-    for lap_num in sorted(buckets.keys()):
-        pts = buckets[lap_num]
-        dur = pts[-1].elapsed - pts[0].elapsed
-        laps.append(Lap(lap_num=lap_num, points=pts, duration=dur,
-                         is_outlap=(lap_num == 0)))
-
-    timed = [l for l in laps if l.lap_num > 0]
-    if len(timed) >= 3:
-        med = sorted(l.duration for l in timed)[len(timed) // 2]
-        if timed[-1].duration > med * _INLAP_SLOWNESS_THRESHOLD:
-            timed[-1].is_inlap = True
+    laps  = build_laps(all_pts)
+    timed = [l for l in laps if not l.is_outlap and not l.is_inlap]
 
     best_lap_time = min((l.duration for l in timed), default=total_dur)
 
@@ -789,23 +773,9 @@ def load_tsv(path: str) -> Session:
             exhaust_temp= _f(r, 'Temperature 1'),
         ))
 
-    from collections import defaultdict
-    buckets: dict = defaultdict(list)
-    for pt in all_pts:
-        buckets[pt.lap].append(pt)
-
-    laps: List[Lap] = []
-    for lap_num in sorted(buckets.keys()):
-        pts = buckets[lap_num]
-        dur = pts[-1].elapsed - pts[0].elapsed
-        laps.append(Lap(lap_num=lap_num, points=pts, duration=dur,
-                         is_outlap=(lap_num == 0)))
-
-    timed = [l for l in laps if l.lap_num > 0]
-    if len(timed) >= 3:
-        med = sorted(l.duration for l in timed)[len(timed) // 2]
-        if timed[-1].duration > med * _INLAP_SLOWNESS_THRESHOLD:
-            timed[-1].is_inlap = True
+    # The device's own lap clock (Lap Time) is kept as lap_elapsed.
+    laps  = build_laps(all_pts, keep_lap_elapsed=True)
+    timed = [l for l in laps if not l.is_outlap and not l.is_inlap]
 
     total_dur = all_pts[-1].elapsed if len(all_pts) > 1 else 0.0
     best_lap_time = min((l.duration for l in timed), default=total_dur)

@@ -24,11 +24,10 @@ import logging
 import math
 import os
 import re
-from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
-from data_model import DataPoint, Lap, Session
+from data_model import DataPoint, Lap, Session, build_laps
 from exceptions import NoDataRowsError
 
 logger = logging.getLogger(__name__)
@@ -298,31 +297,8 @@ def load_csv(path: str) -> Session:
         )
         all_pts.append(pt)
 
-    # Group into laps and compute lap_elapsed
-    buckets: Dict[int, List[DataPoint]] = defaultdict(list)
-    for pt in all_pts:
-        buckets[pt.lap].append(pt)
-
-    laps: List[Lap] = []
-    for lap_num in sorted(buckets.keys()):
-        pts = buckets[lap_num]
-        lap_t0 = pts[0].elapsed
-        for pt in pts:
-            pt.lap_elapsed = pt.elapsed - lap_t0
-        dur = pts[-1].elapsed - pts[0].elapsed
-        laps.append(Lap(lap_num=lap_num, points=pts, duration=dur,
-                        is_outlap=(lap_num == 0)))
-
-    # Classify non-timed laps
-    timed = [l for l in laps if l.lap_num > 0]
-    if len(timed) >= 2:
-        med = sorted(l.duration for l in timed)[len(timed) // 2]
-        # Last lap: too long = cool-down/inlap; too short = session cut off mid-lap
-        if timed[-1].duration > med * 1.5 or timed[-1].duration < med * 0.5:
-            timed[-1].is_inlap = True
-        # First timed lap: too short = recording started mid-lap
-        if timed[0].duration < med * 0.5 and not timed[0].is_inlap:
-            timed[0].is_outlap = True
+    laps  = build_laps(all_pts)
+    timed = [l for l in laps if not l.is_outlap]
 
     best_timed = [l for l in timed if not l.is_inlap and not l.is_outlap]
     best_lap_time = min((l.duration for l in best_timed), default=0.0)

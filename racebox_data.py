@@ -14,13 +14,12 @@ import io
 import logging
 from typing import List, Dict, Optional
 
-from data_model import DataPoint, Lap, Session
+from data_model import DataPoint, Lap, Session, build_laps
 from exceptions import MissingHeaderError, NoDataRowsError
 from utils import compute_lean_angle
 
 logger = logging.getLogger(__name__)
 
-_INLAP_SLOWNESS_THRESHOLD = 1.5  # flag last lap as inlap if >50% slower than median
 
 
 def _detect_bike(columns: List[str]) -> bool:
@@ -74,29 +73,7 @@ def load_csv(path: str) -> Session:
     for pt in all_pts:
         pt.elapsed = (pt.time - t0).total_seconds()
 
-    from collections import defaultdict
-    buckets: Dict[int, List[DataPoint]] = defaultdict(list)
-    for pt in all_pts:
-        buckets[pt.lap].append(pt)
-
-    laps: List[Lap] = []
-    for lap_num in sorted(buckets.keys()):
-        pts = buckets[lap_num]
-        if not pts:
-            continue
-        lap_t0 = pts[0].time
-        for pt in pts:
-            pt.lap_elapsed = (pt.time - lap_t0).total_seconds()
-        dur  = (pts[-1].time - pts[0].time).total_seconds()
-        lap  = Lap(lap_num=lap_num, points=pts, duration=dur,
-                   is_outlap=(lap_num == 0))
-        laps.append(lap)
-
-    timed = [l for l in laps if l.lap_num > 0]
-    if len(timed) >= 3:
-        med = sorted(l.duration for l in timed)[len(timed) // 2]
-        if timed[-1].duration > med * _INLAP_SLOWNESS_THRESHOLD:
-            timed[-1].is_inlap = True
+    laps = build_laps(all_pts)
 
     return Session(
         source=meta.get('Data Source', ''), date_utc=meta.get('Date UTC', ''),
