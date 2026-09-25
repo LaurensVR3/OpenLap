@@ -47,11 +47,19 @@ jobs:
       - name: Install ffmpeg
         run: |
           choco install ffmpeg -y --no-progress
-          # Copy binaries next to spec so PyInstaller can bundle them
-          $ffmpeg  = (Get-Command ffmpeg).Source
-          $ffprobe = (Get-Command ffprobe).Source
-          Copy-Item $ffmpeg  -Destination "${{ github.workspace }}\ffmpeg.exe"
-          Copy-Item $ffprobe -Destination "${{ github.workspace }}\ffprobe.exe"
+          # Copy the real binaries next to the spec so PyInstaller bundles
+          # them. NOT (Get-Command ffmpeg).Source: that is Chocolatey's
+          # ~390 KB shim in choco\bin, which only forwards to the real exe
+          # and cannot run once copied. Every release through 0.3.3 shipped
+          # those shims instead of FFmpeg.
+          foreach ($tool in 'ffmpeg', 'ffprobe') {
+            $real = Get-ChildItem "$env:ChocolateyInstall\lib\ffmpeg" -Recurse -Filter "$tool.exe" |
+                    Sort-Object Length -Descending | Select-Object -First 1
+            if (-not $real -or $real.Length -lt 10MB) { throw "Real $tool.exe not found (got $($real.FullName), $($real.Length) bytes)" }
+            Copy-Item $real.FullName -Destination "${{ github.workspace }}\$tool.exe"
+            & "${{ github.workspace }}\$tool.exe" -hide_banner -version | Select-Object -First 1
+            if ($LASTEXITCODE -ne 0) { throw "Copied $tool.exe does not run" }
+          }
         shell: pwsh
 
       - name: Build exe
