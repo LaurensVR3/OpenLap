@@ -1,6 +1,6 @@
 # OpenLap — Free Motorsport Telemetry Overlay Software
 
-**OpenLap** is a free, open-source desktop application that overlays telemetry data on racing video footage. It supports **RaceBox**, **AIM MyChron**, **MoTeC**, **GPX**, **VBOX**, and **Unipro Laptimer** data sources and runs entirely on your PC — no subscription, no cloud, no fees.
+**OpenLap** is a free, open-source desktop application that overlays telemetry data on racing video footage. It supports **RaceBox**, **AIM MyChron**, **MoTeC**, **GPX**, **VBOX** and **Unipro Laptimer** data sources, plus the GPS **GoPro** cameras record into their own video, and runs entirely on your PC — no subscription, no cloud, no fees.
 
 Point it at your telemetry files and a folder of race videos, and it matches sessions, syncs timing, and renders professional gauge overlays — all from a single window.
 
@@ -137,9 +137,12 @@ Click **+ Export** on the lap or session you want, then go to the **Export tab**
 - Auto-scan on startup with persistent session cache for fast restarts
 - Sessions grouped by date with lap list, best time, and video match status
 - Manual video reassignment for sessions where auto-matching doesn't find the right clip
-- Multi-clip support — multiple video segments per session are joined automatically before rendering
+- Multi-clip support — a camera's chapter files are read as one recording, per camera (a second camera or a phone clip is never mixed in), with no joined copy of the footage
+- Laps timed at the start/finish line, between samples — within 1 ms of the logger's own best lap on average. GPX tracks, Unipro `.uni` files and GoPro GPS get laps found from the track itself
+- **Laps & sectors** — click on the track map (Data tab) to move the start/finish line or add sector lines; they apply to every session on that circuit and drive the Splits and Sector Bar gauges
 - **Auto-sync** (opt-in): cross-correlates video motion against G-force to detect the sync offset automatically after each scan — results appear as `~ auto` and can be confirmed or fine-tuned in the Data tab
-- Frame-accurate manual sync: scrub the video preview to where the lap timer starts, press **Mark** — saves as a `✓ user` offset that auto-sync will never overwrite
+- Frame-accurate manual sync: step the video by its real frame rate to where the lap timer starts, press **Mark** — saves as a `✓ user` offset that auto-sync will never overwrite
+- GoPro recordings with no logger become sessions of their own, already in sync (`✓ camera`)
 - RaceBox cloud download directly from the app (requires a RaceBox account)
 - AIM `.xrk` / `.xrz` / `.drk` files are converted to CSV on first scan using the AIM MatLabXRK DLL
 
@@ -155,15 +158,20 @@ Click **+ Export** on the lap or session you want, then go to the **Export tab**
 - Element-to-element snapping with cyan alignment guides; size snaps to 5% grid
 - Lap selector — switch between laps while the video preview stays in sync
 - **4 overlay themes**: Dark · Light · Colorful · Monochrome
-- **Gauge types**: Numeric · Bar · Dial · Line · Delta · Compare · Lean · G-Meter · Splits · Sector Bar · Multi-Line · Circuit Map · Zoomed Map · Scoreboard · Info · Image/Logo — most types take any data channel, not just the fixed set (see below)
+- **Gauge types**: Numeric · Bar · Dial · Line · Delta · Compare · Lean · G-Meter · Splits · Sector Bar · Multi-Line · Circuit Map · Zoomed Map · Lap Progress · Scoreboard · Info · Image/Logo · Video — most types take any data channel, not just the fixed set (see below)
+- **Video gauge** — a second camera's recording of the session (synced by its audio), or the reference lap's own video running side by side from the line
+- The preview shows what the export renders: real delta, reference traces, sectors and weather, the same history span and the same gauge scales
+- Undo/redo, arrow-key nudging, duplicate and delete shortcuts
 - Bike mode — enables Lean gauge and reads lean angle from compatible devices
 - Reference lap overlay — compare any lap against a reference with live delta time
-- Named preset layouts — save, load, and switch overlay configurations
+- Named preset layouts — save, load, rename, delete and switch overlay configurations
 
 ### Export
 - **Scope**: This Lap, Fastest Lap, All Laps (one file per lap), or Full Session
 - GPU-accelerated encoding with auto-detection: NVENC (NVIDIA) · AMF (AMD) · QSV (Intel) · libx264 (CPU fallback)
-- Adjustable quality (CRF) and parallel worker count
+- Adjustable quality (CRF) or a fixed bitrate, output size (e.g. 1080p from 4K) and frame rate, and parallel worker count
+- Rendering is done by FFmpeg in one pass from your original clips — about 4-5× faster than earlier versions on 2.7K footage, with no intermediate file
+- The export queue is kept between runs
 - Configurable pre/post lap padding
 - Progress bar and log output per render job
 
@@ -180,7 +188,8 @@ Click **+ Export** on the lap or session you want, then go to the **Export tab**
 | **RaceBox** | RaceBox Mini, Mini S, Pro, Bike (`.csv`) | Car and bike mode; cloud download built-in |
 | **AIM MyChron** | MyChron 5, MyChron 5S, Solo 2 (`.xrk` · `.xrz` · `.drk`) | Auto-converted to CSV on scan |
 | **MoTeC** | Any MoTeC logger exporting `.ld` | Binary i2 format; full session lap timing |
-| **GPX** | Any GPS device or phone app (`.gpx`) | Speed derived from position + timestamp; no G-force, auto-sync not available |
+| **GPX** | Any GPS device or phone app (`.gpx`) | Laps found from the track; G-force derived from the track; auto-sync not available |
+| **GoPro** | HERO5 and later (GPS in the video's own GPMF track) | Read from the video itself — no separate file, and in sync by construction |
 | **VBOX** | Racelogic VBOX loggers (`.vbo`) | Full channel + lap-trigger support |
 | **Unipro Laptimer** | Unipro GPS laptimer (`.tsv`, `.uni`) | See below — prefer `.tsv` when available |
 
@@ -218,7 +227,7 @@ Most telemetry overlay tools are expensive, subscription-based, or locked to a s
 - **Open source** — GPL v3; inspect, modify, and contribute
 - **Multi-source** — RaceBox, AIM MyChron, MoTeC, GPX, VBOX, and Unipro Laptimer in one app
 - **GPU-accelerated** — NVIDIA NVENC, AMD AMF, Intel QSV; renders fast on any modern PC
-- **Offline** — no internet required after initial setup; your data stays on your machine
+- **Offline** — no internet required after initial setup; your data stays on your machine (an update check at startup asks GitHub for the latest version number; it can be switched off in Settings)
 
 Common use cases: karting, circuit racing, track days, hillclimb, motorcycle track riding, autocross etc
 
