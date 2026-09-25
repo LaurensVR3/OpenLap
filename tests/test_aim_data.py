@@ -285,3 +285,32 @@ def test_load_csv_empty_raises(tmp_path):
     empty.write_text("# Session-Date: 2024-06-15T12:00:00Z\nTime (s),GPS_Speed [m/s]\n")
     with pytest.raises(NoDataRowsError):
         load_csv(str(empty))
+
+
+def test_session_start_comes_from_the_gps_clock_not_the_local_log_time(tmp_path):
+    """The '# Session-Date' is the MyChron's local clock labelled as UTC (2 h
+    ahead in Spain, 4 h behind in North America on real files); the GPS time
+    columns give the true start."""
+    from datetime import datetime, timedelta, timezone
+    import aim_data
+    from session_scanner import _read_csv_start_time
+    # 2025-07-31 09:07:31 UTC = GPS week 2377, TOW computed below (+18 leap s)
+    utc = datetime(2025, 7, 31, 9, 7, 31, tzinfo=timezone.utc)
+    gps = utc + timedelta(seconds=18) - datetime(1980, 1, 6, tzinfo=timezone.utc)
+    week, tow_ms = divmod(gps.total_seconds() * 1000, 7 * 86400 * 1000)
+    rows = [f'{t:.1f},1,{40 + t},{0 if t < 0.5 else tow_ms + t * 1000:.0f},{0 if t < 0.5 else week:.0f}'
+            for t in (0.0, 0.5, 1.0, 1.5)]
+    p = tmp_path / 'Driver_Track_a_0001.csv'
+    p.write_text('# Session-Date: 2025-07-31T11:06:39Z\n'
+                 'Time (s),Lap,GPS Speed [m/s],ITOW [ms],Week N [#]\n' + '\n'.join(rows) + '\n')
+    assert aim_data.gps_utc_start(str(p)) == utc
+    assert _read_csv_start_time(str(p)) == utc
+    assert aim_data.load_csv(str(p)).date_utc == '2025-07-31T09:07:31Z'
+
+
+def test_without_gps_time_columns_the_log_date_is_used(tmp_path):
+    import aim_data
+    p = tmp_path / 'Driver_Track_a_0002.csv'
+    p.write_text('# Session-Date: 2025-07-31T11:06:39Z\nTime (s),Lap,GPS Speed [m/s]\n0.0,1,10\n0.1,1,11\n')
+    assert aim_data.gps_utc_start(str(p)) is None
+    assert aim_data.load_csv(str(p)).date_utc == '2025-07-31T11:06:39Z'

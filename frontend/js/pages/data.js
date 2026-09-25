@@ -242,11 +242,13 @@
     const bestStr = m.best  || (m.best_secs != null ? fmtTime(m.best_secs) : '—');
     const syncLabel = s.needs_conversion           ? '↻ conv'
                     : (!s.matched)                  ? 'no vid'
+                    : s.sync_offset != null && s.sync_review ? '⚠ check'
                     : s.sync_offset != null && s.sync_source === 'auto' ? '~ auto'
                     : s.sync_offset != null         ? '✓ user'
                     : '≈ unset';
     const iconCls   = s.needs_conversion           ? 'di-pending'
                     : (!s.matched)                  ? 'di-novid'
+                    : s.sync_offset != null && s.sync_review ? 'di-unsync'
                     : s.sync_offset != null && s.sync_source === 'auto' ? 'di-auto'
                     : s.sync_offset != null         ? 'di-user'
                     : 'di-unsync';
@@ -505,7 +507,15 @@ ${renderSecondaryCard(s)}
     const offVal    = off != null ? off.toFixed(3) : '';
     const isAuto    = s.sync_source === 'auto';
     const isSyncing = _autoSyncing && s.sync_offset == null && !s.auto_sync_failed;
-    const autoNote  = isSyncing
+    const reviewNote = (s.sync_review && off != null)
+      ? `<div style="font-size:9px;color:var(--warn);margin-bottom:6px;padding:5px 6px;
+                     border-radius:4px;border-left:2px solid var(--warn)">
+           This session is now matched to different video than when you set this
+           offset (the scan no longer mixes up recordings). Check that Lap 1 still
+           lines up, then click Mark to confirm.
+         </div>`
+      : '';
+    const autoNote  = reviewNote || (isSyncing
       ? `<div style="font-size:9px;color:#ffb74d;margin-bottom:6px;padding:5px 6px;
                      background:rgba(255,183,77,0.08);border-radius:4px;border-left:2px solid #ffb74d">
            Auto-detecting sync offset… scrub will be available once complete.
@@ -515,7 +525,7 @@ ${renderSecondaryCard(s)}
                      background:rgba(100,181,246,0.08);border-radius:4px;border-left:2px solid #64b5f6">
            Auto-detected: ${off != null ? off.toFixed(3)+'s' : '—'} — scrub to verify, then click Mark to confirm
          </div>`
-      : '';
+      : '');
     return `
 <div class="dr-card dr-align-card">
   <div class="dr-card-title">ALIGN VIDEO</div>
@@ -1041,6 +1051,7 @@ ${renderSecondaryCard(s)}
       const offset    = rawTime - outlapDur;
       s.sync_offset = offset;
       s.sync_source = 'user';
+      s.sync_review = false;
       await saveOffset(s);
       renderLeft();
       renderRight(); // re-renders the panel so the auto banner and button label update

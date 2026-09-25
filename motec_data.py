@@ -631,8 +631,11 @@ def load_ld(path: str) -> Session:
     # Build a UTC ISO timestamp from header date/time
     date_utc = ''
     try:
-        dt = datetime.strptime(f"{date_str} {time_str}", "%d/%m/%Y %H:%M:%S")
-        dt = dt.replace(tzinfo=timezone.utc)
+        # The header clock is the logger's, which i2 sets from the PC: local
+        # time, not UTC. Unverified against video (no GPS time channel in
+        # the files available), but reading it as UTC put every session
+        # hours off from video tagged in real UTC outside the UK in winter.
+        dt = datetime.strptime(f"{date_str} {time_str}", "%d/%m/%Y %H:%M:%S").astimezone(timezone.utc)
         date_utc = dt.strftime('%Y-%m-%dT%H:%M:%SZ')
     except ValueError:
         mtime = os.path.getmtime(path)

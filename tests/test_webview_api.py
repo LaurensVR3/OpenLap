@@ -647,3 +647,43 @@ class TestSyncRunnersAlwaysFinish:
 
         assert events[-1][0] == 'channel_sync_done'
         assert 'scipy' in events[-1][1]['error']
+
+
+class TestOffsetMigration:
+    """An offset is a time into the session's first clip. When a rescan
+    matches a session to different video, the offset must follow."""
+
+    @staticmethod
+    def _run(api, monkeypatch, old, new, offset, source, durations=None):
+        csv = '/s.csv'
+        api._config.offsets[csv] = offset
+        api._config.offset_sources[csv] = source
+        monkeypatch.setattr('app_config.load_scan_cache',
+                            lambda: {'sessions': [{'csv_path': csv, 'video_paths': old}]})
+        result = [{'csv_path': csv, 'video_paths': new, 'video_override': False,
+                   'sync_offset': offset, 'sync_source': source}]
+        api._migrate_offsets(result, durations or {})
+        return result[0]
+
+    def test_chapter_added_in_front_shifts_the_offset(self, api, monkeypatch):
+        r = self._run(api, monkeypatch, ['b.mp4'], ['a.mp4', 'b.mp4'], 2.0, 'user', {'a.mp4': 409.0})
+        assert api._config.offsets['/s.csv'] == pytest.approx(411.0) == r['sync_offset']
+        assert not r['sync_review']
+
+    def test_unchanged_first_clip_leaves_it_alone(self, api, monkeypatch):
+        r = self._run(api, monkeypatch, ['a.mp4', 'x.mov', 'b.mp4'], ['a.mp4', 'b.mp4'], 3.9, 'auto')
+        assert api._config.offsets['/s.csv'] == 3.9 and not r['sync_review']
+
+    def test_different_recording_clears_an_auto_offset(self, api, monkeypatch):
+        r = self._run(api, monkeypatch, ['phone.mov', 'dji.mp4'], ['dji.mp4'], 43.6, 'auto')
+        assert '/s.csv' not in api._config.offsets and r['sync_offset'] is None
+
+    def test_different_recording_keeps_a_user_offset_for_review(self, api, monkeypatch):
+        r = self._run(api, monkeypatch, ['DJI_0697_001.MP4'], ['DJI_0698_001.MP4'], 0.86, 'user')
+        assert api._config.offsets['/s.csv'] == 0.86
+        assert r['sync_review'] and '/s.csv' in api._config.offset_review
+
+    def test_confirming_by_hand_settles_the_review(self, api):
+        api._config.offset_review.append('/s.csv')
+        api.save_config({'offsets': {'/s.csv': 1.0}, 'offset_sources': {'/s.csv': 'user'}})
+        assert '/s.csv' not in api._config.offset_review

@@ -10,10 +10,10 @@ Matching strategy:
   2. Extract video creation time from:
      a. ffprobe QuickTime creation_time metadata  (most accurate)
      b. File modification time                    (fallback)
-  3. Group video segments that start within MAX_GAP seconds of each other
-     into one "video group" — these belong to the same recording session.
-  4. Match each CSV session to the video group whose start time is closest,
-     within MATCH_WINDOW seconds.
+  3. Group the chapter files of each recording, per camera, into one "video
+     group" (see _same_recording).
+  4. Match each session to the recording that started nearest to it, within
+     MATCH_WINDOW seconds (see recording_rank).
 """
 
 from __future__ import annotations
@@ -22,6 +22,7 @@ import concurrent.futures
 import json
 import logging
 import os
+import re
 import threading
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,8 @@ LD_EXTENSIONS    = {'.ld',  '.LD'}
 VBO_EXTENSIONS   = {'.vbo', '.VBO'}
 UNI_EXTENSIONS   = {'.uni', '.UNI'}
 TSV_EXTENSIONS   = {'.tsv', '.TSV'}
-MAX_GAP          = 120.0    # seconds between consecutive segments of one recording
+MAX_GAP          = 120.0    # tolerance for clips whose time came from the file date (see group_videos)
+CHAPTER_GAP      = 3.0      # chapters of one recording are frame-contiguous; tags imply < 3 s
 MATCH_WINDOW     = 3600.0   # max seconds between CSV start and video group start
 CAMERA_OFFSET_WINDOW = 300.0
 # Tolerance used only when *solving* a constant camera-clock offset (not for
@@ -71,6 +73,8 @@ class VideoFile:
     path:          str
     creation_time: Optional[datetime]   # UTC, from metadata or mtime
     duration:      float                # seconds
+    camera:        str = ''             # see camera_key(); '' = unknown
+    time_from_mtime: bool = False       # no creation_time tag: estimated from the file date
 
     @property
     def sort_key(self) -> float:
@@ -79,27 +83,51 @@ class VideoFile:
         return os.path.getmtime(self.path)
 
 
-def _ffprobe_creation_time(path: str) -> Tuple[Optional[datetime], float]:
-    """Extract (creation_time, duration_seconds) from video metadata via ffprobe."""
+def camera_key(path: str, width: int, height: int, fps: str, codec: str) -> str:
+    """Which camera recorded a clip, as far as the file says: its folder plus
+    its format. Clips from one camera share all of these; a second camera
+    recording at the same time (front and rear, helmet and chassis) differs
+    in at least one, even when both sit in one folder. Camera files carry no
+    reliable model or serial tag to use instead (DJI's carry neither)."""
+    return f'{os.path.normcase(os.path.dirname(os.path.abspath(path)))}|{width}x{height}|{fps}|{codec}'
+
+
+def _ffprobe_video_meta(path: str) -> dict:
+    """{creation_time, duration, camera} for one clip via ffprobe."""
     try:
         r = _run([ffprobe_path(), '-v', 'quiet', '-print_format', 'json',
-             '-show_entries', 'format_tags=creation_time:format=duration',
-             path], text=True, timeout=10)
+                  '-show_entries',
+                  'format_tags=creation_time,com.apple.quicktime.creationdate:format=duration:'
+                  'stream=codec_type,codec_name,width,height,r_frame_rate',
+                  path], text=True, timeout=10)
         data = json.loads(r.stdout)
-        ct = (data.get('format', {}).get('tags', {}).get('creation_time') or
-              data.get('format', {}).get('tags', {}).get('com.apple.quicktime.creationdate'))
-        dur = float(data.get('format', {}).get('duration', 0))
-        if ct:
-            # Normalise timezone
-            ct = ct.replace('Z', '+00:00')
-            dt = datetime.fromisoformat(ct)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt, dur
-        return None, dur
     except Exception:
         logger.debug('ffprobe failed for %s', path, exc_info=True)
-        return None, 0.0
+        return {'creation_time': None, 'duration': 0.0, 'camera': ''}
+    tags = data.get('format', {}).get('tags', {}) or {}
+    ct = tags.get('creation_time') or tags.get('com.apple.quicktime.creationdate')
+    dt = None
+    if ct:
+        try:
+            dt = datetime.fromisoformat(ct.replace('Z', '+00:00'))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            dt = None
+    try:
+        dur = float(data.get('format', {}).get('duration', 0) or 0)
+    except (TypeError, ValueError):
+        dur = 0.0
+    v = next((st for st in data.get('streams', []) if st.get('codec_type') == 'video'), {})
+    cam = camera_key(path, v.get('width', 0), v.get('height', 0),
+                     v.get('r_frame_rate', ''), v.get('codec_name', '')) if v else ''
+    return {'creation_time': dt, 'duration': dur, 'camera': cam}
+
+
+def _ffprobe_creation_time(path: str) -> Tuple[Optional[datetime], float]:
+    """(creation_time, duration_seconds) from video metadata via ffprobe."""
+    meta = _ffprobe_video_meta(path)
+    return meta['creation_time'], meta['duration']
 
 
 def _stat_size_mtime(path: str) -> Optional[Tuple[int, float]]:
@@ -135,10 +163,13 @@ def scan_videos(folder: str, progress_cb: Optional[Callable[[str], None]] = None
     for i, path in enumerate(all_paths):
         stat  = _stat_size_mtime(path)
         entry = cache.get(path)
-        if stat and entry and entry.get('size') == stat[0] and entry.get('mtime') == stat[1]:
+        if (stat and entry and entry.get('size') == stat[0] and entry.get('mtime') == stat[1]
+                and 'camera' in entry):   # entries written before cameras were told apart: re-probe once
             ct_raw = entry.get('creation_time')
             ct = datetime.fromisoformat(ct_raw) if ct_raw else None
-            results[i] = VideoFile(path=path, creation_time=ct, duration=entry.get('duration', 0.0))
+            results[i] = VideoFile(path=path, creation_time=ct, duration=entry.get('duration', 0.0),
+                                   camera=entry.get('camera', ''),
+                                   time_from_mtime=bool(entry.get('time_from_mtime')))
         else:
             to_probe.append((i, path))
 
@@ -148,19 +179,22 @@ def scan_videos(folder: str, progress_cb: Optional[Callable[[str], None]] = None
     def _probe(item: Tuple[int, str]) -> None:
         nonlocal done_count
         i, path = item
-        ct, dur = _ffprobe_creation_time(path)
+        meta = _ffprobe_video_meta(path)
+        ct, dur, cam = meta['creation_time'], meta['duration'], meta['camera']
+        from_mtime = ct is None
         if ct is None:
             mtime = os.path.getmtime(path)
             ct    = datetime.fromtimestamp(mtime, tz=timezone.utc)
             if dur > 0:
                 ct = ct - timedelta(seconds=dur)
-        results[i] = VideoFile(path=path, creation_time=ct, duration=dur)
+        results[i] = VideoFile(path=path, creation_time=ct, duration=dur, camera=cam,
+                               time_from_mtime=from_mtime)
         stat = _stat_size_mtime(path)
         if stat:
             cache[path] = {
                 'size': stat[0], 'mtime': stat[1],
                 'creation_time': ct.isoformat() if ct else None,
-                'duration': dur,
+                'duration': dur, 'camera': cam, 'time_from_mtime': from_mtime,
             }
         if progress_cb:
             with progress_lock:
@@ -191,23 +225,69 @@ class VideoGroup:
         return [v.path for v in self.files]
 
 
+_DJI_RE    = re.compile(r'^DJI_(\d{4})_(\d{3})$', re.I)          # DJI_0698_001
+_GOPRO_RE  = re.compile(r'^G[HXL](\d{2})(\d{4})$', re.I)         # GX010123: chapter 01 of 0123
+
+
+def recording_id(path: str) -> Optional[Tuple[str, int]]:
+    """(recording, chapter) for a clip whose camera's file naming says so:
+    DJI_<rec>_<chapter> and GoPro G[HXL]<chapter><rec>. None otherwise."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    m = _DJI_RE.match(stem)
+    if m:
+        return f'DJI:{m.group(1)}', int(m.group(2))
+    m = _GOPRO_RE.match(stem)
+    if m:
+        return f'GoPro:{m.group(2)}', int(m.group(1))
+    return None
+
+
+def _same_recording(prev: VideoFile, v: VideoFile) -> bool:
+    """Whether *v* continues the recording *prev* is part of.
+
+    Chapters of one recording (a camera splitting a long take into ~4 GB
+    files) are frame-contiguous; their 1-second creation tags imply gaps
+    under CHAPTER_GAP. Any longer gap means the camera was stopped. Grouping
+    anything within 2 minutes instead merged separate runs whenever the
+    driver restarted the camera quickly: on a real library all 8 groups with
+    a gap over 3 s were two sessions' recordings joined into one, so both
+    sessions were matched to video that began with the other run's footage.
+    File names settle it when they carry a recording number. Times estimated
+    from the file date are too rough for the chapter rule; they keep the
+    looser MAX_GAP.
+    """
+    prev_end = prev.creation_time.timestamp() + prev.duration if prev.creation_time else 0
+    gap = abs(v.sort_key - prev_end)
+    rp, rv = recording_id(prev.path), recording_id(v.path)
+    if rp and rv:
+        # Same recording, the very next chapter, and not hours apart: a
+        # missing chapter file would otherwise be skipped over silently,
+        # shifting every frame after it by that chapter's length.
+        return rp[0] == rv[0] and rv[1] == rp[1] + 1 and gap <= MAX_GAP
+    tolerance = MAX_GAP if (prev.time_from_mtime or v.time_from_mtime) else CHAPTER_GAP
+    return gap <= tolerance
+
+
 def group_videos(videos: List[VideoFile]) -> List[VideoGroup]:
-    """Group consecutive video segments (gap < MAX_GAP) into VideoGroups."""
+    """Group the clips of each recording (see _same_recording) into
+    VideoGroups — per camera (VideoFile.camera). Grouping by time alone
+    interleaved two cameras recording at once into one "recording", which
+    export then joined front-rear-front-rear. Groups come in start order."""
     if not videos:
         return []
-    groups: List[VideoGroup] = []
-    cur: List[VideoFile] = [videos[0]]
-
-    for v in videos[1:]:
-        prev = cur[-1]
-        prev_end = prev.creation_time.timestamp() + prev.duration if prev.creation_time else 0
-        gap = v.sort_key - prev_end
-        if abs(gap) <= MAX_GAP:
-            cur.append(v)
-        else:
-            groups.append(_make_group(cur))
-            cur = [v]
-    groups.append(_make_group(cur))
+    open_groups: Dict[str, List[VideoFile]] = {}
+    done: List[List[VideoFile]] = []
+    for v in sorted(videos, key=lambda x: x.sort_key):
+        cur = open_groups.get(v.camera)
+        if cur is not None:
+            if _same_recording(cur[-1], v):
+                cur.append(v)
+                continue
+            done.append(cur)
+        open_groups[v.camera] = [v]
+    done.extend(open_groups.values())
+    groups = [_make_group(g) for g in done]
+    groups.sort(key=lambda g: g.start_time.timestamp() if g.start_time else 0)
     return groups
 
 
@@ -507,6 +587,9 @@ class MatchedSession:
     source:           str  = 'RaceBox' # 'RaceBox' | 'AIM Mychron'
     needs_conversion: bool = False     # True for XRK files not yet converted to CSV
     xrk_path:         Optional[str] = None  # source XRK path when needs_conversion=True
+    other_groups:     List[VideoGroup] = field(default_factory=list)
+    # other cameras' recordings running when this session started (a second
+    # angle for picture-in-picture), nearest first
 
 
 def scan_pending_xrk(folder: str) -> List[Tuple[str, str]]:
@@ -566,15 +649,20 @@ def match_sessions(csv_paths: List[str],
         best_group  = None
         best_delta  = float('inf')
         best_vstart = None
+        others: list = []
 
         if csv_start and video_groups:
-            for grp in video_groups:
-                if grp.start_time:
-                    delta = abs((csv_start - grp.start_time).total_seconds())
-                    if delta < best_delta:
-                        best_delta  = delta
-                        best_group  = grp
-                        best_vstart = grp.start_time
+            ranked = sorted(((recording_rank(csv_start, g), i, g)
+                             for i, g in enumerate(video_groups) if g.start_time),
+                            key=lambda r: (r[0], r[1]))
+            if ranked:
+                (_, best_delta), _, best_group = ranked[0]
+                best_vstart = best_group.start_time
+                # Another camera's recording around the same time: a second
+                # angle for picture-in-picture.
+                others = [g for (short, delta), _, g in ranked[1:]
+                          if not short and g.files[0].camera != best_group.files[0].camera
+                          and (delta <= CAMERA_OFFSET_WINDOW or _overlaps(csv_start, g))]
 
         matched = best_delta <= MATCH_WINDOW if best_group else False
         results.append(MatchedSession(
@@ -585,11 +673,43 @@ def match_sessions(csv_paths: List[str],
             video_start = best_vstart,
             matched     = matched,
             source      = _csv_source(csv_path),
+            other_groups = others if matched else [],
         ))
 
     # Sort by CSV start time
     results.sort(key=lambda m: m.csv_start.timestamp() if m.csv_start else 0)
     return results
+
+
+# A recording shorter than this is a phone snippet or an accidental press,
+# not a session's onboard video; it is only matched if nothing longer is.
+MIN_RECORDING_S = 30.0
+
+
+def recording_rank(csv_start: datetime, group: 'VideoGroup') -> Tuple[int, float]:
+    """Sort key for how likely *group* is the video of a session starting at
+    *csv_start* (lower is better): (too short, seconds between the two starts).
+
+    Start proximity, because drivers start the logger and the camera within
+    seconds of each other (every user-confirmed offset in a real library was
+    within ±20 s), while camera clocks are routinely minutes off. Ranking by
+    "was the camera running when the session started" was tried and measured
+    worse: with a clock 2.5 min fast, the previous run's recording looked as
+    if it was still running and beat the session's own. A constant clock
+    error does not change which recording *started* nearest.
+    """
+    short = 1 if group.total_dur < MIN_RECORDING_S else 0
+    return short, abs((csv_start - group.start_time).total_seconds())
+
+
+def recording_distance(csv_start: datetime, group: 'VideoGroup') -> float:
+    """Seconds between a session's start and a recording's start."""
+    return recording_rank(csv_start, group)[1]
+
+
+def _overlaps(csv_start: datetime, group: 'VideoGroup') -> bool:
+    end = group.end_time or group.start_time
+    return group.start_time <= csv_start <= end
 
 
 def _read_csv_start_time(path: str) -> Optional[datetime]:
@@ -643,8 +763,8 @@ def _read_csv_start_time(path: str) -> Optional[datetime]:
                 hdr = f.read(0x90)
             date_str = hdr[0x5E:0x68].split(b'\x00')[0].decode('ascii', errors='replace').strip()
             time_str = hdr[0x7E:0x86].split(b'\x00')[0].decode('ascii', errors='replace').strip()
-            dt = datetime.strptime(f"{date_str} {time_str}", "%d/%m/%Y %H:%M:%S")
-            return dt.replace(tzinfo=timezone.utc)
+            # Local time on the logger's clock (see motec_data.load_ld).
+            return datetime.strptime(f"{date_str} {time_str}", "%d/%m/%Y %H:%M:%S").astimezone(timezone.utc)
         except Exception:
             pass
         mtime = os.path.getmtime(path)
@@ -702,6 +822,15 @@ def _read_csv_start_time(path: str) -> Optional[datetime]:
                 pass
         mtime = os.path.getmtime(path)
         return datetime.fromtimestamp(mtime, tz=timezone.utc)
+
+    with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
+        head = f.readline()
+    if head.startswith('# Session-Date:') or head.startswith('Time (s),'):
+        # AIM: its GPS clock, not the logger's local-time Log Date.
+        import aim_data as _aim
+        gps = _aim.gps_utc_start(path)
+        if gps is not None:
+            return gps
 
     with open(path, 'r', encoding='utf-8-sig', errors='ignore') as f:
         for line in f:

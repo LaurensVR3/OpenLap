@@ -34,29 +34,71 @@ def test_group_videos_single():
     assert groups[0].total_dur == pytest.approx(60.0)
 
 
-def test_group_videos_consecutive_grouped():
+def test_group_videos_contiguous_chapters_grouped():
     t0 = _utc(2024, 1, 1)
     v1 = _make_video('/a.mp4', t0, 60.0)
-    # Second video starts 10 seconds after first ends — within MAX_GAP
-    v2 = _make_video('/b.mp4', t0 + timedelta(seconds=70), 60.0)
+    v2 = _make_video('/b.mp4', t0 + timedelta(seconds=61), 60.0)   # 1 s of tag noise
     groups = group_videos([v1, v2])
     assert len(groups) == 1
     assert groups[0].total_dur == pytest.approx(120.0)
 
 
+def test_group_videos_camera_stop_splits_recordings():
+    """A real stop, even a short one, is a new recording (a new run): the
+    old 2-minute grouping merged two sessions' videos into one."""
+    t0 = _utc(2024, 1, 1)
+    v1 = _make_video('/a.mp4', t0, 60.0)
+    v2 = _make_video('/b.mp4', t0 + timedelta(seconds=70), 60.0)   # stopped for 10 s
+    assert len(group_videos([v1, v2])) == 2
+
+
 def test_group_videos_gap_splits():
     t0 = _utc(2024, 1, 1)
     v1 = _make_video('/a.mp4', t0, 60.0)
-    # Gap of 300s — well beyond MAX_GAP (120s)
     v2 = _make_video('/b.mp4', t0 + timedelta(seconds=360), 60.0)
-    groups = group_videos([v1, v2])
-    assert len(groups) == 2
+    assert len(group_videos([v1, v2])) == 2
+
+
+def test_group_videos_dji_names_decide():
+    """DJI_<recording>_<chapter>: same recording groups despite tag noise,
+    a different recording number splits even when only seconds apart."""
+    t0 = _utc(2024, 1, 1)
+    a1 = _make_video('/d/DJI_0697_001.MP4', t0, 409.0)
+    a2 = _make_video('/d/DJI_0697_002.MP4', t0 + timedelta(seconds=410.6), 36.0)
+    b1 = _make_video('/d/DJI_0698_001.MP4', t0 + timedelta(seconds=547.0), 409.0)
+    groups = group_videos([a1, a2, b1])
+    assert [g.paths for g in groups] == [[a1.path, a2.path], [b1.path]]
+
+
+def test_group_videos_gopro_chapters():
+    t0 = _utc(2024, 1, 1)
+    c1 = _make_video('/g/GX010123.MP4', t0, 500.0)
+    c2 = _make_video('/g/GX020123.MP4', t0 + timedelta(seconds=502), 100.0)
+    other = _make_video('/g/GX010124.MP4', t0 + timedelta(seconds=603), 100.0)
+    assert [len(g.files) for g in group_videos([c1, c2, other])] == [2, 1]
+
+
+def test_group_videos_file_date_times_keep_a_loose_tolerance():
+    t0 = _utc(2024, 1, 1)
+    v1 = VideoFile('/a.mp4', t0, 60.0, time_from_mtime=True)
+    v2 = VideoFile('/b.mp4', t0 + timedelta(seconds=70), 60.0, time_from_mtime=True)
+    assert len(group_videos([v1, v2])) == 1
+
+
+def test_group_videos_keeps_cameras_apart():
+    """Two cameras recording at once are two recordings, not one interleaved."""
+    t0 = _utc(2024, 1, 1)
+    front = [VideoFile(f'/f/{i}.mp4', t0 + timedelta(seconds=60 * i), 60.0, camera='front') for i in range(3)]
+    rear = [VideoFile(f'/r/{i}.mp4', t0 + timedelta(seconds=60 * i + 5), 60.0, camera='rear') for i in range(3)]
+    groups = group_videos(front + rear)
+    assert sorted(len(g.files) for g in groups) == [3, 3]
+    assert all(len({f.camera for f in g.files}) == 1 for g in groups)
 
 
 def test_group_videos_total_duration():
     t0 = _utc(2024, 1, 1)
     v1 = _make_video('/a.mp4', t0, 30.0)
-    v2 = _make_video('/b.mp4', t0 + timedelta(seconds=35), 45.0)
+    v2 = _make_video('/b.mp4', t0 + timedelta(seconds=31), 45.0)
     groups = group_videos([v1, v2])
     assert groups[0].total_dur == pytest.approx(75.0)
 
@@ -64,9 +106,28 @@ def test_group_videos_total_duration():
 def test_group_videos_start_time():
     t0 = _utc(2024, 1, 1, 10, 0, 0)
     v1 = _make_video('/a.mp4', t0, 60.0)
-    v2 = _make_video('/b.mp4', t0 + timedelta(seconds=65), 60.0)
+    v2 = _make_video('/b.mp4', t0 + timedelta(seconds=61), 60.0)
     groups = group_videos([v1, v2])
     assert groups[0].start_time == t0
+
+
+def test_session_matches_the_recording_that_started_nearest():
+    """Camera clocks are often minutes off; the logger and camera are started
+    together. With a clock 2.5 min fast, the previous run's recording seems to
+    be still running at the next session's start — it must not win."""
+    from session_scanner import recording_rank
+    t = _utc(2024, 8, 20, 8, 48, 51)
+    previous_run = group_videos([_make_video('/p.mp4', _utc(2024, 8, 20, 8, 40, 12), 659.0)])[0]
+    this_run = group_videos([_make_video('/t.mp4', _utc(2024, 8, 20, 8, 51, 18), 628.0)])[0]
+    assert recording_rank(t, this_run) < recording_rank(t, previous_run)
+
+
+def test_short_clip_never_beats_a_real_recording():
+    from session_scanner import recording_rank
+    t = _utc(2024, 1, 1, 12, 24, 46)
+    phone = group_videos([_make_video('/IMG_1.MOV', _utc(2024, 1, 1, 12, 27, 59), 16.0)])[0]
+    onboard = group_videos([_make_video('/DJI_0714_001.MP4', _utc(2024, 1, 1, 12, 28, 42), 409.0)])[0]
+    assert recording_rank(t, onboard) < recording_rank(t, phone)
 
 
 # ── _read_csv_start_time ───────────────────────────────────────────────────────
@@ -273,3 +334,12 @@ def test_video_extensions_match_regardless_of_case_and_skip_camera_proxies(tmp_p
         assert is_video_file(name), name
     for name in ('a.LRV', 'b.LRF', 'c.THM', 'd.csv', 'e.jpg'):
         assert not is_video_file(name), name
+
+
+def test_group_videos_does_not_bridge_a_missing_chapter():
+    """DJI_0674_001 then _003 (chapter 002 absent from the folder): joining
+    them would shift every later frame by a whole chapter's length."""
+    t0 = _utc(2024, 1, 1)
+    c1 = _make_video('/d/DJI_0674_001.MP4', t0, 409.0)
+    c3 = _make_video('/d/DJI_0674_003.MP4', t0 + timedelta(seconds=819), 409.0)
+    assert len(group_videos([c1, c3])) == 2

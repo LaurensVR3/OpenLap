@@ -352,6 +352,10 @@ class WebviewAPI:
                 self._config.offsets.update(data['offsets'])
             if 'offset_sources' in data and isinstance(data['offset_sources'], dict):
                 self._config.offset_sources.update(data['offset_sources'])
+                # Re-confirming a session's offset by hand settles its review.
+                for csv, src in data['offset_sources'].items():
+                    if src == 'user' and csv in self._config.offset_review:
+                        self._config.offset_review.remove(csv)
             if 'bike_overrides' in data and isinstance(data['bike_overrides'], dict):
                 self._config.bike_overrides.update(data['bike_overrides'])
             if 'auto_sync_enabled' in data:
@@ -525,8 +529,59 @@ class WebviewAPI:
                 'best':            None,
             })
 
+        self._migrate_offsets(result, {v.path: v.duration for v in videos})
         logger.info('scan_all_sessions: %s → %d sessions', folders, len(result))
         return result
+
+    def _migrate_offsets(self, result: list, durations: dict) -> None:
+        """Keep sync offsets valid when a rescan matches a session to
+        different video than before.
+
+        An offset is a time into the session's *first* clip, so it follows
+        that clip. When matching improves (a missing chapter is added in
+        front, another camera's clip is taken out, a merged neighbouring
+        recording is split off) the first clip can change:
+          * the old first clip is still in the list → the offset is shifted
+            by the length of the clips now in front of it, and stays exact;
+          * it is gone, offset auto-detected → cleared, so auto-sync redoes it;
+          * it is gone, offset set by hand → kept, but marked for review
+            ("check" in the Data tab) until the user confirms it again.
+        """
+        from app_config import load_scan_cache
+        previous = {s.get('csv_path'): s.get('video_paths') or []
+                    for s in load_scan_cache().get('sessions', [])}
+        changed = False
+        with self._config_lock:
+            for r in result:
+                csv, new = r['csv_path'], r.get('video_paths') or []
+                old = previous.get(csv)
+                off = self._config.offsets.get(csv)
+                if (off is None or r.get('video_override') or not old or not new
+                        or old[0] == new[0]):
+                    continue
+                source = self._config.offset_sources.get(csv)
+                if old[0] in new:
+                    shift = sum(durations.get(p, 0.0) for p in new[:new.index(old[0])])
+                    self._config.offsets[csv] = off + shift
+                    r['sync_offset'] = off + shift
+                    logger.info('Offset for %s moved %.2fs → %.2fs: %d clip(s) now precede %s',
+                                csv, off, off + shift, new.index(old[0]), os.path.basename(old[0]))
+                elif source == 'auto':
+                    self._config.offsets.pop(csv, None)
+                    self._config.offset_sources.pop(csv, None)
+                    r['sync_offset'] = r['sync_source'] = None
+                    logger.info('Cleared auto offset for %s: its video is now %s', csv,
+                                os.path.basename(new[0]))
+                elif csv not in self._config.offset_review:
+                    self._config.offset_review.append(csv)
+                    logger.info('Offset for %s kept for review: video was %s, now %s', csv,
+                                os.path.basename(old[0]), os.path.basename(new[0]))
+                changed = True
+            review = set(self._config.offset_review)
+            for r in result:
+                r['sync_review'] = r['csv_path'] in review
+            if changed:
+                self._config.save()
 
     def link_camera_folder(self, day: str, folder: str, day_sessions: list) -> dict:
         """Manually link a folder of action-cam clips to a day of telemetry sessions.
@@ -643,6 +698,7 @@ class WebviewAPI:
                 'video_override':  bool(override),
                 'sync_offset':     offsets.get(csv),
                 'sync_source':     offset_sources.get(csv),
+                'sync_review':     csv in self._config.offset_review,
                 'auto_sync_failed': csv in auto_failed,
                 'track':           s.get('track', ''),
                 'laps':            s.get('laps', ''),
@@ -1852,6 +1908,8 @@ class WebviewAPI:
                 self._config.offset_sources.pop(key, None)
                 while key in self._config.auto_sync_failed:
                     self._config.auto_sync_failed.remove(key)
+                while key in self._config.offset_review:
+                    self._config.offset_review.remove(key)
             self._config.save()
 
     # ── RaceBox session download ──────────────────────────────────────────────

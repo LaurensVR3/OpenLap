@@ -40,9 +40,10 @@ Findings from the full code/feature review (2026-09-25). Roughly in suggested fi
 - [x] **Move compositing into FFmpeg** — current path: cv2 decode → MJPG intermediate → re-encode (double lossy), full frame + ~600 history dicts pickled per frame. Render only the RGBA overlay (existing overlay-only path) and composite with FFmpeg `overlay`; enables hwaccel decode and exact audio/frame timing.
 - [x] **Per-frame matplotlib cost** — ~55 ms/frame/core for the default layout. Cache static gauges (Info, Image), skip re-render when the displayed value is unchanged, reuse figures or move to PIL/Skia.
 - [x] **Reuse the worker Pool across laps** in an all-laps export instead of spawning per `render_lap`.
-- [ ] **Video matching by start-time proximity** (`session_scanner.match_sessions`, 1h window, no one-to-one). Match by time-range overlap instead.
-- [ ] **Multi-camera clips merged** — `group_videos` groups purely by time; front/rear cameras get concatenated. Group per camera (model tag / resolution / folder).
-- [ ] **Timezone risk (unverified)** — MoTeC header time treated as UTC; many action cams write local time tagged as UTC.
+- [x] ~~**Video matching by start-time proximity**~~ — measured and kept: on the real library, matching by "was the camera running at session start" picked the previous run's recording whenever a camera clock ran minutes fast; start proximity was right in every checked case. The real faults were in grouping (next items).
+- [x] **Separate recordings merged into one "recording"** (found while doing the above) — clips within 2 minutes were grouped, so a camera restarted between runs merged two sessions' videos: all 8 such groups in the real library were two sessions joined, so both matched video that began with the other run. Now only frame-contiguous chapters (or one DJI/GoPro recording number, consecutive chapters) group. Saved offsets follow the change: shifted when a chapter is added in front, auto ones re-synced, hand-set ones kept and flagged "⚠ check".
+- [x] **Multi-camera clips merged** — `group_videos` groups purely by time; front/rear cameras get concatenated. Group per camera (model tag / resolution / folder).
+- [x] **Timezone handling** — AIM confirmed wrong and fixed: the session time was the MyChron's local clock labelled UTC (+2 h Spain, −4 h North America on real files); now taken from the GPS time the logger records. MoTeC header time now read as local (the PC-set logger clock); unverified — no GPS time channel in the files available. DJI, RaceBox, GPX, VBOX, Unipro checked UTC.
 
 ## Code health
 
