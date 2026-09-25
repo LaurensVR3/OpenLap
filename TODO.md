@@ -64,3 +64,17 @@ Findings from the full code/feature review (2026-09-25). Roughly in suggested fi
 - [x] Editor: undo/redo, keyboard nudge/delete/duplicate, delete/rename presets.
 - [x] Export: output resolution/fps, bitrate control; persist export queue across restarts.
 - [x] Update-available notification.
+
+## Next (after 0.4.0)
+
+Shortcomings left after the 0.4.0 work, roughly in priority order.
+
+- [ ] **Previews play only a session's first clip** — the Data tab and Overlay editor load `video_paths[0]`, so a lap in a later chapter (after ~409 s on DJI files) shows the wrong video in the preview while the export is right. Switch clips by timeline position, as `_tickLayers` already does for Video gauges.
+- [ ] **Gauge drawing is the export bottleneck** — ~235 ms/frame/worker for the "Kart" layout at 2.7K (Zoomed map 156 ms, Multi-Line 130 ms). Quick win: default `workers` to `cpu_count - 2` instead of 4. Bigger win: reuse matplotlib figures between frames, or draw with something lighter.
+- [ ] **Real-footage checks for new features** — Video gauge audio sync is only validated on disguised real audio, not a real second camera; GoPro only on GoPro's walking-pace sample clips, not track footage.
+- [ ] **Every gauge is written twice** (JS preview + Python export). Parity tests cover channel tables and history, not pixels; a visual change still needs both edits and can diverge unnoticed.
+- [ ] **Config keyed by absolute paths** — moving or renaming data folders loses offsets, track renames and second-camera links (track lines are the exception: matched by place).
+- [ ] **No export test inside the packaged app** — the self-test proves modules import in the frozen build, but doesn't render a video there.
+- [ ] **Unverified / unsupported inputs** — MoTeC time read as local (unverified); DJI/Insta360 telemetry (above); HDR/10-bit footage exported as plain 8-bit with no colour handling.
+- [ ] **Distribution** — installed app is 1.1 GB, mostly Chromium bundled only for RaceBox cloud login (download on first use instead); Windows-only releases; unsigned installer triggers SmartScreen.
+- [ ] **Split the two largest files** — `editor.js` (~2,400 lines) and `webview_api.py` (~2,300) by feature.
