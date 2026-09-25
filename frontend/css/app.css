@@ -378,7 +378,7 @@ body {
 .data-right-panel {
   flex: 1;
   min-width: 200px;
-  overflow: hidden;
+  overflow-y: auto;      /* scroll, never squash: cards keep their full height */
   background: var(--sidebar);
   padding: 10px 12px;
   display: flex;
@@ -390,6 +390,7 @@ body {
 
 /* Info card */
 .dr-card {
+  flex-shrink: 0;
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -440,8 +441,8 @@ body {
 
 /* Video align card — grows to fill remaining right-panel height */
 .dr-align-card {
-  flex: 1;
-  min-height: 0;
+  flex: 1 0 auto;        /* grow into spare height, but never below its content */
+  min-height: 300px;
   display: flex;
   flex-direction: column;
 }
@@ -450,7 +451,7 @@ body {
   border-radius: 4px;
   background: #000;
   flex: 1;
-  min-height: 60px;
+  min-height: 180px;
   object-fit: contain;
   display: block;
   margin-bottom: 6px;

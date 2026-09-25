@@ -778,3 +778,20 @@ class TestUpdateCheck:
         assert api.check_for_update() == {}
         api._config.check_updates = False
         assert api.check_for_update() == {}
+
+
+def test_session_meta_from_an_older_version_is_recomputed(api, monkeypatch, tmp_path):
+    """Cached lap counts are keyed on file size/date, which an update does
+    not change: entries from before a lap-logic change must be recomputed."""
+    import os
+    f = tmp_path / 's.gpx'
+    f.write_text('x')
+    st = os.stat(f)
+    api._get_file_meta_cache()['meta'][str(f)] = {'size': st.st_size, 'mtime': st.st_mtime,
+                                                   'data': {'laps': 'OLD'}}
+    monkeypatch.setattr(api, '_save_file_meta_cache', lambda: None)
+
+    class _S:
+        laps, track, source_speed_unit = [], 'T', 'kmh'
+    monkeypatch.setattr(api, '_load_session', lambda p: _S())
+    assert api.get_session_meta(str(f))['laps'] == '0'

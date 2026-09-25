@@ -55,6 +55,12 @@ _VALID_OSM_ID_RE = re.compile(r'^-?\d+$')
 
 AUTO_SYNC_WORKERS = 2   # concurrent ffmpeg decodes — kept modest, CPU-heavy work
 
+# Version of what get_session_meta() derives from a file (lap count, best
+# lap). Cached entries are keyed on the file's size and date, which do not
+# change when OpenLap's lap logic does: bump this whenever it changes, or an
+# update keeps listing the old numbers for every unchanged file.
+_META_VERSION = 2
+
 
 def _version_tuple(v: str) -> tuple:
     """'v0.3.10' -> (0, 3, 10); anything after the numbers (e.g. '-dev') is ignored."""
@@ -803,7 +809,8 @@ class WebviewAPI:
                 with self._meta_cache_lock:
                     meta_cache = self._get_file_meta_cache()['meta']
                     entry = meta_cache.get(csv_path)
-                    if stat and entry and entry.get('size') == stat[0] and entry.get('mtime') == stat[1]:
+                    if (stat and entry and entry.get('size') == stat[0] and entry.get('mtime') == stat[1]
+                            and entry.get('v') == _META_VERSION):
                         return entry['data']
 
                 session = self._load_session(csv_path)
@@ -823,7 +830,8 @@ class WebviewAPI:
                 if stat:
                     with self._meta_cache_lock:
                         meta_cache = self._get_file_meta_cache()['meta']
-                        meta_cache[csv_path] = {'size': stat[0], 'mtime': stat[1], 'data': result}
+                        meta_cache[csv_path] = {'size': stat[0], 'mtime': stat[1], 'data': result,
+                                                'v': _META_VERSION}
                         self._save_file_meta_cache()
                 return result
 

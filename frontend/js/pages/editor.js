@@ -715,7 +715,9 @@
       _liveLats   = pts.map(p => p.lat);
       _liveLons   = pts.map(p => p.lon);
 
-      if (labelEl) labelEl.textContent = `${pts.length} samples · lap ${lapIdx + 1}`;
+      const lapInfo = _liveLaps?.[lapIdx];
+      const lapName = lapInfo?.is_outlap ? 'outlap' : lapInfo?.is_inlap ? 'inlap' : `lap ${lapInfo?.lap_num ?? lapIdx + 1}`;
+      if (labelEl) labelEl.textContent = `${pts.length} samples · ${lapName}`;
 
       // If no video, set scrub range from telemetry time span
       const vid = _liveVideo();
@@ -1971,7 +1973,9 @@
         if (g[k] === undefined) g[k] = v;
       }
       selectGauge(_selected);  // refresh (updates channel picker too)
+      rebuildGaugeList();      // the list names each gauge by its type
       saveLayout();
+      if (g.type === 'Video') _loadVideoLayers();
     });
 
     panel.querySelector('#prop-channel')?.addEventListener('change', e => {
