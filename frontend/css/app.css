@@ -1020,3 +1020,18 @@ input[type="checkbox"] { accent-color: var(--acc); cursor: pointer; }
 
 /* btn-sm variant */
 .btn-sm { padding: 4px 10px; font-size: 10px; }
+
+/* Update notice at the bottom of the sidebar */
+.nav-update {
+  display: block;
+  margin: auto 10px 12px;
+  padding: 6px 8px;
+  font-size: 10px;
+  color: var(--acc2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-decoration: none;
+  text-align: center;
+}
+.nav-update:hover { background: rgba(255,255,255,0.04); }
+.nav-update.hidden { display: none; }

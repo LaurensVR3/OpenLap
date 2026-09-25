@@ -94,6 +94,8 @@ class AppConfig:
     auto_sync_failed:  List[str]       = field(default_factory=list)
     # csv_paths where auto-sync was tried but confidence was too low
     auto_sync_enabled: bool            = False
+    check_updates:     bool            = True
+    # look up the latest release on GitHub at startup (nothing else is sent)
     track_map_selections: Dict[str, str] = field(default_factory=dict)
     # track_name_lower → osm_way_id; controls which OSM way is used as circuit outline
     linked_camera_folders: List[dict] = field(default_factory=list)
@@ -369,6 +371,7 @@ def _from_dict(data: dict) -> AppConfig:
         offset_sources       = data.get('offset_sources',       {}),
         auto_sync_failed     = data.get('auto_sync_failed',     []),
         auto_sync_enabled    = bool(data.get('auto_sync_enabled', False)),
+        check_updates        = bool(data.get('check_updates', True)),
         track_map_selections = data.get('track_map_selections', {}),
         linked_camera_folders = data.get('linked_camera_folders', []),
         secondary_source          = data.get('secondary_source',          {}),

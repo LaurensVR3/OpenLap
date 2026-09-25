@@ -34,6 +34,7 @@
           <span class="nav-label">Settings</span>
         </li>
       </ul>
+      <a id="nav-update" class="nav-update hidden" href="#" title="Open the release page"></a>
     </nav>
 
     <!-- Main content -->
@@ -77,6 +78,14 @@
       } catch (_) { /* start empty */ }
       State.on('selectedItems', items => { API.saveExportQueue(items || []).catch(() => {}); });
       Router.init();
+      // A newer release? Say so, quietly, at the bottom of the sidebar.
+      API.checkForUpdate().then(u => {
+        if (!u || !u.newer) return;
+        const el = document.getElementById('nav-update');
+        el.textContent = `Version ${u.latest} available`;
+        el.classList.remove('hidden');
+        el.addEventListener('click', e => { e.preventDefault(); API.openUrl(u.url); });
+      }).catch(() => {});
     });
     // Fallback for dev without pywebview (open index.html in browser)
     if (typeof window.pywebview === 'undefined') {

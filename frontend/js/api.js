@@ -53,6 +53,8 @@ const API = (() => {
       get_session_meta:  () => ({ track: '', laps: '', best: '', best_secs: null }),
       get_video_server_port:    () => 0,
       get_video_fps:            () => 30,
+      check_for_update:         () => ({}),
+      open_url:                 () => null,
       set_second_camera:        () => ({}),
       set_second_camera_offset: () => null,
       get_video_layers:         () => [],
@@ -120,6 +122,8 @@ const API = (() => {
 
     startExport:       (params)        => call('start_export', params),
     getVideoFps:       (path)          => call('get_video_fps', path),
+    checkForUpdate:    ()              => call('check_for_update'),
+    openUrl:           (url)           => call('open_url', url),
     setSecondCamera:   (csv, paths)    => call('set_second_camera', csv, paths),
     setSecondCameraOffset: (csv, off)  => call('set_second_camera_offset', csv, off),
     getVideoLayers:    (csv, lapIdx, layout) => call('get_video_layers', csv, lapIdx, layout),

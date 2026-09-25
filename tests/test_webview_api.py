@@ -755,3 +755,26 @@ def test_export_params_carry_output_options():
     js = (Path(__file__).resolve().parent.parent / 'frontend' / 'js' / 'export_params.js').read_text(encoding='utf-8')
     for key in ('output_height', 'output_fps', 'bitrate_kbps'):
         assert f'{key}:' in js
+
+
+class TestUpdateCheck:
+    def test_version_comparison(self):
+        from webview_api import _version_tuple
+        assert _version_tuple('v0.3.10') > _version_tuple('0.3.9')
+        assert _version_tuple('0.4.0') > _version_tuple('0.3.3-dev')
+        assert not _version_tuple('v0.3.3') > _version_tuple('0.3.3')
+
+    def test_newer_release_is_reported(self, api, monkeypatch):
+        import io, json, urllib.request
+        body = json.dumps({'tag_name': 'v9.0.0', 'html_url': 'https://github.com/x'}).encode()
+        monkeypatch.setattr(urllib.request, 'urlopen', lambda req, timeout: io.BytesIO(body))
+        assert api.check_for_update() == {'newer': True, 'latest': '9.0.0', 'url': 'https://github.com/x'}
+
+    def test_switched_off_or_offline_is_silent(self, api, monkeypatch):
+        import urllib.request
+        def offline(*a, **k):
+            raise OSError('no network')
+        monkeypatch.setattr(urllib.request, 'urlopen', offline)
+        assert api.check_for_update() == {}
+        api._config.check_updates = False
+        assert api.check_for_update() == {}

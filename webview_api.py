@@ -56,6 +56,13 @@ _VALID_OSM_ID_RE = re.compile(r'^-?\d+$')
 AUTO_SYNC_WORKERS = 2   # concurrent ffmpeg decodes — kept modest, CPU-heavy work
 
 
+def _version_tuple(v: str) -> tuple:
+    """'v0.3.10' -> (0, 3, 10); anything after the numbers (e.g. '-dev') is ignored."""
+    import re as _re
+    m = _re.match(r'v?(\d+(?:\.\d+)*)', str(v).strip())
+    return tuple(int(x) for x in m.group(1).split('.')) if m else ()
+
+
 def _positive_int(v) -> Optional[int]:
     try:
         n = int(v)
@@ -366,6 +373,8 @@ class WebviewAPI:
                 self._config.bike_overrides.update(data['bike_overrides'])
             if 'auto_sync_enabled' in data:
                 self._config.auto_sync_enabled = bool(data['auto_sync_enabled'])
+            if 'check_updates' in data:
+                self._config.check_updates = bool(data['check_updates'])
             if 'secondary_source' in data and isinstance(data['secondary_source'], dict):
                 self._config.secondary_source.update(data['secondary_source'])
             if 'secondary_offsets' in data and isinstance(data['secondary_offsets'], dict):
@@ -1927,6 +1936,37 @@ class WebviewAPI:
                                            else 'not in this FFmpeg build'})
 
         return {'version': version, 'ffmpeg_path': ffmpeg_bin, 'encoders': encoders}
+
+    # ── Updates ────────────────────────────────────────────────────────────────
+    RELEASES_API = 'https://api.github.com/repos/LaurensVR3/OpenLap/releases/latest'
+
+    def check_for_update(self) -> dict:
+        """{newer, latest, url} from GitHub's latest release, or {} when the
+        check is switched off, offline, or fails. One unauthenticated GET of
+        public release information; nothing about the user is sent."""
+        if not self._config.check_updates:
+            return {}
+        import json
+        import urllib.request
+        from _version import __version__
+        try:
+            req = urllib.request.Request(self.RELEASES_API, headers={
+                'Accept': 'application/vnd.github+json', 'User-Agent': f'OpenLap/{__version__}'})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                rel = json.load(r)
+        except Exception:
+            logger.debug('Update check failed', exc_info=True)
+            return {}
+        tag = str(rel.get('tag_name') or '')
+        return {'newer': _version_tuple(tag) > _version_tuple(__version__),
+                'latest': tag.lstrip('v'), 'url': rel.get('html_url') or ''}
+
+    def open_url(self, url: str) -> None:
+        """Open a web page in the system browser (release notes)."""
+        if not str(url).startswith('https://'):
+            return
+        import webbrowser
+        webbrowser.open(url)
 
     # ── About ──────────────────────────────────────────────────────────────────
     def get_about_info(self) -> dict:

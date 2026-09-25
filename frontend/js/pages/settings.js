@@ -208,6 +208,14 @@
     <!-- About -->
     <section class="settings-section">
       <div class="section-title">About</div>
+      <div class="form-row">
+        <label title="Looks up the latest release on GitHub at startup; nothing else is sent">Check for updates at startup</label>
+        <label class="toggle-switch">
+          <input type="checkbox" data-config-key="check_updates"
+                 ${cfg.check_updates !== false ? 'checked' : ''}>
+          <span class="toggle-thumb"></span>
+        </label>
+      </div>
       <div class="about-row"><span class="about-key">Version</span><span class="about-val" id="about-version">—</span></div>
       <div class="about-row"><span class="about-key">Python</span><span class="about-val" id="about-python">—</span></div>
       <div class="about-row"><span class="about-key">Config</span>
@@ -494,7 +502,7 @@
     const updated = { ..._config };
     const _intKeys  = new Set(['crf', 'workers', 'output_height', 'bitrate_kbps']);
     const _numKeys  = new Set(['output_fps']);
-    const _boolKeys = new Set(['auto_sync_enabled']);
+    const _boolKeys = new Set(['auto_sync_enabled', 'check_updates']);
     container.querySelectorAll('[data-config-key]').forEach(el => {
       const key = el.dataset.configKey;
       const scale = parseFloat(el.dataset.scale || '1');   // e.g. Mbit/s shown, kbit/s stored
