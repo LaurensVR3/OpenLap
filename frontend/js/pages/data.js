@@ -384,11 +384,133 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
   </div>
 </div>`}
 
+<!-- Start/finish and sector lines -->
+${renderLinesCard(s)}
+
 <!-- Secondary telemetry -->
 ${renderSecondaryCard(s)}
 `;
 
     wirePropPanel(s, pane);
+    wireLinesCard(s, pane);
+  }
+
+  // ── Start/finish and sector lines ──────────────────────────────────────────
+  // Laps are timed where the track crosses the start/finish line. The logger's
+  // own laps are used (timed between samples) unless the user places a line;
+  // sources without laps (GPX, .uni) get an automatic one. Sector lines drive
+  // the Splits and Sector Bar gauges. Lines are stored by place, so they apply
+  // to every session on that circuit.
+  let _linesMode = null;   // 'finish' | 'sector' while waiting for a map click
+
+  function renderLinesCard(s) {
+    return `
+<div class="dr-card" id="dr-lines-card">
+  <div class="dr-card-title">LAPS &amp; SECTORS</div>
+  <div class="dr-hint" id="dr-lines-status">Loading track…</div>
+  <canvas id="dr-lines-map" style="width:100%;height:170px;display:block;margin-top:6px;
+          border-radius:4px;background:rgba(0,0,0,0.25)"></canvas>
+  <div class="dr-actions" style="margin-top:6px;flex-wrap:wrap">
+    <button class="btn btn-secondary btn-sm" id="dr-lines-finish" title="Click, then click the map where laps should start">Move finish line</button>
+    <button class="btn btn-secondary btn-sm" id="dr-lines-sector" title="Click, then click the map where a sector should end">Add sector line</button>
+    <button class="btn btn-secondary btn-sm" id="dr-lines-clear">Clear sectors</button>
+    <button class="btn btn-secondary btn-sm" id="dr-lines-reset" title="Forget your lines for this circuit">Automatic</button>
+  </div>
+</div>`;
+  }
+
+  function wireLinesCard(s, pane) {
+    const canvas = pane.querySelector('#dr-lines-map');
+    const status = pane.querySelector('#dr-lines-status');
+    if (!canvas) return;
+    let data = null, proj = null;
+
+    function setStatus(msg) { if (status) status.textContent = msg; }
+
+    function describe() {
+      if (!data?.finish) return 'No lap line: this track is not driven round a circuit.';
+      const where = data.user ? 'your start/finish line' : 'the logger’s lap line (or an automatic one)';
+      const secs = data.sectors.length
+        ? `, ${data.sectors.length + 1} sectors at your lines`
+        : ', sectors split by distance';
+      return `Laps are timed at ${where}${secs}.`;
+    }
+
+    function draw() {
+      const dpr = window.devicePixelRatio || 1;
+      const w = canvas.clientWidth || 300, h = canvas.clientHeight || 170;
+      canvas.width = w * dpr; canvas.height = h * dpr;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      const lats = data?.outline?.lats || [], lons = data?.outline?.lons || [];
+      if (lats.length < 2) { proj = null; return; }
+      const k = Math.cos(lats[0] * Math.PI / 180);
+      const xs = lons.map(v => v * k), ys = lats;
+      const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+      const pad = 12, sc = Math.min((w - 2 * pad) / ((maxX - minX) || 1e-9), (h - 2 * pad) / ((maxY - minY) || 1e-9));
+      const ox = (w - (maxX - minX) * sc) / 2, oy = (h - (maxY - minY) * sc) / 2;
+      proj = {
+        to:   (la, lo) => [ox + (lo * k - minX) * sc, h - (oy + (la - minY) * sc)],
+        from: (px, py) => [minY + (h - py - oy) / sc, (minX + (px - ox) / sc) / k],
+      };
+      ctx.strokeStyle = 'rgba(200,210,230,0.7)'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      lats.forEach((la, i) => { const [x, y] = proj.to(la, lons[i]); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      ctx.stroke();
+      const line = (d, colour, label) => {
+        const [x, y] = proj.to(d.lat, d.lon);
+        const hd = d.heading_deg * Math.PI / 180;
+        const ax = Math.cos(hd), ay = Math.sin(hd);      // across the track, on screen
+        ctx.strokeStyle = colour; ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.moveTo(x - ax * 10, y - ay * 10); ctx.lineTo(x + ax * 10, y + ay * 10); ctx.stroke();
+        if (label) { ctx.fillStyle = colour; ctx.font = '10px sans-serif'; ctx.fillText(label, x + 12, y - 4); }
+      };
+      data.sectors.forEach((d, i) => line(d, '#64b5f6', `S${i + 1}`));
+      if (data.finish) line(data.finish, '#4caf50', 'Start/Finish');
+    }
+
+    async function refresh(promise) {
+      try {
+        data = await promise;
+      } catch (e) {
+        setStatus('Could not read the track: ' + e);
+        return;
+      }
+      if (_selCsv !== s.csv_path) return;
+      setStatus(describe());
+      draw();
+    }
+
+    function arm(mode, label) {
+      _linesMode = mode;
+      canvas.style.cursor = 'crosshair';
+      setStatus(label);
+    }
+    pane.querySelector('#dr-lines-finish')?.addEventListener('click', () =>
+      arm('finish', 'Click the map where laps should start.'));
+    pane.querySelector('#dr-lines-sector')?.addEventListener('click', () =>
+      arm('sector', 'Click the map where the sector should end.'));
+
+    async function apply(kind, lat, lon) {
+      _linesMode = null;
+      canvas.style.cursor = '';
+      setStatus('Re-timing laps…');
+      await refresh(API.setTrackLine(s.csv_path, kind, lat, lon));
+      delete _lapDetails[s.csv_path];   // laps changed: fetch them again
+      loadLaps(s);
+    }
+    pane.querySelector('#dr-lines-clear')?.addEventListener('click', () => apply('clear_sectors'));
+    pane.querySelector('#dr-lines-reset')?.addEventListener('click', () => apply('reset'));
+    canvas.addEventListener('click', e => {
+      if (!_linesMode || !proj) return;
+      const r = canvas.getBoundingClientRect();
+      const [lat, lon] = proj.from(e.clientX - r.left, e.clientY - r.top);
+      apply(_linesMode, lat, lon);
+    });
+
+    refresh(API.getTrackLines(s.csv_path));
   }
 
   function renderSecondaryCard(s) {

@@ -25,7 +25,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from data_model import DataPoint, Lap, Session
+from data_model import DataPoint, Lap, Session, laps_from_track
 from exceptions import NoDataRowsError, MissingHeaderError
 
 logger = logging.getLogger(__name__)
@@ -302,10 +302,18 @@ def load_gpx(path: str) -> Session:
         )
         all_pts.append(pt)
 
-    # ── Single timed lap (the whole track) ────────────────────────────────────
+    # ── Laps: from the track when it is a circuit, else one lap ──────────────
+    # A GPX track has no lap data. Driven round a circuit, laps come from
+    # start/finish line crossings (data_model.laps_from_track); a
+    # point-to-point stage or road drive stays a single lap.
     total_dur = float(elapsed[-1]) if n > 1 else 0.0
-    lap = Lap(lap_num=1, points=all_pts, duration=total_dur,
-              is_outlap=False, is_inlap=False)
+    laps = laps_from_track(all_pts) if n > 1 else None
+    if not laps:
+        for pt in all_pts:
+            pt.lap = 1
+        laps = [Lap(lap_num=1, points=all_pts, duration=total_dur,
+                    is_outlap=False, is_inlap=False)]
+    timed = [l for l in laps if not l.is_outlap and not l.is_inlap]
 
     # Extract a track name from the file
     trk_name_el = None
@@ -328,9 +336,9 @@ def load_gpx(path: str) -> Session:
         track         = track_name,
         configuration = '',
         session_type  = '',
-        best_lap_time = total_dur,
+        best_lap_time = min((l.duration for l in timed), default=total_dur),
         all_points    = all_pts,
-        laps          = [lap],
+        laps          = laps,
         is_bike       = False,
         csv_path      = path,
         source_speed_unit = 'kmh',

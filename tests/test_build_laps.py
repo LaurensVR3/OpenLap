@@ -71,3 +71,60 @@ def test_device_lap_clock_is_kept_and_a_lap_under_way_counts_its_earlier_part():
     laps = build_laps(pts, keep_lap_elapsed=True)
     assert laps[0].points[0].lap_elapsed == 10.0
     assert laps[0].duration == pytest.approx(40.0)
+
+
+# ── laps from the GPS track (lap_detection) ───────────────────────────────────
+
+import math
+
+
+def _track_pts(laps=5, lap_s=30.0, hz=10, radius_m=80.0, straight=False):
+    """A circle driven *laps* times at constant speed (or a straight road)."""
+    out = []
+    n = int(laps * lap_s * hz)
+    for i in range(n):
+        t = i / hz
+        if straight:
+            east, north = t * 20.0, 0.0
+        else:
+            a = 2 * math.pi * t / lap_s
+            east, north = radius_m * math.sin(a), radius_m * (1 - math.cos(a))
+        out.append(DataPoint(record=i, time=_T, lat=50.0 + north / 111_000.0,
+                             lon=5.0 + east / (111_000.0 * math.cos(math.radians(50.0))),
+                             alt=0, speed=60, gforce_x=0, gforce_y=0, gforce_z=1, lap=1,
+                             gyro_x=0, gyro_y=0, gyro_z=0, elapsed=t))
+    return out
+
+
+def test_laps_found_from_a_circuit_track_are_the_lap_period():
+    from data_model import laps_from_track
+    laps = laps_from_track(_track_pts(laps=5, lap_s=30.0))
+    full = [l for l in laps if not l.is_outlap and not l.is_inlap]
+    assert len(full) >= 3
+    assert all(l.duration == pytest.approx(30.0, abs=0.02) for l in full)
+
+
+def test_a_point_to_point_track_has_no_laps():
+    from data_model import laps_from_track
+    assert laps_from_track(_track_pts(laps=1, lap_s=120.0, straight=True)) is None
+
+
+def test_crossings_are_timed_between_samples():
+    """At 10 Hz a crossing lands between samples; its time is interpolated,
+    so laps are not quantised to the 0.1 s sample grid."""
+    import lap_detection as ld
+    pts = _track_pts(laps=4, lap_s=30.03, hz=10)
+    line = ld.auto_finish_line(pts)
+    cr = ld.crossings(pts, line)
+    assert all(b - a == pytest.approx(30.03, abs=0.01) for a, b in zip(cr, cr[1:]))
+
+
+def test_logger_boundaries_are_refined_to_the_line():
+    """A logger that switches lap on its first sample past the line: the lap
+    is timed from the crossing itself."""
+    pts = _track_pts(laps=5, lap_s=30.03, hz=10)
+    for p in pts:
+        p.lap = int(p.elapsed // 30.03)     # lap k from the first sample past k laps
+    laps = build_laps(pts)
+    complete = [l for l in laps if not l.is_outlap and not l.is_inlap][:-1]   # last is cut off
+    assert len(complete) >= 3 and all(l.duration == pytest.approx(30.03, abs=0.01) for l in complete)

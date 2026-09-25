@@ -901,6 +901,87 @@ class WebviewAPI:
             logger.exception('get_reference_preview failed for %s lap %s', csv_path, lap_idx)
             return {'ok': False, 'desc': 'error'}
 
+    def get_track_lines(self, csv_path: str) -> dict:
+        """The session's GPS outline (one lap, for drawing) and the lines its
+        laps are cut at: the user's set if it runs through one, else the
+        automatic one. {outline: {lats, lons}, finish, sectors, user}."""
+        try:
+            import lap_detection
+            s = self._load_session(csv_path)
+            lap = s.fastest_lap or (s.laps[0] if s.laps else None)
+            pts = lap.points if lap else s.all_points
+            step = max(1, len(pts) // 800)
+            outline = {'lats': [p.lat for p in pts[::step] if p.lat],
+                       'lons': [p.lon for p in pts[::step] if p.lat]}
+            if s.finish_line:
+                return {'outline': outline, 'finish': s.finish_line,
+                        'sectors': s.sector_lines, 'user': True}
+            line = (lap_detection.finish_line_from_laps(s.all_points)
+                    or lap_detection.auto_finish_line(s.all_points))
+            return {'outline': outline, 'finish': line.to_dict() if line else None,
+                    'sectors': [], 'user': False}
+        except Exception:
+            logger.exception('get_track_lines failed for %s', csv_path)
+            return {'outline': {'lats': [], 'lons': []}, 'finish': None, 'sectors': [], 'user': False}
+
+    def set_track_line(self, csv_path: str, kind: str, lat: float = 0.0, lon: float = 0.0) -> dict:
+        """Change the start/finish or sector lines of the circuit *csv_path*
+        runs on. kind: 'finish' (place it at lat/lon), 'sector' (add one at
+        lat/lon), 'clear_sectors', or 'reset' (drop the user lines: laps come
+        from the logger, or automatic detection, again). The line is square
+        to the track at the point nearest the click. Returns get_track_lines()."""
+        import lap_detection
+        s = self._load_one_session(csv_path)
+        with self._config_lock:
+            sets = self._config.track_lines
+            current = lap_detection.pick_line_set(s.all_points, sets)
+            if kind == 'reset':
+                if current in sets:
+                    sets.remove(current)
+            elif kind == 'clear_sectors':
+                if current:
+                    current['sectors'] = []
+            elif kind in ('finish', 'sector'):
+                line = lap_detection.line_at(s.all_points, float(lat), float(lon))
+                if line is None:
+                    return self.get_track_lines(csv_path)
+                if kind == 'finish':
+                    if current:
+                        current['finish'] = line.to_dict()
+                    else:
+                        sets.append({'finish': line.to_dict(), 'sectors': []})
+                else:
+                    if current is None:
+                        auto = (lap_detection.finish_line_from_laps(s.all_points)
+                                or lap_detection.auto_finish_line(s.all_points))
+                        if auto is None:
+                            return self.get_track_lines(csv_path)
+                        current = {'finish': auto.to_dict(), 'sectors': []}
+                        sets.append(current)
+                    current['sectors'].append(line.to_dict())
+                    self._order_sectors(s, current)
+            self._config.save()
+        self._session_cache.clear()
+        with self._meta_cache_lock:          # cached lap counts/best laps are stale now
+            self._get_file_meta_cache()['meta'].clear()
+            self._save_file_meta_cache()
+        return self.get_track_lines(csv_path)
+
+    @staticmethod
+    def _order_sectors(session, line_set: dict) -> None:
+        """Keep sector lines in driving order: by when a lap crosses each."""
+        import lap_detection
+        probe = lap_detection.FinishLine.from_dict(line_set['finish'])
+        cr = lap_detection.crossings(session.all_points, probe)
+        if len(cr) < 2:
+            return
+        lap_pts = [p for p in session.all_points if cr[0] <= p.elapsed < cr[1]]
+
+        def when(d):
+            c = lap_detection.crossings(lap_pts, lap_detection.FinishLine.from_dict(d), min_lap_s=1e9)
+            return c[0] if c else float('inf')
+        line_set['sectors'].sort(key=when)
+
     def list_session_channels(self, csv_path: str) -> list:
         """Return the gauge-selectable channels available in *one*
         telemetry file (no secondary-source merge applied) — used by the
@@ -1502,6 +1583,7 @@ class WebviewAPI:
                 is_cancelled          = self._export_cancel.is_set,
                 # Merged into each session exactly as the editor preview does,
                 # so gauges bound to a secondary file's channels export too.
+                track_lines           = [dict(t) for t in self._config.track_lines],
                 secondary_source      = dict(self._config.secondary_source),
                 secondary_offsets     = dict(self._config.secondary_offsets),
                 output_height         = _positive_int(params.get('output_height')),
@@ -2018,6 +2100,7 @@ class WebviewAPI:
             self._config.secondary_source.get(csv_path),
             self._config.secondary_offsets.get(csv_path, 0.0),
             loader=lambda p: self._load_one_session(p),
+            track_lines=self._config.track_lines,
         )
 
     def confirm_clear_queue(self) -> bool:

@@ -46,8 +46,33 @@ def load_file(path: str):
     return racebox_data.load_csv(path)
 
 
+def apply_track_lines(session, line_sets) -> None:
+    """Cut *session*'s laps at the user's start/finish line and attach their
+    sector lines, when the session runs through one of *line_sets*
+    (AppConfig.track_lines). A user line overrides the logger's own laps:
+    setting it is an explicit choice of where laps start."""
+    if not line_sets or not session.all_points:
+        return
+    import lap_detection
+    from data_model import build_laps
+    chosen = lap_detection.pick_line_set(session.all_points, line_sets)
+    if chosen is None:
+        return
+    cr = lap_detection.crossings(session.all_points, lap_detection.FinishLine.from_dict(chosen['finish']))
+    starts = lap_detection.assign_laps(session.all_points, cr)
+    laps = build_laps(session.all_points, boundaries=starts, refine=False)
+    if len(laps) > 1:
+        laps[-1].is_inlap = True     # never reaches the line again
+    session.laps = laps
+    session.finish_line = dict(chosen['finish'])
+    session.sector_lines = [dict(s) for s in chosen.get('sectors') or []]
+    timed = session.timed_laps
+    if timed:
+        session.best_lap_time = min(l.duration for l in timed)
+
+
 def load_merged(path: str, secondary_path: Optional[str] = None,
-                secondary_offset: float = 0.0, loader=None):
+                secondary_offset: float = 0.0, loader=None, track_lines=None):
     """Load *path*, merging in *secondary_path* when one is assigned and exists.
 
     A secondary file that fails to load is logged and skipped rather than
@@ -55,15 +80,20 @@ def load_merged(path: str, secondary_path: Optional[str] = None,
     """
     loader = loader or load_file
     primary = loader(path)
-    if not secondary_path or not os.path.isfile(secondary_path):
-        return primary
+    session = primary
+    if secondary_path and os.path.isfile(secondary_path):
+        try:
+            secondary = loader(secondary_path)
+        except Exception:
+            logger.exception('Failed to load secondary telemetry %s for %s', secondary_path, path)
+        else:
+            from session_merge import merge_sessions
+            session = merge_sessions(primary, secondary, secondary_offset or 0.0)
     try:
-        secondary = loader(secondary_path)
+        apply_track_lines(session, track_lines)
     except Exception:
-        logger.exception('Failed to load secondary telemetry %s for %s', secondary_path, path)
-        return primary
-    from session_merge import merge_sessions
-    return merge_sessions(primary, secondary, secondary_offset or 0.0)
+        logger.exception('Could not apply track lines to %s', path)
+    return session
 
 
 def _stat_key(path: Optional[str]):
@@ -98,9 +128,11 @@ class SessionCache:
         self._lock = threading.Lock()
 
     def get(self, path: str, secondary_path: Optional[str] = None,
-            secondary_offset: float = 0.0, loader=None):
+            secondary_offset: float = 0.0, loader=None, track_lines=None):
+        import json as _json
         key = (_stat_key(path), _stat_key(secondary_path) if secondary_path else None,
-               float(secondary_offset or 0.0))
+               float(secondary_offset or 0.0),
+               _json.dumps(track_lines or [], sort_keys=True))
         with self._lock:
             if key in self._entries:
                 self._entries.move_to_end(key)
@@ -119,7 +151,8 @@ class SessionCache:
             return waiter['session']
 
         try:
-            session = load_merged(path, secondary_path, secondary_offset, loader=loader)
+            session = load_merged(path, secondary_path, secondary_offset, loader=loader,
+                                  track_lines=track_lines)
         except BaseException as e:
             waiter['error'] = e
             with self._lock:

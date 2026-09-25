@@ -174,6 +174,7 @@ def run_export(
     track_map_selections: dict = None,
     speed_unit_pref:      str  = 'auto',
     is_cancelled:         Optional[Callable[[], bool]] = None,
+    track_lines:          Optional[list] = None,
     secondary_source:     Optional[dict] = None,
     secondary_offsets:    Optional[dict] = None,
     output_height:        Optional[int] = None,
@@ -268,7 +269,7 @@ def run_export(
                 sess = load_merged(csv_path,
                                    (secondary_source or {}).get(csv_path),
                                    (secondary_offsets or {}).get(csv_path, 0.0),
-                                   loader=load_any_session)
+                                   loader=load_any_session, track_lines=track_lines)
             except Exception as e:
                 fail(name, f"Load failed: {e}")
                 continue

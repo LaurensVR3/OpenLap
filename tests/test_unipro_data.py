@@ -435,11 +435,13 @@ class TestLoadUniLapDetection:
         for lap in sess.laps:
             assert lap.points[0].lap_elapsed == pytest.approx(0.0, abs=1e-6)
 
-    def test_falls_back_to_single_lap_without_beacon(self, tmp_path):
+    def test_finds_laps_from_the_track_without_a_beacon(self, tmp_path):
+        """No beacon configured: laps come from the start/finish line the
+        track keeps crossing (lap_detection), not one whole-session lap."""
         records = self._circular_records(laps=3, pts_per_lap=200)
         p = tmp_path / 'session.uni'
         p.write_bytes(_build_uni(records))  # no beacon configured
         sess = load_uni(str(p))
-        assert len(sess.laps) == 1
-        assert sess.laps[0].lap_num == 1
-        assert sess.laps[0].is_outlap is False
+        full = [l for l in sess.laps if not l.is_outlap and not l.is_inlap and l.duration > 19.5]
+        assert len(full) >= 2
+        assert all(l.duration == pytest.approx(20.0, abs=0.05) for l in full)

@@ -93,7 +93,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
-from data_model import DataPoint, Lap, Session, build_laps
+from data_model import DataPoint, Lap, Session, build_laps, laps_from_track
 from exceptions import MissingHeaderError, NoDataRowsError
 from gpx_data import _G, _SMOOTH_SIGMA, _angular_diff, _bearing_rad, _gaussian_smooth, _haversine_km
 
@@ -564,7 +564,11 @@ def load_uni(path: str) -> Session:
             lap_elapsed = float(elapsed_arr[i]) - lap_start_elapsed[ln],
         ))
 
-    laps  = build_laps(all_pts)
+    # Laps from the start/finish line crossings the track makes; the beacon
+    # heuristic above stays only as the fallback. On two real sessions it
+    # counted one lap fewer than line detection, which matches the one-lap
+    # undercount found against Unipro's own .tsv export of the same session.
+    laps  = laps_from_track(all_pts) or build_laps(all_pts)
     timed = [l for l in laps if not l.is_outlap and not l.is_inlap]
 
     best_lap_time = min((l.duration for l in timed), default=total_dur)

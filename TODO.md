@@ -57,7 +57,7 @@ Findings from the full code/feature review (2026-09-25). Roughly in suggested fi
 ## Feature gaps
 
 - [ ] Embedded camera telemetry: GoPro GPMF, DJI, Insta360.
-- [ ] GPS lap detection with user-defined start/finish line and sectors (GPX is one lap; `.uni` is heuristic; sectors are fixed thirds).
+- [x] GPS lap detection with user-defined start/finish line and sectors (GPX is one lap; `.uni` is heuristic; sectors are fixed thirds).
 - [ ] Multi-camera / picture-in-picture.
 - [ ] Side-by-side / ghost comparison of two laps' videos.
 - [ ] Editor: undo/redo, keyboard nudge/delete/duplicate, delete/rename presets.

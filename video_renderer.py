@@ -386,9 +386,11 @@ def _setup_delta_time(reference_lap, job, session):
         'gear':         _ref_arr('gear'),
     }
 
-    # Sector splits
-    sectors = []
-    if job.lap is not None and cur_lap_t is not None and len(ref_dist_u) > 1:
+    # Sector splits: at the user's sector lines when the session has them,
+    # else at thirds of the reference lap's distance.
+    sectors = _user_sectors(getattr(session, 'sector_lines', None), job.lap, reference_lap)
+    if sectors is None and job.lap is not None and cur_lap_t is not None and len(ref_dist_u) > 1:
+        sectors = []
         N_SECTORS  = _N_SECTORS
         total_dist = float(ref_dist_u[-1])
         if total_dist > _MIN_TRACK_LENGTH_M:
@@ -429,7 +431,28 @@ def _setup_delta_time(reference_lap, job, session):
 
     return dict(delta_fn=delta_fn, cur_lap_t=cur_lap_t, cur_lap_d=cur_lap_d,
                 cur_lap_profiles=cur_lap_profiles, ref_dist_u=ref_dist_u,
-                ref_channels=ref_channels, sectors=sectors)
+                ref_channels=ref_channels, sectors=sectors or [])
+
+
+def _user_sectors(lines, lap, reference_lap):
+    """Sector splits at the user's sector lines (see lap_detection), or None
+    to fall back to distance thirds: no lines, or either lap misses one."""
+    if not lines or lap is None or reference_lap is None:
+        return None
+    from lap_detection import sector_boundaries
+    cur = sector_boundaries(lap, lines)
+    ref = sector_boundaries(reference_lap, lines)
+    if cur is None or ref is None:
+        return None
+    cur_b = [0.0] + cur + [lap.duration]
+    ref_b = [0.0] + ref + [reference_lap.duration]
+    out = []
+    for i in range(1, len(cur_b)):
+        ref_t = ref_b[i] - ref_b[i - 1]
+        cur_t = cur_b[i] - cur_b[i - 1]
+        out.append({'num': i, 'ref_t': ref_t, 'cur_t': cur_t, 'delta': cur_t - ref_t,
+                    'done': True, 'boundary_elapsed': cur_b[i]})
+    return out
 
 
 _REF_KEYS = ('speed', 'gx', 'gy', 'lean', 'rpm', 'exhaust_temp', 'alt', 'gear')

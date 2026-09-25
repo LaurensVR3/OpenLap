@@ -104,6 +104,9 @@ class AppConfig:
     # 'user' = manually confirmed, 'auto' = auto-detected via RPM cross-correlation (unconfirmed)
     secondary_sync_failed: List[str] = field(default_factory=list)
     # primary csv_paths where RPM auto-sync was tried but confidence was too low
+    track_lines: List[dict] = field(default_factory=list)
+    # [{finish: FinishLine dict, sectors: [FinishLine dict, ...]}] — user
+    # start/finish and sector lines, applied to whichever sessions cross them
     offset_review: List[str] = field(default_factory=list)
     # csv_paths whose user-set offset was made against video the scan no
     # longer matches to that session — shown as "check" until re-confirmed
@@ -364,4 +367,5 @@ def _from_dict(data: dict) -> AppConfig:
         secondary_offset_sources  = data.get('secondary_offset_sources',  {}),
         secondary_sync_failed     = data.get('secondary_sync_failed',     []),
         offset_review             = data.get('offset_review',             []),
+        track_lines               = data.get('track_lines',               []),
     )
