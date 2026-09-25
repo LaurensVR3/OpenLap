@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -93,7 +94,12 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         report_path = Path(tmp) / 'self_test.json'
-        cmd = list(args.launcher) + ['--self-test', str(report_path)] + modules
+        launcher = list(args.launcher)
+        # Windows resolves a relative executable against the caller's
+        # directory, not cwd=, so make an existing path absolute first.
+        if os.path.isfile(launcher[0]):
+            launcher[0] = os.path.abspath(launcher[0])
+        cmd = launcher + ['--self-test', str(report_path)] + modules
         proc = subprocess.run(cmd, cwd=ROOT, timeout=args.timeout)
         if not report_path.exists():
             print(f'Self-test wrote no report (exit code {proc.returncode}). '
