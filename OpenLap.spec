@@ -131,8 +131,6 @@ hidden_imports = [
     # Multiprocessing support
     'multiprocessing.pool',
     'multiprocessing.managers',
-    # OpenCV
-    'cv2',
     # Matplotlib backends (headless)
     'matplotlib',
     'matplotlib.backends.backend_agg',

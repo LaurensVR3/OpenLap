@@ -48,7 +48,7 @@ def first_party_modules() -> list:
 
 def dependency_modules(extras: list) -> list:
     """Import names for the runtime dependencies (and chosen extras) that
-    apply to this platform, e.g. opencv-python -> cv2, pywebview -> webview.
+    apply to this platform, e.g. Pillow -> PIL, pywebview -> webview.
     The mapping comes from the installed distributions' own metadata, so it
     must run in the environment the build was made from."""
     with open(ROOT / 'pyproject.toml', 'rb') as f:

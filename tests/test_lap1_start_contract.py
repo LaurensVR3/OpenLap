@@ -80,55 +80,56 @@ def _session_with_outlap(outlap_s=20.0, lap_s=10.0, hz=10):
     return sess, lap1
 
 
-def _fake_capture(n_frames, fps=30.0, w=64, h=48):
-    import cv2
-    cap = MagicMock()
-    cap.isOpened.return_value = True
-    pos = {'i': 0}
-    cap.get.side_effect = lambda prop: {
-        cv2.CAP_PROP_FPS: fps, cv2.CAP_PROP_FRAME_COUNT: float(n_frames),
-        cv2.CAP_PROP_FRAME_WIDTH: float(w), cv2.CAP_PROP_FRAME_HEIGHT: float(h),
-    }.get(prop, 0.0)
-
-    def _set(prop, value):
-        if prop == cv2.CAP_PROP_POS_FRAMES:
-            pos['i'] = int(value)
-        return True
-    cap.set.side_effect = _set
-
-    def _read():
-        if pos['i'] >= n_frames:
-            return False, None
-        pos['i'] += 1
-        return True, np.zeros((h, w, 3), dtype=np.uint8)
-    cap.read.side_effect = _read
-    return cap
-
-
-def test_render_lap_reads_video_from_sync_offset_plus_lap_start(tmp_path):
-    import cv2
-    from video_renderer import RenderJob, render_lap
+def test_frame_window_starts_at_sync_offset_plus_lap_start():
+    from video_renderer import RenderJob, frame_window
     sess, lap1 = _session_with_outlap(outlap_s=20.0, lap_s=10.0)
     job = RenderJob('Lap01', lap1)
     assert job.gpx_start == lap1.elapsed_start == pytest.approx(20.0)
-
-    sync_offset, padding, fps = 2.5, 0.0, 30.0
-    cap = _fake_capture(n_frames=int(120 * fps), fps=fps)
-    blank = np.zeros((48, 64, 3), dtype=np.uint8).tobytes()
-    with patch('cv2.VideoCapture', return_value=cap), \
-         patch('video_renderer.render_frame_worker', return_value=blank), \
-         patch('video_renderer.mux_audio'):
-        render_lap(video_path='fake.mp4', out_path=str(tmp_path / 'out.mp4'),
-                   session=sess, job=job, sync_offset=sync_offset, encoder='libx264',
-                   crf=18, n_workers=1, show_map=False, show_telemetry=False,
-                   padding=padding, log_cb=lambda _m: None)
-
-    seeks = [int(c.args[1]) for c in cap.set.call_args_list
-             if c.args[0] == cv2.CAP_PROP_POS_FRAMES]
-    assert seeks, 'render_lap never positioned the capture'
     # Lap 1 starts at telemetry 20.0 s; with the video 2.5 s ahead of the
     # telemetry it is at video 22.5 s → frame 675 at 30 fps.
-    assert seeks[0] == int((sync_offset + lap1.elapsed_start - padding) * fps) == 675
+    f_start, _ = frame_window(job, sync_offset=2.5, padding=0.0, fps=30.0, total_frames=3600)
+    assert f_start == int((2.5 + lap1.elapsed_start) * 30.0) == 675
+
+
+def test_render_lap_seeks_ffmpeg_to_sync_offset_plus_lap_start(tmp_path):
+    """The export reads the video from exactly that frame: FFmpeg's input
+    seek is the frame window's start."""
+    from fractions import Fraction
+    from video_renderer import RenderJob, VideoInfo, render_lap
+    sess, lap1 = _session_with_outlap(outlap_s=20.0, lap_s=10.0)
+    cmds = []
+
+    class _Proc:
+        def __init__(self, cmd):
+            cmds.append(cmd)
+            self.stdin = MagicMock()
+            self.stderr = iter([])
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            open(cmds[-1][-1], 'wb').close()
+            return 0
+
+        def kill(self):
+            self.returncode = -9
+
+    layout = {'gauges': [{'type': 'Numeric', 'channel': 'speed', 'visible': True,
+                          'x': 0, 'y': 0, 'w': 0.5, 'h': 0.5}]}
+    with patch('video_renderer.probe_video',
+               return_value=VideoInfo(64, 48, Fraction(30), 120.0)), \
+         patch('video_renderer._popen', side_effect=lambda cmd, **_: _Proc(cmd)), \
+         patch('video_renderer.render_frame_worker', return_value=b'\0'):
+        render_lap(video_path='fake.mp4', out_path=str(tmp_path / 'out.mp4'),
+                   session=sess, job=RenderJob('Lap01', lap1), sync_offset=2.5,
+                   encoder='libx264', crf=18, n_workers=1, show_map=False,
+                   show_telemetry=True, padding=0.0, overlay_layout=layout,
+                   log_cb=lambda _m: None)
+    cmd = cmds[0]
+    assert float(cmd[cmd.index('-ss') + 1]) == pytest.approx(675 / 30.0) == pytest.approx(22.5)
 
 
 # ── Auto-sync side: offset sign convention ────────────────────────────────────

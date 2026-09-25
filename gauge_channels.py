@@ -90,17 +90,48 @@ def _auto_range(vals: list) -> tuple[float, float]:
     return lo - pad, hi + pad
 
 
+# Every gauge shows the same span of recent history, in seconds, however many
+# samples that is: the export's history is one entry per video frame and the
+# editor preview's is one per telemetry sample, so a sample count showed a
+# different span in each (and changed with the camera's frame rate). Both
+# sides resample to at most HISTORY_POINTS samples over HISTORY_WINDOW_S —
+# the styles plot their last 120-150 values, so this is also everything any
+# of them draws. Mirrored in frontend/js/pages/editor.js.
+HISTORY_WINDOW_S = 4.0
+HISTORY_POINTS   = 120
+
+
+def resample_history(entries: list) -> list:
+    """Evenly thin a time-ordered history to at most HISTORY_POINTS entries,
+    always keeping the newest (the current value)."""
+    n = len(entries)
+    if n <= HISTORY_POINTS:
+        return list(entries)
+    step = (n - 1) / (HISTORY_POINTS - 1)
+    return [entries[round(i * step)] for i in range(HISTORY_POINTS)]
+
+
+def _extra_channel_meta(channel: str, extra_meta: dict, vals: list) -> tuple:
+    """(label, unit, min, max) for a dynamic channel. The range comes from the
+    whole session (channel_discovery.channel_ranges) when the caller supplies
+    it, so a Bar or Dial keeps a fixed scale instead of re-fitting to the last
+    few seconds on every frame; only falls back to the visible history."""
+    meta = (extra_meta or {}).get(channel) or {}
+    lo, hi = meta.get('min'), meta.get('max')
+    if lo is None or hi is None:
+        lo, hi = _auto_range(vals)
+    return meta.get('label') or channel, meta.get('unit', ''), lo, hi
+
+
 def gauge_data(channel: str, history: list, unit: str = 'kmh',
-                extra_label: str = '', extra_unit: str = '') -> dict:
+               extra_meta: dict = None) -> dict:
     """Build the data dict passed to a gauge render() function.
 
     For a dynamic/arbitrary channel (not in GAUGE_CHANNELS — see
     channel_discovery.py), hist_key is the channel name itself (extras are
     already flattened under their own name by video_renderer.py /
-    load_lap_history), label/unit come from *extra_label*/*extra_unit* (the
-    caller already fetched these via get_available_channels()/
-    list_session_channels()), and min/max are auto-ranged from the actual
-    data since there's no curated bound for an arbitrary channel.
+    load_lap_history). *extra_meta* maps channel name → {label, unit, min,
+    max}, as produced by channel_discovery.list_channels().
     """
     if channel in GAUGE_CHANNELS:
         meta = _resolved_channel_meta(channel, unit)
@@ -114,8 +145,7 @@ def gauge_data(channel: str, history: list, unit: str = 'kmh',
         min_val, max_val, symmetric = meta['min'], meta['max'], meta['symmetric']
     else:
         vals = [p.get(channel, 0.0) for p in history] if history else [0.0]
-        label, unit_out = (extra_label or channel), extra_unit
-        min_val, max_val = _auto_range(vals)
+        label, unit_out, min_val, max_val = _extra_channel_meta(channel, extra_meta, vals)
         symmetric = False
 
     raw_value = vals[-1] if vals else 0.0
@@ -134,36 +164,42 @@ def gauge_data(channel: str, history: list, unit: str = 'kmh',
 
 
 def build_multi_data(channels_list: list, history: list,
-                     ref_history: list = None, unit: str = 'kmh') -> dict:
+                     ref_history: list = None, unit: str = 'kmh',
+                     extra_meta: dict = None) -> dict:
     """
-    Build the data dict for a Multi-Line gauge.
-    Each entry in channels_list must be a key of GAUGE_CHANNELS.
+    Build the data dict for a Multi-Line gauge. Channels may be fixed
+    (GAUGE_CHANNELS) or dynamic — see gauge_data() for *extra_meta*.
+    Dynamic channels have no reference-lap trace.
     """
     from units import KMH_PER_UNIT
     entries = []
     for i, ch in enumerate(channels_list):
-        if ch not in GAUGE_CHANNELS:
-            continue
-        meta = _resolved_channel_meta(ch, unit)
-        hk   = meta['hist_key']
-        vals = [p.get(hk, 0.0) for p in history] if history else [0.0]
-        ref_vals = []
-        if ref_history:
-            ref_vals = [p.get(hk, 0.0) for p in ref_history]
-        if ch == 'speed' and unit != 'kmh':
-            factor = KMH_PER_UNIT.get(unit, 1.0)
-            vals     = [v * factor for v in vals]
-            ref_vals = [v * factor for v in ref_vals]
+        if ch in GAUGE_CHANNELS:
+            meta = _resolved_channel_meta(ch, unit)
+            hk   = meta['hist_key']
+            vals = [p.get(hk, 0.0) for p in history] if history else [0.0]
+            ref_vals = [p.get(hk, 0.0) for p in ref_history] if ref_history else []
+            if ch == 'speed' and unit != 'kmh':
+                factor = KMH_PER_UNIT.get(unit, 1.0)
+                vals     = [v * factor for v in vals]
+                ref_vals = [v * factor for v in ref_vals]
+            label, unit_out = meta['label'], meta['unit']
+            lo, hi, symmetric = meta['min'], meta['max'], meta['symmetric']
+        else:
+            vals = [p.get(ch, 0.0) for p in history] if history else [0.0]
+            ref_vals = []
+            label, unit_out, lo, hi = _extra_channel_meta(ch, extra_meta, vals)
+            symmetric = False
         entries.append({
             'channel':          ch,
-            'label':            meta['label'],
-            'unit':             meta['unit'],
+            'label':            label,
+            'unit':             unit_out,
             'values':           vals,
             'value':            vals[-1] if vals else 0.0,
             'ref_values':       ref_vals,
-            'min_val':          meta['min'],
-            'max_val':          meta['max'],
-            'symmetric':        meta['symmetric'],
+            'min_val':          lo,
+            'max_val':          hi,
+            'symmetric':        symmetric,
             'color_idx':        i,
         })
     return {'multi_channels': entries}

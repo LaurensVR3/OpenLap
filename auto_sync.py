@@ -68,30 +68,13 @@ MIN_SEGMENT_GAP_S    = 3.0
 
 # ── Telemetry loading ─────────────────────────────────────────────────────────
 
-def _load_session(csv_path: str, source: str):
-    from session_scanner import resolve_xrk_csv
-    csv_path = resolve_xrk_csv(csv_path)
-    if source == 'RaceBox':
-        from racebox_data import load_csv
-        return load_csv(csv_path)
-    if source in ('AIM Mychron', 'AIM'):
-        from aim_data import load_csv
-        return load_csv(csv_path)
-    if source == 'GPX':
-        from gpx_data import load_gpx
-        return load_gpx(csv_path)
-    if source == 'MoTeC':
-        from motec_data import load_ld
-        return load_ld(csv_path)
-    if source == 'VBOX':
-        from vbox_data import load_vbo
-        return load_vbo(csv_path)
-    if source == 'Unipro':
-        from unipro_data import is_unipro_tsv, load_tsv, load_uni
-        if is_unipro_tsv(csv_path):
-            return load_tsv(csv_path)
-        return load_uni(csv_path)
-    raise ValueError(f'Unknown telemetry source: {source!r}')
+def _load_session(csv_path: str, source: str = ''):
+    """Load a telemetry file for correlation. *source* is accepted for the
+    callers' sake but not used: the format is detected from the file itself
+    (session_loader.load_file), so a newly supported source cannot be
+    missing from a list here the way 'Unipro' once was."""
+    from session_loader import load_file
+    return load_file(csv_path)
 
 
 def _load_telemetry(csv_path: str, source: str, fps: float) -> np.ndarray:

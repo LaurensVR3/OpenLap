@@ -1,218 +1,327 @@
 """
-Tests for video_renderer.render_lap() itself — the actual frame-render loop,
-not just its helper functions (see test_video_renderer.py for those).
+Tests for video_renderer.render_lap() itself: the frame loop feeding FFmpeg,
+its failure handling, and — with a real FFmpeg, when one is installed — the
+exported file itself.
 
-render_lap is never called for real anywhere else in the test suite (every
-export_runner test mocks it away), which is exactly how a real bug shipped
-undetected earlier: export_runner started passing is_cancelled=... to
-render_lap before render_lap's signature accepted it, and nothing caught the
-resulting TypeError until it was checked by hand. These tests exercise the
-real function — with cv2 and the per-frame renderer mocked out, since a video
-file and a rendered frame's pixel content aren't what's under test here — to
-guard the specific failure modes fixed alongside it: no cleanup on an
-exception mid-render, no NaN-fps guard, and no way to cancel a render already
-in progress.
+render_lap is mocked away in every export_runner test, which is how a real
+bug once shipped: export_runner passed is_cancelled=... before render_lap
+accepted it. The mocked tests here run the real function with FFmpeg and the
+gauge drawing replaced; the end-to-end tests render real gauges over a real
+(generated) clip and inspect the output with ffprobe.
 """
-from unittest.mock import MagicMock, patch
+import os
+import shutil
+import subprocess
+from fractions import Fraction
+from unittest.mock import patch
+
 import pytest
 
 
-def _make_session_and_job(n_points=5, duration=10.0):
-    """Minimal real Session/RenderJob/Lap — enough for render_lap to compute
-    a valid frame range and iterate without raising on missing data."""
+def _make_session_and_job(n_points=21, duration=10.0, lap_offset=0.0):
+    """Minimal real Session/RenderJob/Lap."""
     from data_model import DataPoint, Lap, Session
     from datetime import datetime, timezone
     from video_renderer import RenderJob
 
     now = datetime(2024, 1, 1, tzinfo=timezone.utc)
+    step = duration / (n_points - 1)
     pts = [
         DataPoint(
-            record=i, time=now, lat=0.0, lon=0.0, alt=0.0, speed=100.0,
-            gforce_x=0.0, gforce_y=0.0, gforce_z=1.0, lap=1,
+            record=i, time=now, lat=51.0 + i * 1e-5, lon=4.0 + i * 1e-5, alt=0.0,
+            speed=60.0 + i, gforce_x=0.1, gforce_y=-0.2, gforce_z=1.0, lap=1,
             gyro_x=0.0, gyro_y=0.0, gyro_z=0.0,
-            elapsed=i * (duration / n_points), lap_elapsed=i * (duration / n_points),
+            elapsed=lap_offset + i * step, lap_elapsed=i * step,
         )
         for i in range(n_points)
     ]
     lap = Lap(lap_num=1, points=pts, duration=duration)
     sess = Session(all_points=pts, laps=[lap], source='racebox',
-                    date_utc=None, track='', configuration='', session_type='',
-                    best_lap_time=None)
-    job = RenderJob('Lap01', lap)
-    return sess, job
+                   date_utc=None, track='', configuration='', session_type='',
+                   best_lap_time=None)
+    return sess, RenderJob('Lap01', lap)
 
 
-def _fake_capture(n_frames=60, fps=30.0, w=64, h=48):
-    """A cv2.VideoCapture stand-in with sane, valid metadata and n_frames of
-    solid-color BGR frames available via .read()."""
+_LAYOUT = {'theme': 'Dark', 'gauges': [
+    {'type': 'Numeric', 'channel': 'speed', 'visible': True, 'x': 0.05, 'y': 0.05, 'w': 0.3, 'h': 0.3},
+    {'type': 'Bar', 'channel': 'gforce_lat', 'visible': True, 'x': 0.6, 'y': 0.6, 'w': 0.3, 'h': 0.3},
+]}
+
+
+# ── Mocked FFmpeg ─────────────────────────────────────────────────────────────
+
+class _FakeStdin:
+    def __init__(self, fail_after=None, exc=BrokenPipeError):
+        self.frames, self.fail_after, self.exc, self.closed = 0, fail_after, exc, False
+
+    def write(self, data):
+        if self.fail_after is not None and self.frames >= self.fail_after:
+            raise self.exc()
+        self.frames += 1
+
+    def close(self):
+        self.closed = True
+
+
+class _FakeProc:
+    """Stands in for the FFmpeg process: records the command, accepts frames
+    on stdin, and creates the output file on a clean exit like FFmpeg would."""
+
+    def __init__(self, cmd, returncode=0, stderr=b'', fail_after=None):
+        self.cmd, self._rc, self.stdin = cmd, returncode, _FakeStdin(fail_after)
+        self.stderr = iter([stderr] if stderr else [])
+        self.returncode = None
+        self.killed = False
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        if self.returncode is None:
+            self.returncode = -9 if self.killed else self._rc
+            if self.returncode == 0:
+                open(self.cmd[-1], 'wb').close()   # FFmpeg writes the output last
+        return self.returncode
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+
+def _render(tmp_path, *, proc_kwargs=None, info=None, **kw):
+    """Run render_lap with FFmpeg and gauge drawing mocked. Returns
+    (the fake FFmpeg process, out_path)."""
     import numpy as np
-    import cv2
+    from video_renderer import VideoInfo, render_lap
+    sess, job = kw.pop('session_job', None) or _make_session_and_job()
+    info = info or VideoInfo(width=64, height=48, fps=Fraction(30), duration=20.0, has_audio=True)
+    procs = []
 
-    cap = MagicMock()
-    cap.isOpened.return_value = True
-    frame_count = {'i': 0}
+    def fake_popen(cmd, **_):
+        procs.append(_FakeProc(cmd, **(proc_kwargs or {})))
+        return procs[-1]
 
-    def _get(prop):
-        return {
-            cv2.CAP_PROP_FPS: fps,
-            cv2.CAP_PROP_FRAME_COUNT: float(n_frames),
-            cv2.CAP_PROP_FRAME_WIDTH: float(w),
-            cv2.CAP_PROP_FRAME_HEIGHT: float(h),
-        }.get(prop, 0.0)
-    cap.get.side_effect = _get
-
-    def _set(prop, value):
-        if prop == cv2.CAP_PROP_POS_FRAMES:
-            frame_count['i'] = int(value)
-        return True
-    cap.set.side_effect = _set
-
-    def _read():
-        if frame_count['i'] >= n_frames:
-            return False, None
-        frame_count['i'] += 1
-        return True, np.zeros((h, w, 3), dtype=np.uint8)
-    cap.read.side_effect = _read
-
-    return cap
+    out = str(tmp_path / 'out.mp4')
+    args = dict(video_path='clip.mp4', out_path=out, session=sess, job=job,
+                sync_offset=0.0, encoder='libx264', crf=18, n_workers=1,
+                show_map=False, show_telemetry=True, padding=0.0,
+                overlay_layout=_LAYOUT, log_cb=lambda _m: None)
+    args.update(kw)
+    with patch('video_renderer.probe_video', return_value=info), \
+         patch('video_renderer._popen', side_effect=fake_popen), \
+         patch('video_renderer.render_frame_worker',
+               side_effect=lambda task: np.zeros(1, dtype=np.uint8).tobytes()):
+        render_lap(**args)
+    return procs[0] if procs else None, out
 
 
-@pytest.fixture(autouse=True)
-def _fast_frame_worker():
-    """Skip real matplotlib gauge rendering — irrelevant to what's under test
-    here and would make these tests slow and layout-sensitive."""
-    import numpy as np
-    with patch('video_renderer.render_frame_worker',
-               return_value=np.zeros((48, 64, 3), dtype=np.uint8).tobytes()):
-        yield
+class TestOutputOnlyOnSuccess:
+    def test_success_renames_part_file_into_place(self, tmp_path):
+        proc, out = _render(tmp_path)
+        assert os.path.exists(out)
+        assert proc.cmd[-1].endswith('.part.mp4')
+        assert proc.stdin.frames == 300 and proc.stdin.closed   # 10 s at 30 fps
 
+    def test_ffmpeg_failure_raises_with_its_message_and_leaves_no_file(self, tmp_path):
+        from exceptions import VideoMuxError
+        with pytest.raises(VideoMuxError, match='Unknown encoder'):
+            _render(tmp_path, proc_kwargs={'returncode': 1, 'stderr': b'Unknown encoder foo\n'})
+        assert os.listdir(tmp_path) == []
 
-class TestCancellationStopsRenderPromptly:
-    def test_cancelled_before_first_chunk_returns_without_raising(self, tmp_path):
-        from video_renderer import render_lap
-        sess, job = _make_session_and_job()
+    def test_silent_ffmpeg_failure_still_gives_advice(self, tmp_path):
+        from exceptions import VideoMuxError
+        with pytest.raises(VideoMuxError, match='Detect Encoders'):
+            _render(tmp_path, proc_kwargs={'returncode': 1})
+
+    def test_source_ending_early_is_a_note_not_a_failure(self, tmp_path):
         logs = []
-        with patch('cv2.VideoCapture', return_value=_fake_capture()):
-            render_lap(
-                video_path='fake.mp4', out_path=str(tmp_path / 'out.mp4'),
-                session=sess, job=job, sync_offset=0.0, encoder='libx264',
-                crf=18, n_workers=1, show_map=False, show_telemetry=False,
-                padding=0.0, log_cb=logs.append,
-                is_cancelled=lambda: True,
-            )
-        assert any('cancel' in m.lower() for m in logs)
-        # Must not have reached the mux step (no output file finalized).
-        assert not (tmp_path / 'out.mp4').exists()
+        proc, out = _render(tmp_path, proc_kwargs={'fail_after': 120}, log_cb=logs.append)
+        assert os.path.exists(out)
+        assert any('source video ended early' in m for m in logs)
+
+
+class TestCancellation:
+    def test_cancel_before_first_chunk_kills_ffmpeg_and_writes_nothing(self, tmp_path):
+        proc, out = _render(tmp_path, is_cancelled=lambda: True)
+        assert proc.killed
+        assert os.listdir(tmp_path) == []
 
     def test_not_cancelled_processes_normally(self, tmp_path):
-        """Sanity check: is_cancelled=lambda: False must not block a normal render."""
-        from video_renderer import render_lap
+        proc, out = _render(tmp_path, is_cancelled=lambda: False)
+        assert os.path.exists(out) and not proc.killed
+
+
+class TestExceptionCleanup:
+    def test_worker_error_propagates_and_cleans_up(self, tmp_path):
+        from video_renderer import VideoInfo, render_lap
         sess, job = _make_session_and_job()
-        with patch('cv2.VideoCapture', return_value=_fake_capture()), \
-             patch('video_renderer.mux_audio') as mock_mux:
-            render_lap(
-                video_path='fake.mp4', out_path=str(tmp_path / 'out.mp4'),
-                session=sess, job=job, sync_offset=0.0, encoder='libx264',
-                crf=18, n_workers=1, show_map=False, show_telemetry=False,
-                padding=0.0, is_cancelled=lambda: False,
-            )
-        mock_mux.assert_called_once()
-
-
-class TestNaNFpsDoesNotCrash:
-    def test_nan_fps_falls_back_instead_of_raising_valueerror(self, tmp_path):
-        """A corrupt video reporting NaN fps must hit the existing friendly
-        LapOutOfRangeError path, not an uncaught ValueError from int(nan)."""
-        from video_renderer import render_lap
-        from exceptions import LapOutOfRangeError
-        sess, job = _make_session_and_job()
-
-        cap = MagicMock()
-        cap.isOpened.return_value = False
-        cap.get.side_effect = lambda prop: float('nan')
-
-        with patch('cv2.VideoCapture', return_value=cap):
-            with pytest.raises(LapOutOfRangeError):
-                render_lap(
-                    video_path='corrupt.mp4', out_path=str(tmp_path / 'out.mp4'),
-                    session=sess, job=job, sync_offset=0.0, encoder='libx264',
-                    crf=18, n_workers=1, show_map=False, show_telemetry=False,
-                    padding=0.0,
-                )
-
-
-class TestCleanupOnException:
-    def test_exception_mid_render_still_releases_capture(self, tmp_path):
-        from video_renderer import render_lap
-        sess, job = _make_session_and_job(n_points=5, duration=10.0)
-        cap = _fake_capture()
-
-        with patch('cv2.VideoCapture', return_value=cap), \
+        procs = []
+        with patch('video_renderer.probe_video',
+                   return_value=VideoInfo(64, 48, Fraction(30), 20.0)), \
+             patch('video_renderer._popen',
+                   side_effect=lambda cmd, **_: procs.append(_FakeProc(cmd)) or procs[-1]), \
              patch('video_renderer.render_frame_worker', side_effect=RuntimeError('boom')):
-            with pytest.raises(RuntimeError):
-                render_lap(
-                    video_path='fake.mp4', out_path=str(tmp_path / 'out.mp4'),
-                    session=sess, job=job, sync_offset=0.0, encoder='libx264',
-                    crf=18, n_workers=1, show_map=False, show_telemetry=False,
-                    padding=0.0,
-                )
-        cap.release.assert_called_once()
+            with pytest.raises(RuntimeError, match='boom'):
+                render_lap('clip.mp4', str(tmp_path / 'out.mp4'), sess, job, 0.0,
+                           'libx264', 18, 1, False, True, padding=0.0,
+                           overlay_layout=_LAYOUT)
+        assert procs[0].killed
+        assert os.listdir(tmp_path) == []
 
 
-class TestOverlayOnlyFailureExplainsItself:
-    """Issue #20: an overlay-only export reported only
-    'FFmpeg ProRes pipe failed: [Errno 22] Invalid argument'.
+class TestEncoderFallback:
+    def test_unusable_hardware_encoder_falls_back_before_rendering(self, tmp_path):
+        logs = []
+        with patch('video_renderer.encoder_works', return_value=False):
+            proc, _ = _render(tmp_path, encoder='h264_nvenc', log_cb=logs.append)
+        assert proc.cmd[proc.cmd.index('-c:v') + 1] == 'libx264'
+        assert any('libx264' in m for m in logs)
 
-    When ffmpeg exits at startup the first thing to fail is our write to its
-    stdin, and that OSError was the entire error message. FFmpeg's own
-    explanation was collected into a buffer this path never read, leaving the
-    user with nothing to act on.
-    """
 
-    @staticmethod
-    def _dying_ffmpeg(stderr_lines, returncode=1):
-        proc = MagicMock()
-        proc.stdin.write.side_effect = OSError(22, 'Invalid argument')
-        proc.stderr = iter(stderr_lines)
-        proc.poll.return_value = returncode
-        proc.returncode = returncode
-        proc.wait.return_value = returncode
-        return proc
-
-    def _render(self, tmp_path, proc):
-        import numpy as np
-        from video_renderer import render_lap
+class TestMissingExportFolder:
+    def test_missing_folder_is_an_error_not_a_silent_success(self, tmp_path):
         from exceptions import VideoMuxError
-        sess, job = _make_session_and_job()
-        cap = _fake_capture(n_frames=0, fps=0.0, w=0, h=0)   # forces synthetic size
-        with patch('cv2.VideoCapture', return_value=cap), \
-             patch('video_renderer._popen', return_value=proc), \
-             patch('video_renderer.render_frame_worker',
-                   return_value=np.zeros((48, 64, 3), dtype=np.uint8).tobytes()):
-            with pytest.raises(VideoMuxError) as exc:
-                render_lap(video_path='', out_path=str(tmp_path / 'ov.mov'),
-                           session=sess, job=job, sync_offset=0.0, encoder='libx264',
-                           crf=18, n_workers=1, show_map=False, show_telemetry=False,
-                           padding=0.0, overlay_only=True, log_cb=lambda m: None)
-        return str(exc.value)
+        with pytest.raises(VideoMuxError, match='does not exist'):
+            _render(tmp_path, out_path=str(tmp_path / 'gone' / 'out.mp4'))
 
-    def test_ffmpeg_stderr_reaches_the_user(self, tmp_path):
-        msg = self._render(tmp_path, self._dying_ffmpeg(
-            [b"[vost#0:0] Unknown encoder 'prores_ks'\n",
-             b'Error selecting an encoder\n']))
-        assert "Unknown encoder 'prores_ks'" in msg
 
-    def test_the_bare_errno_is_no_longer_the_whole_message(self, tmp_path):
-        msg = self._render(tmp_path, self._dying_ffmpeg([b'Permission denied\n']))
-        assert 'Permission denied' in msg
-        assert msg.strip() != 'FFmpeg ProRes pipe failed: [Errno 22] Invalid argument'
+class TestFrameWindowAndSeek:
+    def test_single_clip_seeks_to_lap_start(self, tmp_path):
+        from video_renderer import VideoInfo
+        sess, job = _make_session_and_job(lap_offset=20.0)
+        proc, _ = _render(tmp_path, session_job=(sess, job), sync_offset=2.5,
+                          info=VideoInfo(64, 48, Fraction(30), 60.0, has_audio=True))
+        assert proc.cmd[proc.cmd.index('-ss') + 1] == '22.500000'
 
-    def test_exit_code_is_included(self, tmp_path):
-        msg = self._render(tmp_path, self._dying_ffmpeg([b'boom\n'], returncode=3))
-        assert '3' in msg
+    def test_multi_clip_opens_only_the_clips_the_window_covers(self, tmp_path):
+        from video_renderer import VideoInfo
+        sess, job = _make_session_and_job(lap_offset=25.0, duration=10.0)
+        infos = {'a.mp4': VideoInfo(64, 48, Fraction(30), 20.0),
+                 'b.mp4': VideoInfo(64, 48, Fraction(30), 20.0),
+                 'c.mp4': VideoInfo(64, 48, Fraction(30), 20.0)}
+        with patch('video_renderer.probe_video', side_effect=lambda p: infos[p]):
+            import numpy as np
+            from video_renderer import render_lap
+            procs = []
+            with patch('video_renderer._popen',
+                       side_effect=lambda cmd, **_: procs.append(_FakeProc(cmd)) or procs[-1]), \
+                 patch('video_renderer.render_frame_worker', side_effect=lambda t: b'\0'):
+                render_lap('a.mp4', str(tmp_path / 'o.mp4'), sess, job, 0.0, 'libx264', 18, 1,
+                           False, True, padding=0.0, overlay_layout=_LAYOUT,
+                           video_paths=['a.mp4', 'b.mp4', 'c.mp4'])
+        cmd = procs[0].cmd
+        inputs = [cmd[i + 1] for i, a in enumerate(cmd) if a == '-i']
+        # The lap is 25-35 s into the recording: only clip b, entered 5 s in.
+        assert inputs[0] == 'b.mp4' and 'a.mp4' not in inputs and 'c.mp4' not in inputs
+        assert cmd[cmd.index('-ss') + 1] == '5.000000'
 
-    def test_silent_ffmpeg_still_gives_actionable_advice(self, tmp_path):
-        """Some broken builds exit without writing anything at all, which is
-        what the issue #20 reporter's mux did."""
-        msg = self._render(tmp_path, self._dying_ffmpeg([]))
-        assert 'Detect Encoders' in msg
+
+class TestClipSources:
+    def test_window_spanning_a_boundary_uses_both_clips(self):
+        from video_renderer import clip_sources
+        assert clip_sources(['a', 'b', 'c'], [10.0, 10.0, 10.0], 8.0, 14.0) == [('a', 8.0), ('b', 0.0)]
+
+    def test_window_inside_one_clip(self):
+        from video_renderer import clip_sources
+        assert clip_sources(['a', 'b'], [10.0, 10.0], 12.0, 15.0) == [('b', 2.0)]
+
+
+class TestAtlasLayout:
+    def test_tiles_do_not_overlap_in_the_atlas_and_keep_layout_order(self):
+        from overlay_worker import atlas_layout
+        layout = {'gauges': [dict(g, visible=True) for g in (
+            {'type': 'Numeric', 'x': 0.0, 'y': 0.0, 'w': 0.2, 'h': 0.2},
+            {'type': 'Bar', 'x': 0.7, 'y': 0.7, 'w': 0.3, 'h': 0.1},
+            {'type': 'Dial', 'x': 0.4, 'y': 0.1, 'w': 0.15, 'h': 0.4},
+        )]}
+        tiles, (aw, ah) = atlas_layout(layout, 1920, 1080)
+        assert [t['idx'] for t in tiles] == [0, 1, 2]
+        for t in tiles:
+            assert t['ax'] + t['w'] <= aw and t['ay'] + t['h'] <= ah
+            assert t['w'] % 2 == t['h'] % 2 == t['ax'] % 2 == t['ay'] % 2 == 0
+        for i, a in enumerate(tiles):
+            for b in tiles[i + 1:]:
+                assert (a['ax'] + a['w'] <= b['ax'] or b['ax'] + b['w'] <= a['ax'] or
+                        a['ay'] + a['h'] <= b['ay'] or b['ay'] + b['h'] <= a['ay'])
+        assert aw * ah < 1920 * 1080 / 2   # the point of it
+
+    def test_nothing_visible_means_no_overlay(self):
+        from overlay_worker import atlas_layout
+        assert atlas_layout({'gauges': [{'type': 'Dial', 'visible': False}]}, 640, 480) == ([], None)
+
+
+# ── Real FFmpeg, end to end ───────────────────────────────────────────────────
+
+_FFMPEG = shutil.which('ffmpeg') and shutil.which('ffprobe')
+needs_ffmpeg = pytest.mark.skipif(not _FFMPEG, reason='FFmpeg not installed')
+
+
+def _make_clip(path, seconds, color='blue'):
+    """A clip with PCM audio: AAC pads each clip ~21 ms past its video, and
+    FFmpeg's concat starts the next clip after the longer stream, which shifts
+    frames after a join by up to one frame slot — real chaptered camera files
+    do not have that gap, and this test is about the join itself."""
+    subprocess.run(['ffmpeg', '-v', 'error', '-y',
+                    '-f', 'lavfi', '-i', f'color={color}:s=320x240:r=30:d={seconds}',
+                    '-f', 'lavfi', '-i', f'sine=frequency=440:d={seconds}',
+                    '-c:v', 'libx264', '-g', '30', '-pix_fmt', 'yuv420p', '-c:a', 'pcm_s16le',
+                    '-shortest', str(path)], check=True)
+
+
+def _probe(path):
+    import json
+    r = subprocess.run(['ffprobe', '-v', 'error', '-count_frames', '-print_format', 'json',
+                        '-show_streams', str(path)], capture_output=True, text=True, check=True)
+    return {s['codec_type']: s for s in json.loads(r.stdout)['streams']}
+
+
+@needs_ffmpeg
+class TestRealExport:
+    def _render_real(self, tmp_path, clips, out_name='out.mp4', **kw):
+        from video_renderer import render_lap
+        sess, job = _make_session_and_job(lap_offset=kw.pop('lap_offset', 1.0), duration=2.0)
+        out = str(tmp_path / out_name)
+        render_lap(clips[0], out, sess, job, sync_offset=0.0, encoder='libx264', crf=30,
+                   n_workers=1, show_map=False, show_telemetry=True, padding=0.0,
+                   overlay_layout=_LAYOUT, video_paths=clips, **kw)
+        return out
+
+    def test_lap_export_has_the_lap_s_frames_audio_and_gauges(self, tmp_path):
+        clip = tmp_path / 'clip.mov'
+        _make_clip(clip, 5)
+        out = self._render_real(tmp_path, [str(clip)])
+        streams = _probe(out)
+        assert int(streams['video']['nb_read_frames']) == 60   # 2 s at 30 fps
+        assert 'audio' in streams
+        # A gauge was drawn over the plain blue source: the top-left corner is
+        # no longer the source colour.
+        import numpy as np
+        raw = subprocess.run(['ffmpeg', '-v', 'error', '-i', out, '-frames:v', '1',
+                              '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
+                             capture_output=True, check=True).stdout
+        frame = np.frombuffer(raw, dtype=np.uint8).reshape(240, 320, 3)
+        assert not np.allclose(frame[40, 40], frame[120, 160], atol=10)
+
+    def test_lap_across_a_clip_boundary(self, tmp_path):
+        a, b = tmp_path / 'a.mov', tmp_path / 'b.mov'
+        _make_clip(a, 2, 'blue')
+        _make_clip(b, 2, 'red')
+        out = self._render_real(tmp_path, [str(a), str(b)], lap_offset=1.0)
+        assert int(_probe(out)['video']['nb_read_frames']) == 60
+        import numpy as np
+
+        def pixel(t):
+            raw = subprocess.run(['ffmpeg', '-v', 'error', '-ss', str(t), '-i', out,
+                                  '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
+                                 capture_output=True, check=True).stdout
+            return np.frombuffer(raw, dtype=np.uint8).reshape(240, 320, 3)[120, 160]
+        assert pixel(0.5)[2] > 150        # still clip a (blue) half a second in
+        assert pixel(1.5)[0] > 150        # clip b (red) after the boundary at 1.0 s
+
+    def test_overlay_only_is_transparent_prores(self, tmp_path):
+        clip = tmp_path / 'clip.mov'
+        _make_clip(clip, 5)
+        out = self._render_real(tmp_path, [str(clip)], out_name='ov.mov', overlay_only=True)
+        v = _probe(out)['video']
+        assert v['codec_name'] == 'prores' and 'a' in v['pix_fmt']
+        assert int(v['nb_read_frames']) == 60

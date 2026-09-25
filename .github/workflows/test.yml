@@ -29,10 +29,15 @@ jobs:
           python-version: '3.12'
           cache: pip
 
-      # opencv-python (the non-headless wheel) links against these at import.
-      - name: Install system libraries (Linux)
+      # The export tests render real video end to end through FFmpeg; without
+      # it they skip, so install it rather than let them silently not run.
+      - name: Install FFmpeg (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgl1 libglib2.0-0
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install FFmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
 
       - name: Install Python dependencies
         run: |

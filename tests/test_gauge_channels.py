@@ -123,11 +123,39 @@ def test_gauge_data_unknown_channel_reads_own_key():
 
 
 def test_gauge_data_unknown_channel_uses_extra_label_and_unit():
-    history = [{'Coolant Temperature': 80.0}]
-    result = gauge_data('Coolant Temperature', history,
-                         extra_label='Coolant Temperature', extra_unit='C')
+    history = [{'coolant': 80.0}]
+    result = gauge_data('coolant', history,
+                        extra_meta={'coolant': {'label': 'Coolant Temperature', 'unit': 'C'}})
     assert result['label'] == 'Coolant Temperature'
     assert result['unit'] == 'C'
+
+
+def test_gauge_data_unknown_channel_uses_session_wide_range():
+    """A fixed scale for the whole video, not re-fitted to the visible history."""
+    result = gauge_data('coolant', [{'coolant': 80.0}, {'coolant': 81.0}],
+                        extra_meta={'coolant': {'label': 'Coolant', 'unit': 'C',
+                                                'min': 20.0, 'max': 110.0}})
+    assert (result['min_val'], result['max_val']) == (20.0, 110.0)
+
+
+def test_multi_line_keeps_dynamic_channels():
+    """Export used to drop any Multi-Line channel outside the fixed set."""
+    from gauge_channels import build_multi_data
+    hist = [{'speed': 100.0, 'gy': 0.5, 'Water Temp': 88.0}] * 3
+    data = build_multi_data(['speed', 'Water Temp'], hist,
+                            extra_meta={'Water Temp': {'label': 'Water Temp', 'unit': 'C',
+                                                       'min': 0.0, 'max': 120.0}})
+    entries = {e['channel']: e for e in data['multi_channels']}
+    assert set(entries) == {'speed', 'Water Temp'}
+    assert entries['Water Temp']['unit'] == 'C' and entries['Water Temp']['value'] == 88.0
+
+
+def test_history_is_resampled_to_a_fixed_count_keeping_the_newest():
+    from gauge_channels import HISTORY_POINTS, resample_history
+    hist = list(range(500))
+    out = resample_history(hist)
+    assert len(out) == HISTORY_POINTS and out[-1] == 499 and out[0] == 0
+    assert resample_history([1, 2, 3]) == [1, 2, 3]
 
 
 def test_gauge_data_unknown_channel_defaults_label_to_channel_name():

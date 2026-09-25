@@ -53,6 +53,22 @@ _VALID_OSM_ID_RE = re.compile(r'^-?\d+$')
 
 AUTO_SYNC_WORKERS = 2   # concurrent ffmpeg decodes — kept modest, CPU-heavy work
 
+
+def _positive_int(v) -> Optional[int]:
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def _positive_float(v) -> Optional[float]:
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f > 0 else None
+
 # Paths this running app instance has itself resolved via session-scanning,
 # manual video assignment, or camera-folder linking. The video server only
 # ever serves a path that both (a) matches the extension whitelist and
@@ -221,6 +237,8 @@ class WebviewAPI:
         self._meta_cache_lock  = threading.RLock()
         self._config_lock      = threading.Lock()
         self._video_port_lock  = threading.Lock()
+        from session_loader import SessionCache
+        self._session_cache    = SessionCache()
 
     # ── Called by main.py once the window is ready ────────────────────────────
     def set_window(self, window: webview.Window) -> None:
@@ -766,7 +784,7 @@ class WebviewAPI:
         independently offers before deciding how to combine them."""
         try:
             import channel_discovery
-            session = self._load_one_session(csv_path)
+            session = self._session_cache.get(csv_path, loader=lambda p: self._load_one_session(p))
             return channel_discovery.list_channels(session)
         except Exception:
             logger.exception('list_session_channels failed for %s', csv_path)
@@ -1354,6 +1372,13 @@ class WebviewAPI:
                 track_map_selections  = getattr(self._config, 'track_map_selections', {}) or {},
                 speed_unit_pref       = params.get('speed_unit', 'auto'),
                 is_cancelled          = self._export_cancel.is_set,
+                # Merged into each session exactly as the editor preview does,
+                # so gauges bound to a secondary file's channels export too.
+                secondary_source      = dict(self._config.secondary_source),
+                secondary_offsets     = dict(self._config.secondary_offsets),
+                output_height         = _positive_int(params.get('output_height')),
+                output_fps            = _positive_float(params.get('output_fps')),
+                bitrate_kbps          = _positive_int(params.get('bitrate_kbps')) or 0,
             )
         except Exception as e:
             done_cb(False, str(e))
@@ -1845,44 +1870,24 @@ class WebviewAPI:
     def _load_one_session(csv_path: str):
         """Load a single telemetry file, auto-detecting its format. Does not
         apply any secondary-source merge — use _load_session() for that."""
-        import gpx_data, aim_data, racebox_data, motec_data, vbox_data, unipro_data
-        from session_scanner import resolve_xrk_csv
-        csv_path = resolve_xrk_csv(csv_path)
-        if vbox_data.is_vbox(csv_path):
-            return vbox_data.load_vbo(csv_path)
-        if motec_data.is_motec_ld(csv_path):
-            return motec_data.load_ld(csv_path)
-        if gpx_data.is_gpx(csv_path):
-            return gpx_data.load_gpx(csv_path)
-        if unipro_data.is_unipro_tsv(csv_path):
-            return unipro_data.load_tsv(csv_path)
-        if unipro_data.is_unipro_uni(csv_path):
-            return unipro_data.load_uni(csv_path)
-        if aim_data.is_aim_csv(csv_path):
-            return aim_data.load_csv(csv_path)
-        return racebox_data.load_csv(csv_path)
+        from session_loader import load_file
+        return load_file(csv_path)
 
     def _load_session(self, csv_path: str):
         """Load a telemetry file, transparently merging in a secondary source
         if one has been assigned to it (see session_merge.merge_sessions).
-        This is the single funnel every session consumer (get_session_meta,
-        get_laps, load_lap_history, track-map endpoints, export) goes
-        through, so a merge here reaches all of them for free."""
-        primary = self._load_one_session(csv_path)
+        Every UI endpoint (get_session_meta, get_laps, load_lap_history,
+        channels, track map) goes through this. Export loads the same way via
+        session_loader.load_merged, uncached because it mutates sessions.
 
-        secondary_path = self._config.secondary_source.get(csv_path)
-        if not secondary_path or not os.path.isfile(secondary_path):
-            return primary
-
-        try:
-            secondary = self._load_one_session(secondary_path)
-        except Exception:
-            logger.exception('Failed to load secondary telemetry %s for %s', secondary_path, csv_path)
-            return primary
-
-        from session_merge import merge_sessions
-        offset = self._config.secondary_offsets.get(csv_path, 0.0)
-        return merge_sessions(primary, secondary, offset)
+        Cached: the returned Session is shared, so callers must not mutate it.
+        """
+        return self._session_cache.get(
+            csv_path,
+            self._config.secondary_source.get(csv_path),
+            self._config.secondary_offsets.get(csv_path, 0.0),
+            loader=lambda p: self._load_one_session(p),
+        )
 
     def confirm_clear_queue(self) -> bool:
         if self._window is None:

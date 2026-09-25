@@ -13,54 +13,27 @@ import pytest
 from auto_sync import _correlate, _append_gap_frames, _video_gap_seconds, _load_session
 
 
-# ── _load_session — source dispatch ───────────────────────────────────────────
+# ── _load_session — format detection ─────────────────────────────────────────
 
 class TestLoadSessionDispatch:
     """
-    _load_session's source dispatch is a hardcoded if/elif chain — every
-    telemetry source session_scanner._csv_source() can return must have a
-    branch here, or auto-sync silently fails for that source with
-    'Unknown telemetry source' (this happened for real: 'Unipro' was added
-    to session_scanner/webview_api but forgotten here — see
-    tests/test_webview_api.py's TestSaveConfigFields for the sibling bug in
-    save_config()). Mocks each loader so this doesn't need real telemetry files.
+    _load_session used to dispatch on the source *string* through its own
+    if/elif chain, and auto-sync failed with 'Unknown telemetry source' for
+    any source that chain had not been taught ('Unipro', for real). It now
+    uses the shared content-based loader (session_loader.load_file, whose
+    per-format dispatch is covered in test_export_runner.py), whatever the
+    source string says.
     """
 
-    @pytest.mark.parametrize('source,module,fn', [
-        ('RaceBox',      'racebox_data', 'load_csv'),
-        ('AIM Mychron',  'aim_data',     'load_csv'),
-        ('AIM',          'aim_data',     'load_csv'),
-        ('GPX',          'gpx_data',     'load_gpx'),
-        ('MoTeC',        'motec_data',   'load_ld'),
-        ('VBOX',         'vbox_data',    'load_vbo'),
-        ('Unipro',       'unipro_data',  'load_uni'),
-    ])
-    def test_dispatches_to_correct_loader(self, source, module, fn, monkeypatch):
-        import importlib
-        mod = importlib.import_module(module)
+    @pytest.mark.parametrize('source', ['RaceBox', 'AIM Mychron', 'MoTeC', 'Unipro', 'NotARealSource', ''])
+    def test_any_source_string_goes_through_the_shared_loader(self, source, monkeypatch):
         sentinel = object()
-        monkeypatch.setattr(mod, fn, lambda csv_path: sentinel)
+        monkeypatch.setattr('session_loader.load_file', lambda p: sentinel)
         assert _load_session('/fake/path', source) is sentinel
 
-    def test_unknown_source_raises(self):
-        with pytest.raises(ValueError, match='Unknown telemetry source'):
-            _load_session('/fake/path', 'NotARealSource')
-
-    def test_unipro_tsv_extension_routes_to_load_tsv(self, monkeypatch):
-        """Unipro has two on-disk formats sharing one source name — the
-        extension (not just the source string) decides which loader runs."""
-        import unipro_data
-        sentinel = object()
-        monkeypatch.setattr(unipro_data, 'is_unipro_tsv', lambda p: True)
-        monkeypatch.setattr(unipro_data, 'load_tsv', lambda csv_path: sentinel)
-        assert _load_session('/fake/path.tsv', 'Unipro') is sentinel
-
-    def test_unipro_uni_extension_routes_to_load_uni(self, monkeypatch):
-        import unipro_data
-        sentinel = object()
-        monkeypatch.setattr(unipro_data, 'is_unipro_tsv', lambda p: False)
-        monkeypatch.setattr(unipro_data, 'load_uni', lambda csv_path: sentinel)
-        assert _load_session('/fake/path.uni', 'Unipro') is sentinel
+    def test_real_racebox_file_loads_by_content(self, racebox_car_csv_path):
+        sess = _load_session(racebox_car_csv_path, 'something else entirely')
+        assert sess.all_points
 
 
 # ── _correlate — single-segment sanity baseline ───────────────────────────────

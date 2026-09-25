@@ -66,9 +66,9 @@ def test_module_list_covers_every_source_module_and_style():
 
 def test_dependency_modules_use_import_names_not_distribution_names():
     mods = smoke_test_build.dependency_modules([])
-    # opencv-python, Pillow and pywebview import under different names.
-    assert {'cv2', 'PIL', 'webview', 'scipy', 'numpy'} <= set(mods)
-    assert 'opencv-python' not in mods and 'mpl_toolkits' not in mods
+    # Pillow and pywebview import under different names.
+    assert {'PIL', 'webview', 'scipy', 'numpy'} <= set(mods)
+    assert 'pywebview' not in mods and 'mpl_toolkits' not in mods
 
 
 def test_dependency_modules_include_requested_extras():

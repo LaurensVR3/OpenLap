@@ -29,12 +29,16 @@ class TestBuildSessionMeta:
         assert meta['info_session'] == 'Race'
         assert meta['info_source']  == 'RaceBox'
 
-    def test_date_parsed(self):
+    def test_date_parsed_in_local_time(self):
+        """Shown in local time, as the editor preview shows it — burning UTC
+        into the video put the clock hours off from the preview."""
+        from datetime import datetime, timezone
         from video_renderer import _build_session_meta
         sess = self._make_session(date_utc='2024-06-15T10:30:00Z')
         meta = _build_session_meta(sess)
-        assert meta['info_date'] == '2024-06-15'
-        assert meta['info_time'] == '10:30'
+        local = datetime(2024, 6, 15, 10, 30, tzinfo=timezone.utc).astimezone()
+        assert meta['info_date'] == local.strftime('%Y-%m-%d')
+        assert meta['info_time'] == local.strftime('%H:%M')
 
     def test_info_overrides_applied(self):
         from video_renderer import _build_session_meta
@@ -125,24 +129,19 @@ def test_n_sectors_constant():
 # ── Sync offset frame range calculation ───────────────────────────────────────
 
 class TestSyncOffsetFrameRange:
-    """
-    The render_lap frame range calculation:
+    """video_renderer.frame_window:
         vid_start = max(0, sync_offset + gpx_start - padding)
         f_start   = max(0, int(vid_start * fps))
-
-    Verify the math for a few representative cases.
     """
 
-    def _calc(self, sync_offset, gpx_start, gpx_end, fps, total_frames,
-              padding=5.0):
-        import math
-        vid_lap_start = sync_offset + gpx_start
-        vid_lap_end   = sync_offset + gpx_end
-        vid_start     = max(0.0, vid_lap_start - padding)
-        vid_end       = min(total_frames / fps, vid_lap_end + padding)
-        f_start       = max(0, int(vid_start * fps))
-        f_end         = min(total_frames, int(math.ceil(vid_end * fps)))
-        return f_start, f_end
+    def _calc(self, sync_offset, gpx_start, gpx_end, fps, total_frames, padding=5.0):
+        from video_renderer import frame_window
+
+        class _Job:
+            pass
+        job = _Job()
+        job.gpx_start, job.gpx_end = gpx_start, gpx_end
+        return frame_window(job, sync_offset, padding, fps, total_frames)
 
     def test_zero_offset(self):
         f_start, f_end = self._calc(0.0, 10.0, 90.0, 30.0, 3600)
@@ -199,7 +198,7 @@ class TestOverlayOnlyVirtualDuration:
     def test_source_has_no_fixed_duration_floor(self):
         """Guard against reintroducing a hardcoded minimum virtual duration."""
         import video_renderer, inspect
-        src = inspect.getsource(video_renderer.render_lap)
+        src = inspect.getsource(video_renderer)
         assert 'max(3600' not in src
 
 

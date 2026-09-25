@@ -1,6 +1,7 @@
 """
 Tests for export_runner.run_export — field-name compatibility and scope routing.
 """
+import os
 import tempfile
 from unittest.mock import MagicMock, patch, call
 import pytest
@@ -139,14 +140,14 @@ class TestScopeValues:
         """Each JS scope option value corresponds to a branch in export_runner."""
         import export_runner
         import inspect
-        src = inspect.getsource(export_runner.run_export)
+        src = inspect.getsource(export_runner._jobs_for)
         assert f"scope == '{scope}'" in src or f"scope == \"{scope}\"" in src, \
-            f"Scope '{scope}' has no matching branch in export_runner.run_export"
+            f"Scope '{scope}' has no matching branch in export_runner._jobs_for"
 
     def test_all_laps_not_all(self):
         """JS must send 'all_laps', not 'all' — confirm the Python branch string."""
         import export_runner, inspect
-        src = inspect.getsource(export_runner.run_export)
+        src = inspect.getsource(export_runner._jobs_for)
         assert "== 'all_laps'" in src
         assert "== 'all'" not in src  # 'all' was the old broken value
 
@@ -299,22 +300,22 @@ class TestOverlayOnlyWithoutVideo:
         done_cb.assert_called_once()
 
 
-# ── Multi-clip join phase ─────────────────────────────────────────────────────
+# ── Multi-clip sessions ──────────────────────────────────────────────────────
 
-class TestJoinPhase:
-    """
-    A session matched to more than one video clip goes through a join
-    (concat_videos) before rendering. Two things must hold:
-      - an unreachable clip (e.g. a dropped network share) fails that item
-        gracefully instead of crashing the whole export thread with an
-        unhandled OSError from os.path.getmtime;
-      - concat_videos is given a progress_cb, so a large/slow join reports
-        progress instead of sitting at a static 0% (previously indistin-
-        guishable from a genuine hang — see video_renderer.concat_videos).
-    """
+class TestMultiClip:
+    """Clips are handed to render_lap as a list and read in place: there is
+    no join step and no joined-video cache any more (it was keyed by the CSV's
+    file name alone, so two sessions with the same name, or a session relinked
+    to other clips, could be rendered from the wrong video)."""
 
-    def test_unreachable_clip_is_skipped_not_crashed(self, racebox_car_csv_path):
-        """getmtime on a vanished network path must not crash the export thread."""
+    def test_all_clips_reach_render_lap_in_order(self, racebox_car_csv_path):
+        clips = ['/v/a.mp4', '/v/b.mp4', '/v/c.mp4']
+        with patch('video_renderer.render_lap') as mock_render:
+            _run(items=[{'csv_path': racebox_car_csv_path, 'video_paths': clips,
+                         'sync_offset': 0.0}], scope='fastest')
+        assert mock_render.call_args.kwargs['video_paths'] == clips
+
+    def test_unreachable_clip_fails_that_item_and_the_run_reports_it(self, racebox_car_csv_path):
         log_cb, _, done_cb = _run(
             items=[{'csv_path': racebox_car_csv_path,
                     'video_paths': ['//unreachable-share/a.mp4', '//unreachable-share/b.mp4'],
@@ -322,29 +323,115 @@ class TestJoinPhase:
             scope='fastest',
         )
         logged = ' '.join(str(c) for c in log_cb.call_args_list)
-        assert 'Join failed' in logged
-        done_cb.assert_called_once()   # export finishes (with an error), doesn't hang/crash
+        assert 'Render error' in logged   # ffprobe could not open it (or is missing)
+        ok, msg = done_cb.call_args[0]
+        assert ok is False and '0 of 1' in msg
 
-    def test_concat_videos_receives_a_progress_callback(self, racebox_car_csv_path, tmp_path):
-        """The join phase must wire progress_cb through to concat_videos so
-        the UI shows real progress instead of a static 0% for however long
-        the ffmpeg join takes."""
-        v1 = tmp_path / 'a.mp4'
-        v2 = tmp_path / 'b.mp4'
-        v1.write_bytes(b'fake')
-        v2.write_bytes(b'fake')
 
-        with patch('video_renderer.concat_videos') as mock_concat, \
-             patch('video_renderer.render_lap'):
-            _run(
-                items=[{'csv_path': racebox_car_csv_path,
-                        'video_paths': [str(v1), str(v2)],
-                        'sync_offset': 0.0}],
-                scope='fastest',
-            )
-        mock_concat.assert_called_once()
-        assert 'progress_cb' in mock_concat.call_args.kwargs
-        assert callable(mock_concat.call_args.kwargs['progress_cb'])
+# ── Every failure is counted ─────────────────────────────────────────────────
+
+class TestFailuresAreReported:
+    """A skipped item used to count as exported, so the run could end with
+    "Done — N session(s) exported" having written nothing."""
+
+    @pytest.mark.parametrize('item', [
+        {'csv_path': '/nonexistent/a.csv', 'video_paths': ['/v.mp4']},       # no telemetry
+        {'video_paths': ['/v.mp4']},                                         # no path at all
+    ])
+    def test_missing_telemetry_is_a_failure(self, item):
+        _, _, done_cb = _run(items=[item])
+        ok, msg = done_cb.call_args[0]
+        assert ok is False and '0 of 1 exported' in msg
+
+    def test_no_video_is_a_failure(self, racebox_car_csv_path):
+        _, _, done_cb = _run(items=[{'csv_path': racebox_car_csv_path, 'video_paths': []}])
+        ok, msg = done_cb.call_args[0]
+        assert ok is False and '1 failed' in msg
+
+    def test_render_error_is_a_failure(self, racebox_car_csv_path):
+        with patch('video_renderer.render_lap', side_effect=RuntimeError('mux broke')):
+            log_cb, _, done_cb = _run(items=[{'csv_path': racebox_car_csv_path,
+                                              'video_paths': ['/v.mp4'], 'sync_offset': 0.0}])
+        assert done_cb.call_args[0][0] is False
+        assert 'mux broke' in ' '.join(str(c) for c in log_cb.call_args_list)
+
+    def test_partial_success_says_how_many(self, racebox_car_csv_path):
+        with patch('video_renderer.render_lap'):
+            _, _, done_cb = _run(items=[
+                {'csv_path': racebox_car_csv_path, 'video_paths': ['/v.mp4'], 'sync_offset': 0.0},
+                {'csv_path': '/nonexistent/b.csv', 'video_paths': ['/v.mp4']},
+            ])
+        ok, msg = done_cb.call_args[0]
+        assert ok is False and '1 of 2 exported' in msg and '1 failed' in msg
+
+    def test_success_says_how_many(self, racebox_car_csv_path):
+        with patch('video_renderer.render_lap'):
+            _, _, done_cb = _run(items=[{'csv_path': racebox_car_csv_path,
+                                         'video_paths': ['/v.mp4'], 'sync_offset': 0.0}])
+        assert done_cb.call_args[0] == (True, 'Done — 1 of 1 exported')
+
+    def test_unset_export_folder_fails_up_front(self, racebox_car_csv_path):
+        from export_runner import run_export
+        done = MagicMock()
+        run_export(items=[{'csv_path': racebox_car_csv_path, 'video_paths': ['/v.mp4']}],
+                   scope='fastest', export_path='', encoder='libx264', crf=18, workers=1,
+                   padding=0, is_bike=False, show_map=False, show_tel=False, layout={},
+                   clip_start_s=0, clip_end_s=0, ref_mode='none', ref_lap_obj=None,
+                   bike_overrides={}, session_info={}, log_cb=MagicMock(),
+                   progress_cb=MagicMock(), done_cb=done)
+        assert done.call_args[0][0] is False
+
+
+# ── Secondary telemetry reaches the export ───────────────────────────────────
+
+class TestSecondaryTelemetryInExport:
+    """Gauges bound to a secondary file's channels previewed fine and exported
+    blank: export loaded the primary file alone."""
+
+    def test_export_session_is_merged_with_the_secondary_file(self, racebox_car_csv_path, tmp_path):
+        import shutil
+        secondary = tmp_path / 'second.csv'
+        shutil.copy(racebox_car_csv_path, secondary)
+        with patch('video_renderer.render_lap') as mock_render:
+            _run(items=[{'csv_path': racebox_car_csv_path, 'video_paths': ['/v.mp4'],
+                         'sync_offset': 0.0}],
+                 secondary_source={racebox_car_csv_path: str(secondary)},
+                 secondary_offsets={racebox_car_csv_path: 0.0})
+        sess = mock_render.call_args.args[2]
+        assert any(k.endswith('(second.csv)') for k in sess.extra_channel_meta)
+
+
+# ── Output file names ────────────────────────────────────────────────────────
+
+class TestOutputNames:
+    def test_lap_label_uses_the_lap_number_whatever_the_scope(self):
+        from data_model import Lap
+        from export_runner import lap_label
+        assert lap_label(Lap(lap_num=5, points=[], duration=1)) == 'Lap05'
+        assert lap_label(Lap(lap_num=0, points=[], duration=1, is_outlap=True)) == 'Outlap'
+        assert lap_label(Lap(lap_num=9, points=[], duration=1, is_inlap=True)) == 'Inlap'
+
+    def test_selected_lap_and_all_laps_name_the_same_lap_the_same(self, racebox_car_csv_path):
+        """'This Lap' used to number by list position (counting the outlap)
+        and 'All Laps' by timed-lap position, so 'Lap02' meant different
+        laps and one export overwrote the other."""
+        with patch('video_renderer.render_lap') as mock_render:
+            _run(items=[{'csv_path': racebox_car_csv_path, 'video_paths': ['/v.mp4'],
+                         'sync_offset': 0.0, 'lap_idx': 1}], scope='selected_lap')
+            selected = os.path.basename(mock_render.call_args.args[1])
+            _run(items=[{'csv_path': racebox_car_csv_path, 'video_paths': ['/v.mp4'],
+                         'sync_offset': 0.0}], scope='all_laps')
+            all_laps = [os.path.basename(c.args[1]) for c in mock_render.call_args_list[1:]]
+        assert selected in all_laps
+
+    def test_existing_file_is_never_overwritten(self, tmp_path):
+        from export_runner import unique_path
+        target = tmp_path / 'x.mp4'
+        assert unique_path(str(target)) == str(target)
+        target.write_bytes(b'')
+        assert unique_path(str(target)) == str(tmp_path / 'x (2).mp4')
+        (tmp_path / 'x (2).mp4').write_bytes(b'')
+        assert unique_path(str(target)) == str(tmp_path / 'x (3).mp4')
 
 
 # ── render_lap call-site / signature compatibility ────────────────────────────
