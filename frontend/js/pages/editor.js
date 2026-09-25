@@ -28,6 +28,19 @@
     'Circuit':    (ctx, d, w, h) => GaugeMap.render(ctx, d, w, h),
     'Zoomed':     (ctx, d, w, h) => GaugeMap.renderZoomed(ctx, d, w, h),
     'Progress':   (ctx, d, w, h) => GaugeMap.renderProgress(ctx, d, w, h),
+    // Video gauges show a real <video> over their box (see _syncLayerEls);
+    // the canvas underneath only says what will appear there.
+    'Video':      (ctx, d, w, h) => {
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.fillRect(0, 0, w, h);
+      ctx.fillStyle = '#9aa4b8';
+      ctx.font = `${Math.max(9, Math.round(Math.min(w, h) * 0.09))}px sans-serif`;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(d.video_source === 'reference' ? 'Reference lap video' : 'Second camera', w / 2, h / 2 - 8);
+      ctx.font = `${Math.max(8, Math.round(Math.min(w, h) * 0.06))}px sans-serif`;
+      ctx.fillText(d.available ? '' : (d.video_source === 'reference'
+        ? 'needs a reference lap with a synced video' : 'choose one in the Data tab'), w / 2, h / 2 + 10);
+    },
     'Image':      (ctx, d, w, h) => GaugeImage.render(ctx, d, w, h),
   };
 
@@ -53,6 +66,7 @@
     { value: 'Circuit',    label: 'Circuit Map',  bucket: 'none'   },
     { value: 'Zoomed',     label: 'Zoomed Map',   bucket: 'none'   },
     { value: 'Progress',   label: 'Lap Progress', bucket: 'none'   },
+    { value: 'Video',      label: 'Video (2nd camera / ref lap)', bucket: 'none' },
     { value: 'G-Meter',    label: 'G-Meter',      bucket: 'none'   },
   ];
 
@@ -142,6 +156,8 @@
   let _appConfig = null;   // AppConfig dict, refreshed on each mount() — see API.getConfig()
   let _liveRef   = null;   // reference-lap data for the shown lap (getReferencePreview), or null
   let _liveWeather = null; // {weather, wind} for the Info gauge, as the export fetches it
+  let _liveLayers  = [];   // second videos for Video gauges (getVideoLayers), per lap
+  const _layerEls  = {};   // gauge index -> <video> shown over that gauge's box
 
   // Gauges show the same span of history in the preview and the export —
   // mirrors HISTORY_WINDOW_S / HISTORY_POINTS in gauge_channels.py. A sample
@@ -225,6 +241,7 @@
         fit:        gauge?.fit     || 'contain',
       };
       case 'Progress': return { ...base, lats: new Array(100).fill(0), lons: [], cur_idx: 62 };
+      case 'Video': return { ...base, video_source: gauge?.video_source || 'camera', available: false };
       case 'Circuit':
       case 'Zoomed': return {
         ...base,
@@ -348,6 +365,11 @@
 
     if (type === 'Progress') {
       return { theme, lats: _liveLats || [], lons: _liveLons || [], cur_idx: idx };
+    }
+    if (type === 'Video') {
+      const gi = _layout.gauges.indexOf(gauge);
+      return { theme, video_source: gauge?.video_source || 'camera',
+               available: _liveLayers.some(l => l.gauge_idx === gi) };
     }
     if (type === 'Circuit' || type === 'Zoomed') {
       const osmOn = gauge?.track_map_enabled !== false;
@@ -543,6 +565,7 @@
         const lapStart = _liveLaps?.[_selLapIdx]?.elapsed_start ?? 0;
         const telT     = vid.currentTime - _liveOffset - lapStart;
         const newIdx   = _findFrameIdx(telT);
+        _tickLayers(vid);
         if (newIdx !== lastIdx) {
           lastIdx = newIdx;
           _liveFrameIdx = newIdx;
@@ -703,6 +726,7 @@
       // Immediately render frame 0 so gauges show real data without waiting for RAF
       _rerenderLive();
       _loadReference(lapIdx, mountGen);
+      _loadVideoLayers();
     } catch (e) {
       console.error('[_loadLapData] failed for lap', lapIdx, e);
       if (labelEl) labelEl.textContent = 'Telemetry load failed';
@@ -739,6 +763,63 @@
       _liveWeather = (w && w.weather && w.weather !== '—') ? w : null;
       _rerenderLive();
     } catch (_) { /* offline: the gauge just shows no weather */ }
+  }
+
+  // ── Second videos (Video gauges) ────────────────────────────────────────────
+  async function _loadVideoLayers() {
+    const lapIdx = _selLapIdx;
+    const wanted = _layout?.gauges?.some(g => g.type === 'Video' && g.visible !== false);
+    if (!_liveSession || !wanted) { _liveLayers = []; _syncLayerEls(); return; }
+    try {
+      const layers = await API.getVideoLayers(_liveSession.csv_path, lapIdx, _layout);
+      if (lapIdx !== _selLapIdx) return;
+      _liveLayers = Array.isArray(layers) ? layers : [];
+    } catch (_) { _liveLayers = []; }
+    _syncLayerEls();
+    rebuildGaugeCanvases();
+  }
+
+  /** One <video> per Video gauge that has a layer, over its box, not taking
+   *  mouse events (the gauge canvas below still drags and resizes). */
+  function _syncLayerEls() {
+    const area = getPreviewEl();
+    const live = new Set(_liveLayers.map(l => l.gauge_idx));
+    for (const k of Object.keys(_layerEls)) {
+      if (!live.has(Number(k)) || !area) { _layerEls[k].remove(); delete _layerEls[k]; }
+    }
+    if (!area || !_layout) return;
+    for (const layer of _liveLayers) {
+      const g = _layout.gauges[layer.gauge_idx];
+      if (!g) continue;
+      let el = _layerEls[layer.gauge_idx];
+      if (!el) {
+        el = document.createElement('video');
+        el.muted = true; el.playsInline = true; el.preload = 'auto';
+        el.style.cssText = 'position:absolute;object-fit:contain;background:#000;pointer-events:none;z-index:3;';
+        area.appendChild(el);
+        _layerEls[layer.gauge_idx] = el;
+      }
+      el.style.left = `${g.x * 100}%`; el.style.top = `${g.y * 100}%`;
+      el.style.width = `${g.w * 100}%`; el.style.height = `${g.h * 100}%`;
+    }
+  }
+
+  /** Keep each second video at main time + offset, in the right clip. */
+  function _tickLayers(vid) {
+    for (const layer of _liveLayers) {
+      const el = _layerEls[layer.gauge_idx];
+      if (!el || !vid) continue;
+      const t = vid.currentTime + layer.offset;
+      const clip = layer.clips.find(c => t >= c.start && t < c.start + c.duration);
+      if (!clip) { el.style.opacity = '0'; if (!el.paused) el.pause(); continue; }
+      el.style.opacity = '1';
+      const url = `http://127.0.0.1:${_livePort}/?f=${encodeURIComponent(clip.path)}`;
+      if (el.dataset.src !== url) { el.dataset.src = url; el.src = url; }
+      const local = t - clip.start;
+      if (el.readyState >= 1 && Math.abs(el.currentTime - local) > 0.25) el.currentTime = local;
+      if (vid.paused && !el.paused) el.pause();
+      if (!vid.paused && el.paused) el.play().catch(() => {});
+    }
   }
 
   // ── Switch lap (called from lap selector) ──────────────────────────────────
@@ -1067,6 +1148,8 @@
       renderGaugeEl(canvas, g);
     });
 
+    _syncLayerEls();
+
     // Draw resize handles as siblings in the area (NOT children of canvas,
     // which can swallow pointer events and clip overflow).
     _layout.gauges.forEach((g, idx) => {
@@ -1345,6 +1428,22 @@
   ];
 
   function _buildChannelProps(g) {
+    if (g.type === 'Video') {
+      const src = g.video_source || 'camera';
+      return `
+        <div class="form-row" style="margin-top:6px">
+          <span class="form-label">Shows</span>
+          <select id="prop-video-source" style="flex:1">
+            <option value="camera" ${src === 'camera' ? 'selected' : ''}>Second camera (set in the Data tab)</option>
+            <option value="reference" ${src === 'reference' ? 'selected' : ''}>Reference lap video</option>
+          </select>
+        </div>
+        <div style="font-size:9px;color:var(--text3);margin-top:4px">
+          ${src === 'reference'
+            ? 'Plays the reference lap’s own video from its start line, beside this lap. Set the reference in the toolbar.'
+            : 'Another camera’s recording of this session, synced by its audio.'}
+        </div>`;
+    }
     if (g.type === 'Info') {
       const sel = g.selected_fields || ['track','datetime','vehicle','weather','wind'];
       const ov  = g.info_overrides  || {};
@@ -1495,6 +1594,15 @@
   }
 
   function _bindChannelPropEvents(panel, g) {
+    if (g.type === 'Video') {
+      panel.querySelector('#prop-video-source')?.addEventListener('change', e => {
+        g.video_source = e.target.value;
+        saveLayout();
+        updatePropPanel();
+        _loadVideoLayers();
+      });
+      return;
+    }
     if (g.type === 'Image') {
       const inp       = panel.querySelector('#img-path-inp');
       const browseBtn = panel.querySelector('#img-browse-btn');
@@ -1956,6 +2064,7 @@
 
   // ── Add gauge ───────────────────────────────────────────────────────────────
   function _typeDefaults(type) {
+    if (type === 'Video')      return { video_source: 'camera' };
     if (type === 'Info')       return { selected_fields: ['track','datetime','vehicle','weather','wind'], info_overrides: {} };
     if (type === 'Multi-Line') return { multi_channels: ['speed', 'gforce_lat'] };
     if (type === 'Image')      return { image_path: '', opacity: 1.0, fit: 'contain' };
@@ -2443,6 +2552,7 @@
               saveLayout();
               refreshManualPicker();
               _loadReference(_selLapIdx, _mountGen);
+              _loadVideoLayers();
             });
           });
         }
@@ -2458,6 +2568,7 @@
         saveLayout();
         refreshManualPicker();
         _loadReference(_selLapIdx, _mountGen);
+        _loadVideoLayers();
       });
       refreshManualPicker();
     }

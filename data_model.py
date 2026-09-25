@@ -70,6 +70,7 @@ class Lap:
     duration:  float
     is_outlap: bool = False
     is_inlap:  bool = False
+    session_csv: str = ''    # file of the session this lap belongs to, where known
 
     @property
     def elapsed_start(self) -> float:

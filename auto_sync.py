@@ -555,3 +555,45 @@ def run_auto_sync(
                     csv_path, best_conf, best_margin, MIN_PEAK_MARGIN)
         return None, best_conf
     return best_offset, best_conf
+
+
+# ── Camera-to-camera sync (audio) ─────────────────────────────────────────────
+
+AUDIO_ENVELOPE_HZ = 100.0
+
+
+def _audio_envelope(paths: List[str], rate: float = AUDIO_ENVELOPE_HZ) -> np.ndarray:
+    """Loudness envelope of a recording's audio (clips back to back): 8 kHz
+    mono, mean absolute level per 1/rate s, log-compressed so a loud engine
+    and quiet wind noise both shape the curve."""
+    parts = []
+    block = int(8000 / rate)
+    for p in paths:
+        from utils import _run
+        r = _run([_ffmpeg(), '-v', 'error', '-i', p, '-vn', '-ac', '1', '-ar', '8000',
+                  '-f', 's16le', '-'], timeout=3600)
+        pcm = np.frombuffer(r.stdout or b'', dtype='<i2').astype(np.float32)
+        n = len(pcm) // block
+        if n:
+            parts.append(np.log1p(np.abs(pcm[:n * block]).reshape(n, block).mean(axis=1)))
+    return np.concatenate(parts) if parts else np.zeros(0)
+
+
+def audio_offset(primary: List[str], secondary: List[str], search_window_s: float = 900.0,
+                 rate: float = AUDIO_ENVELOPE_HZ) -> Tuple[Optional[float], float]:
+    """Offset between two cameras' recordings of the same run, from their
+    audio: (offset, confidence) with secondary_time = primary_time - offset,
+    i.e. the primary's video time at which the secondary's starts. None if
+    no confident, unambiguous match. Both cameras hear the same engine, the
+    same kerbs and the same pit-lane noise; their clocks are routinely
+    minutes apart (measured on real footage), so file times cannot be used.
+    """
+    a = _audio_envelope(primary, rate)
+    b = _audio_envelope(secondary, rate)
+    if len(a) < rate * 2 or len(b) < rate * 2:
+        return None, 0.0
+    # _correlate_full(vid, tel): offset = where tel's start falls in vid.
+    offset, conf, margin = _correlate_full(a, b, rate, search_window_s)
+    if conf < MIN_CONFIDENCE or margin < MIN_PEAK_MARGIN:
+        return None, conf
+    return float(offset), float(conf)

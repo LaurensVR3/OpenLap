@@ -325,3 +325,60 @@ class TestRealExport:
         v = _probe(out)['video']
         assert v['codec_name'] == 'prores' and 'a' in v['pix_fmt']
         assert int(v['nb_read_frames']) == 60
+
+
+@needs_ffmpeg
+class TestSecondVideo:
+    """A Video gauge's box shows the second recording from the moment it
+    covers, in step with the main video (layer time = main time + offset)."""
+
+    def test_second_video_appears_in_its_box_at_its_time(self, tmp_path):
+        import numpy as np
+        from video_renderer import render_lap
+        main, cam2 = tmp_path / 'main.mov', tmp_path / 'cam2.mov'
+        _make_clip(main, 5, 'blue')
+        _make_clip(cam2, 5, 'red')
+        sess, job = _make_session_and_job(lap_offset=1.0, duration=2.0)
+        layout = {'theme': 'Dark', 'gauges': [
+            {'type': 'Video', 'video_source': 'camera', 'visible': True,
+             'x': 0.5, 'y': 0.5, 'w': 0.5, 'h': 0.5},
+        ]}
+        out = str(tmp_path / 'out.mp4')
+        # the second camera started 2 s into the main video: its time = main - 2
+        render_lap(str(main), out, sess, job, sync_offset=0.0, encoder='libx264', crf=30,
+                   n_workers=1, show_map=False, show_telemetry=True, padding=0.0,
+                   overlay_layout=layout, video_paths=[str(main)],
+                   video_layers=[{'gauge_idx': 0, 'clips': [str(cam2)], 'offset': -2.0}])
+
+        def px(t, x, y):
+            raw = subprocess.run(['ffmpeg', '-v', 'error', '-ss', str(t), '-i', out, '-frames:v', '1',
+                                  '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
+                                 capture_output=True, check=True).stdout
+            return np.frombuffer(raw, dtype=np.uint8).reshape(240, 320, 3)[y, x]
+        # the export starts at main t=1 s: the second camera starts 1 s later
+        assert px(0.5, 240, 180)[2] > 150          # still the main (blue) picture
+        assert px(1.5, 240, 180)[0] > 150          # the second (red) video in its box
+        assert px(1.5, 40, 40)[2] > 150            # outside the box: the main video
+
+
+def test_layer_offsets_line_both_laps_up_from_their_start():
+    """Reference lap video: both laps play from their own line crossing."""
+    from datetime import datetime, timezone
+    from data_model import DataPoint, Lap
+    from video_layers import layers_for
+
+    def lap(start, csv):
+        pts = [DataPoint(record=0, time=datetime(2024, 1, 1, tzinfo=timezone.utc), lat=0, lon=0,
+                         alt=0, speed=0, gforce_x=0, gforce_y=0, gforce_z=0, lap=1, gyro_x=0,
+                         gyro_y=0, gyro_z=0, elapsed=start + 0.03, lap_elapsed=0.03)]
+        return Lap(lap_num=1, points=pts, duration=60.0, session_csv=csv)
+    layout = {'gauges': [{'type': 'Video', 'video_source': 'reference', 'visible': True},
+                         {'type': 'Video', 'video_source': 'camera', 'visible': True}]}
+    cache = {'sessions': [{'csv_path': '/ref.csv', 'video_paths': ['/r.mp4']}]}
+    layers = layers_for('/cur.csv', lap(100.0, '/cur.csv'), layout, 5.0,
+                        {'/cur.csv': {'paths': ['/c2.mp4'], 'offset': 12.0}},
+                        {'/ref.csv': 3.0}, cache, lap(40.0, '/ref.csv'))
+    ref, cam = layers
+    # main lap starts at video 105; ref lap at its video 43: layer = main - 62
+    assert ref['offset'] == pytest.approx(-62.0) and ref['clips'] == ['/r.mp4']
+    assert cam['offset'] == pytest.approx(-12.0)

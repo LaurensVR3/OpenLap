@@ -71,8 +71,8 @@ def gauge_rect(g: dict, vw: int, vh: int) -> Tuple[int, int, int, int]:
 
 
 def _gauge_drawn(g: dict, show_map: bool, show_telemetry: bool) -> bool:
-    if not g.get('visible', True):
-        return False
+    if not g.get('visible', True) or g.get('type') == 'Video':
+        return False          # a second video, overlaid by FFmpeg itself (video_layers)
     if g.get('type') in _MAP_TYPES:
         return show_map
     if g.get('type') in ('Info', 'Scoreboard', 'Image'):

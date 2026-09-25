@@ -577,6 +577,7 @@ class WebviewAPI:
                 'video_paths':     [override] if override
                                    else (m.video_group.paths if m.video_group else []),
                 'video_override':  bool(override),
+                'other_videos':    [g.paths for g in m.other_groups],
                 'sync_offset':     offsets.get(csv, 0.0 if m.source == 'GoPro' else None),
                 'sync_source':     offset_sources.get(csv, 'camera' if m.source == 'GoPro' else None),
                 'auto_sync_failed': csv in auto_failed,
@@ -957,6 +958,90 @@ class WebviewAPI:
         except Exception:
             logger.exception('get_reference_preview failed for %s lap %s', csv_path, lap_idx)
             return {'ok': False, 'desc': 'error'}
+
+    def set_second_camera(self, csv_path: str, paths: list) -> dict:
+        """Use *paths* (another camera's recording of this session) for Video
+        gauges; syncs them to the main video by audio in the background and
+        pushes second_camera_sync {csv_path, offset, confidence}."""
+        paths = [str(Path(p).resolve()) for p in paths or [] if p]
+        for p in paths:
+            _register_known_video_path(p)
+        with self._config_lock:
+            if not paths:
+                self._config.second_camera.pop(csv_path, None)
+                self._config.save()
+                return {}
+            self._config.second_camera[csv_path] = {'paths': paths, 'offset': None, 'source': 'auto'}
+            self._config.save()
+        main = self._main_video_paths(csv_path)
+
+        def _sync():
+            from auto_sync import audio_offset
+            try:
+                offset, conf = audio_offset(main, paths) if main else (None, 0.0)
+            except Exception:
+                logger.exception('Second camera sync failed for %s', csv_path)
+                offset, conf = None, 0.0
+            with self._config_lock:
+                cam = self._config.second_camera.get(csv_path)
+                if cam and cam.get('source') != 'user' and cam.get('paths') == paths:
+                    cam['offset'] = offset
+                    self._config.save()
+            self._push('second_camera_sync', csv_path=csv_path, offset=offset, confidence=conf)
+        threading.Thread(target=_sync, daemon=True).start()
+        return self._config.second_camera[csv_path]
+
+    def set_second_camera_offset(self, csv_path: str, offset: float) -> None:
+        """Set the second camera's offset by hand (seconds of main video at
+        which the second recording starts)."""
+        with self._config_lock:
+            cam = self._config.second_camera.get(csv_path)
+            if cam:
+                cam['offset'] = float(offset)
+                cam['source'] = 'user'
+                self._config.save()
+
+    def _main_video_paths(self, csv_path: str) -> list:
+        from app_config import load_scan_cache
+        override = self._video_override_for(csv_path)
+        if override:
+            return [override]
+        entry = next((s for s in load_scan_cache().get('sessions', []) if s.get('csv_path') == csv_path), {})
+        return entry.get('video_paths') or []
+
+    def get_video_layers(self, csv_path: str, lap_idx: int, layout: dict) -> list:
+        """The editor preview's second videos for one lap: [{gauge_idx,
+        source, clips: [{path, start, duration}], offset}] with layer time =
+        main video time + offset — the same numbers the export uses."""
+        try:
+            from app_config import load_scan_cache
+            from reference_resolver import resolve_reference_lap
+            from video_layers import layers_for
+            from video_renderer import probe_video
+            s = self._load_session(csv_path)
+            lap = s.laps[int(lap_idx)] if 0 <= int(lap_idx) < len(s.laps) else None
+            scan_cache = load_scan_cache()
+            ref = None
+            if (layout or {}).get('ref_mode', 'none') not in ('none', ''):
+                ref, _ = resolve_reference_lap(
+                    ref_mode=layout['ref_mode'], sess=s, session_info=dict(self._config.session_info),
+                    scan_cache=scan_cache, ref_lap_csv_path=layout.get('ref_lap_csv_path', ''),
+                    ref_lap_num=int(layout.get('ref_lap_num') or 0),
+                    current_lap_num=lap.lap_num if lap else None, load_session_fn=self._load_session)
+            layers = layers_for(csv_path, lap, layout, self._config.offsets.get(csv_path, 0.0),
+                                self._config.second_camera, self._config.offsets, scan_cache, ref)
+            for layer in layers:
+                t, clips = 0.0, []
+                for p in layer['clips']:
+                    _register_known_video_path(p)
+                    d = probe_video(p).duration
+                    clips.append({'path': p, 'start': t, 'duration': d})
+                    t += d
+                layer['clips'] = clips
+            return layers
+        except Exception:
+            logger.exception('get_video_layers failed for %s', csv_path)
+            return []
 
     def get_track_lines(self, csv_path: str) -> dict:
         """The session's GPS outline (one lap, for drawing) and the lines its
@@ -1641,6 +1726,8 @@ class WebviewAPI:
                 # Merged into each session exactly as the editor preview does,
                 # so gauges bound to a secondary file's channels export too.
                 track_lines           = [dict(t) for t in self._config.track_lines],
+                second_camera         = {k: dict(v) for k, v in self._config.second_camera.items()},
+                offsets               = dict(self._config.offsets),
                 secondary_source      = dict(self._config.secondary_source),
                 secondary_offsets     = dict(self._config.secondary_offsets),
                 output_height         = _positive_int(params.get('output_height')),

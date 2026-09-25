@@ -385,6 +385,9 @@ ${hasVid ? renderAlignCard(s, vidPaths, off) : `
   </div>
 </div>`}
 
+<!-- Second camera -->
+${renderSecondCameraCard(s)}
+
 <!-- Start/finish and sector lines -->
 ${renderLinesCard(s)}
 
@@ -394,6 +397,66 @@ ${renderSecondaryCard(s)}
 
     wirePropPanel(s, pane);
     wireLinesCard(s, pane);
+    wireSecondCameraCard(s, pane);
+  }
+
+  // ── Second camera ───────────────────────────────────────────────────────────
+  // Another camera's recording of this session, for Video gauges. Synced by
+  // audio (both cameras hear the same engine); camera clocks are not trusted.
+  function renderSecondCameraCard(s) {
+    const cam = _config?.second_camera?.[s.csv_path];
+    const others = s.other_videos || [];
+    if (!cam && !others.length && !s.matched) return '';
+    const opts = others.map((paths, i) =>
+      `<option value="${i}">${esc(baseName(paths[0]))}${paths.length > 1 ? ` (+${paths.length - 1})` : ''}</option>`).join('');
+    const status = !cam ? (others.length
+        ? `${others.length} other camera recording(s) found around this session.`
+        : 'Show another camera’s recording of this session in a Video gauge.')
+      : cam.offset == null ? 'Syncing by audio…'
+      : `Synced: starts at ${cam.offset.toFixed(2)} s of the main video${cam.source === 'user' ? ' (set by hand)' : ' (by audio)'}.`;
+    return `
+<div class="dr-card" id="dr-cam2-card">
+  <div class="dr-card-title">SECOND CAMERA</div>
+  <div class="dr-hint" id="dr-cam2-status">${esc(status)}</div>
+  ${cam ? `<div class="dr-hint">${esc(cam.paths.map(baseName).join(', '))}</div>` : ''}
+  <div class="dr-actions" style="margin-top:6px;flex-wrap:wrap">
+    ${others.length ? `<select class="input-field" id="dr-cam2-sel" style="max-width:180px">${opts}</select>
+      <button class="btn btn-secondary btn-sm" id="dr-cam2-use">Use</button>` : ''}
+    <button class="btn btn-secondary btn-sm" id="dr-cam2-browse">Browse…</button>
+    ${cam ? `<input type="number" class="input-field input-narrow" id="dr-cam2-off" step="0.01"
+               value="${cam.offset != null ? cam.offset.toFixed(2) : ''}" title="Main video time (s) at which the second recording starts">
+      <button class="btn btn-secondary btn-sm" id="dr-cam2-set">Set</button>
+      <button class="btn btn-secondary btn-sm" id="dr-cam2-remove">Remove</button>` : ''}
+  </div>
+</div>`;
+  }
+
+  function wireSecondCameraCard(s, pane) {
+    const use = async paths => {
+      const cam = await API.setSecondCamera(s.csv_path, paths);
+      _config = { ..._config, second_camera: { ...(_config?.second_camera || {}), [s.csv_path]: cam } };
+      if (!paths.length) delete _config.second_camera[s.csv_path];
+      renderRight();
+    };
+    pane.querySelector('#dr-cam2-use')?.addEventListener('click', () => {
+      const i = parseInt(pane.querySelector('#dr-cam2-sel')?.value || '0', 10);
+      use((s.other_videos || [])[i] || []);
+    });
+    pane.querySelector('#dr-cam2-browse')?.addEventListener('click', async () => {
+      const p = await API.openFileDialog(
+        ['Video Files (*.mp4;*.mov;*.m4v;*.avi;*.mkv;*.mts;*.m2ts;*.webm)'],
+        (s.video_paths || [])[0] || '');
+      if (p) use([p]);
+    });
+    pane.querySelector('#dr-cam2-remove')?.addEventListener('click', () => use([]));
+    pane.querySelector('#dr-cam2-set')?.addEventListener('click', async () => {
+      const v = parseFloat(pane.querySelector('#dr-cam2-off')?.value);
+      if (!Number.isFinite(v)) return;
+      await API.setSecondCameraOffset(s.csv_path, v);
+      const cam = _config.second_camera[s.csv_path];
+      Object.assign(cam, { offset: v, source: 'user' });
+      renderRight();
+    });
   }
 
   // ── Start/finish and sector lines ──────────────────────────────────────────
@@ -1573,6 +1636,13 @@ ${renderSecondaryCard(s)}
         if (_selCsv === s.csv_path) renderRight();
       }
     }));
+    _unlistenFns.push(API.on('second_camera_sync', (detail) => {
+      const cam = _config?.second_camera?.[detail.csv_path];
+      if (cam) cam.offset = detail.offset;
+      if (detail.offset == null) setStatus('Second camera: no confident audio match — set its offset by hand.');
+      if (detail.csv_path === _selCsv) renderRight();
+    }));
+
     _unlistenFns.push(API.on('channel_sync_done', (detail) => {
       _channelSyncing = false;
       if (detail?.error) { setStatus(detail.error); return; }

@@ -59,6 +59,7 @@ GAUGE_TYPES: dict[str, dict] = {
     'Circuit':     {'label': 'Circuit Map',  'bucket': 'none'},
     'Zoomed':      {'label': 'Zoomed Map',   'bucket': 'none'},
     'Progress':    {'label': 'Lap Progress', 'bucket': 'none'},
+    'Video':       {'label': 'Video (2nd camera / ref lap)', 'bucket': 'none'},
     'G-Meter':     {'label': 'G-Meter',      'bucket': 'none'},
 }
 

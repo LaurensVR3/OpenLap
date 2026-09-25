@@ -175,6 +175,8 @@ def run_export(
     speed_unit_pref:      str  = 'auto',
     is_cancelled:         Optional[Callable[[], bool]] = None,
     track_lines:          Optional[list] = None,
+    second_camera:        Optional[dict] = None,
+    offsets:              Optional[dict] = None,
     secondary_source:     Optional[dict] = None,
     secondary_offsets:    Optional[dict] = None,
     output_height:        Optional[int] = None,
@@ -362,6 +364,10 @@ def run_export(
                 def prog(pct, msg, _j=j, _n=len(jobs), _base=base):
                     progress_cb((_base + (_j + pct / 100.0) / _n) / max(total_jobs, 1) * 100, msg)
 
+                from video_layers import layers_for
+                ref_lap = ref_for(ref_num)
+                layers = layers_for(csv_path, lap, layout, offset, second_camera or {},
+                                    offsets or {}, scan_cache, ref_lap) if lap is not None else []
                 try:
                     render_lap(
                         videos[0] if videos else '', out, sess, RenderJob(stem, lap),
@@ -370,7 +376,7 @@ def run_export(
                         padding=0.0 if lap is None else item_padding,
                         is_bike=is_bike, overlay_layout=layout,
                         progress_cb=prog, log_cb=log,
-                        reference_lap=ref_for(ref_num),
+                        reference_lap=ref_lap,
                         info_overrides=info_overrides,
                         overlay_only=item_overlay_only,
                         track_map_geometry=track_geom, track_map_areas=track_areas,
@@ -378,6 +384,7 @@ def run_export(
                         video_paths=videos, pool=pool,
                         output_height=output_height, output_fps=output_fps,
                         bitrate_kbps=bitrate_kbps,
+                        video_layers=layers,
                     )
                 except Exception as e:
                     item_ok = False

@@ -595,7 +595,7 @@ def build_ffmpeg_cmd(sources: List[Tuple[str, float]], n_frames: int,
                      overlay, encoder: str, crf: int, out_path: str,
                      overlay_only: bool, color_matrix: str = 'bt709',
                      bitrate_kbps: int = 0, color_range: str = 'tv',
-                     audio: bool = True) -> List[str]:
+                     audio: bool = True, layers: Optional[List[dict]] = None) -> List[str]:
     """The single FFmpeg command for one export.
 
     sources: the clips the export window covers, in order, as (path, seek);
@@ -652,10 +652,35 @@ def build_ffmpeg_cmd(sources: List[Tuple[str, float]], n_frames: int,
     else:
         base = '[0:v]'
     even = 'scale=trunc(iw/2)*2:trunc(ih/2)*2'
+    next_input = n
     if overlay:
         tiles, (aw, ah) = overlay
         cmd += pipe_in(aw, ah)
-        tile_parts, base = _tile_overlays(n, base, tiles, color_matrix, color_range, 'yuva420p', '')
+        pipe_index = n
+        next_input = n + 1
+    # Second videos (video_layers) go under the gauges: into their box,
+    # letterboxed, starting at their delay; nothing before or after.
+    for li, layer in enumerate(layers or []):
+        srcs = layer['sources']
+        first = next_input
+        for path, seek in srcs:
+            cmd += (['-ss', f'{seek:.6f}'] if seek > 0 else []) + ['-i', path]
+            next_input += 1
+        if len(srcs) > 1:
+            parts.append(''.join(f'[{first + i}:v]' for i in range(len(srcs)))
+                         + f'concat=n={len(srcs)}:v=1:a=0[lv{li}]')
+            vin = f'[lv{li}]'
+        else:
+            vin = f'[{first}:v]'
+        x, y, w, h = layer['rect']
+        w, h = max(2, w // 2 * 2), max(2, h // 2 * 2)
+        parts.append(f'{vin}setpts=PTS-STARTPTS+{layer["delay"]:.6f}/TB,'
+                     f'scale={w}:{h}:force_original_aspect_ratio=decrease,'
+                     f'pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=black[lp{li}]')
+        parts.append(f'{base}[lp{li}]overlay={x}:{y}:eof_action=pass[lb{li}]')
+        base = f'[lb{li}]'
+    if overlay:
+        tile_parts, base = _tile_overlays(pipe_index, base, tiles, color_matrix, color_range, 'yuva420p', '')
         parts += tile_parts
     parts.append(f'{base}{even},format=yuv420p[v]')
     audio_map = (['-map', '[aud]'] if n > 1 else ['-map', '0:a?']) if audio else []
@@ -731,6 +756,7 @@ def render_lap(
     video_paths:        Optional[List[str]] = None,  # several clips of one recording, in order
     pool=None,                                  # multiprocessing.Pool to reuse, or None
     output_height:      Optional[int] = None,   # scale to this height (width follows), or None
+    video_layers:       Optional[List[dict]] = None,  # [{gauge_idx, clips, offset}] (video_layers.py)
     output_fps:         Optional[float] = None,             # frame rate to convert to, or None
     bitrate_kbps:       int = 0,                            # 0 = constant quality (crf)
 ) -> None:
@@ -771,7 +797,7 @@ def render_lap(
                 n_workers, show_map, show_telemetry, padding, is_bike, layout,
                 log, prog, reference_lap, info_overrides, overlay_only,
                 track_map_geometry, track_map_areas, speed_unit, is_cancelled,
-                pool, output_height, output_fps, bitrate_kbps)
+                pool, output_height, output_fps, bitrate_kbps, video_layers)
     except _Cancelled:
         log("  Cancelled.")
     finally:
@@ -786,7 +812,7 @@ def _render(info, clips, clip_durations, out_path, session, job, sync_offset, en
             n_workers, show_map, show_telemetry, padding, is_bike, layout,
             log, prog, reference_lap, info_overrides, overlay_only,
             track_map_geometry, track_map_areas, speed_unit, is_cancelled,
-            pool, output_height, output_fps, bitrate_kbps):
+            pool, output_height, output_fps, bitrate_kbps, video_layers=None):
     if info is not None:
         vw, vh, fps = info.width, info.height, info.fps
         total = info.total_frames
@@ -871,13 +897,15 @@ def _render(info, clips, clip_durations, out_path, session, job, sync_offset, en
     if len(sources) > 1:
         log(f"  Reading {len(sources)} clips: " + ', '.join(os.path.basename(p) for p, _ in sources))
 
+    layers = [] if overlay_only else _layer_inputs(video_layers, layout, vw, vh, vid_start,
+                                                   n_frames / fps_f, log)
     ext = os.path.splitext(out_path)[1] or ('.mov' if overlay_only else '.mp4')
     part_path = os.path.splitext(out_path)[0] + '.part' + ext
     cmd = build_ffmpeg_cmd(sources, n_frames, fps, vw, vh, overlay,
                            encoder, crf, part_path, overlay_only,
                            _color_matrix(info), bitrate_kbps,
                            info.color_range if info else 'tv',
-                           audio=bool(info and info.has_audio))
+                           audio=bool(info and info.has_audio), layers=layers)
     output_size = None
     if output_height and int(output_height) != vh:
         output_size = (round(vw * int(output_height) / vh), int(output_height))
@@ -963,6 +991,34 @@ def _render(info, clips, clip_durations, out_path, session, job, sync_offset, en
                 os.remove(part_path)
             except OSError:
                 pass
+
+
+def _layer_inputs(video_layers, layout, vw, vh, vid_start, dur_s, log) -> List[dict]:
+    """FFmpeg inputs for the second videos: for each, the clips its window
+    covers (seeking into the first), the output time it starts at (it may
+    begin after the main window does), and its box in the frame."""
+    from overlay_worker import gauge_rect
+    out = []
+    gauges = (layout or {}).get('gauges', [])
+    for layer in video_layers or []:
+        g = gauges[layer['gauge_idx']] if layer['gauge_idx'] < len(gauges) else None
+        if g is None:
+            continue
+        try:
+            durs = [probe_video(c).duration for c in layer['clips']]
+        except Exception as e:
+            log(f"  Second video unavailable ({e}) — skipped.")
+            continue
+        start = vid_start + layer['offset']
+        end = start + dur_s
+        if end <= 0 or start >= sum(durs):
+            log("  Second video does not cover this lap — skipped.")
+            continue
+        srcs = clip_sources(layer['clips'], durs, max(0.0, start), end)
+        if not srcs:
+            continue
+        out.append({'sources': srcs, 'delay': max(0.0, -start), 'rect': gauge_rect(g, vw, vh)})
+    return out
 
 
 def _apply_output_conversion(cmd: List[str], output_size, output_fps, overlay_only) -> List[str]:
