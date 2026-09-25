@@ -34,7 +34,16 @@ from typing import Callable, List, Optional, Dict, Tuple  # noqa: F401 – Tuple
 
 SCAN_WORKERS = 8   # thread pool size for concurrent ffprobe / file-sniff I/O
 
-VIDEO_EXTENSIONS = {'.mp4', '.mov', '.avi', '.mkv', '.MP4', '.MOV', '.AVI', '.MKV'}
+# Lower-case; compare with is_video_file(), never with a raw suffix — camera
+# files come as .MP4, .mp4 and .Mp4. The one list the scanner, the video
+# server and the file pickers use. Camera side-files (GoPro .LRV/.THM, DJI
+# .LRF low-res proxies) are deliberately absent: they duplicate real clips.
+VIDEO_EXTENSIONS = {'.mp4', '.mov', '.m4v', '.avi', '.mkv', '.mts', '.m2ts', '.webm'}
+IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico'}
+
+
+def is_video_file(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in VIDEO_EXTENSIONS
 CSV_EXTENSIONS   = {'.csv', '.CSV'}
 GPX_EXTENSIONS   = {'.gpx', '.GPX'}
 LD_EXTENSIONS    = {'.ld',  '.LD'}
@@ -114,7 +123,7 @@ def scan_videos(folder: str, progress_cb: Optional[Callable[[str], None]] = None
         os.path.join(root, fname)
         for root, _, files in os.walk(folder)
         for fname in sorted(files)
-        if Path(fname).suffix in VIDEO_EXTENSIONS
+        if is_video_file(fname)
     ]
     total = len(all_paths)
     if cache is None:

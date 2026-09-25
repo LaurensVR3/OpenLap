@@ -186,6 +186,7 @@ export function makeAPI(overrides = {}) {
     openFolderDialog:  vi.fn(async () => null),
     getSessionMeta:    vi.fn(async () => ({ track: '', laps: '', best: '', best_secs: null })),
     getVideoServerPort: vi.fn(async () => 0),
+    getVideoFps:        vi.fn(async () => 30),
     saveSessionsCache:  vi.fn(async () => null),
     linkCameraFolder:   vi.fn(async () => ({ offset_seconds: 0, matched_count: 0, total_groups: 0, total_sessions: 0 })),
     unlinkCameraFolder: vi.fn(async () => null),

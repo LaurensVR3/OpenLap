@@ -515,19 +515,11 @@
       return;
     }
 
-    let timedCount = 0;
     sel.innerHTML = laps.map((l, i) => {
       const dur  = l.duration != null ? _fmtLapTime(l.duration) : '?';
       const star = l.is_best ? ' ★' : '';
-      let label;
-      if (l.is_outlap) {
-        label = 'Outlap';
-      } else if (l.is_inlap) {
-        label = 'Inlap';
-      } else {
-        timedCount++;
-        label = `Lap ${timedCount}`;
-      }
+      // The lap's own number, the same one export file names use.
+      const label = l.is_outlap ? 'Outlap' : l.is_inlap ? 'Inlap' : `Lap ${l.lap_num}`;
       return `<option value="${i}" ${i === _selLapIdx ? 'selected' : ''}>${label}  ${dur}${star}</option>`;
     }).join('');
 
@@ -1373,7 +1365,7 @@
     if (g.type === 'Multi-Line') {
       const keys = g.multi_channels || ['speed', 'gforce_lat'];
       const opts = _allChannelOptions().map(o =>
-        `<option value="${o.value}">${o.label}</option>`).join('');
+        `<option value="${_esc(o.value)}">${_esc(o.label)}</option>`).join('');
       return `
         <div style="border-top:1px solid var(--border);padding-top:8px;margin-top:4px;">
           <div style="font-size:9px;color:var(--text3);margin-bottom:6px;
@@ -1387,7 +1379,7 @@
                 <span style="flex:1;min-width:0;font-size:10px;color:var(--text);
                              overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                       title="${_esc(lbl)}">${_esc(lbl)}</span>
-                <button class="btn btn-sm multi-rm-btn" data-mch="${ch}"
+                <button class="btn btn-sm multi-rm-btn" data-mch="${_esc(ch)}"
                         style="flex-shrink:0;padding:1px 6px;color:var(--err);border-color:var(--err);">✕</button>
               </div>`;
             }).join('')}
@@ -1546,7 +1538,7 @@
                   : 'No circuit found nearby.');
           }
         } catch (err) {
-          picker.innerHTML = `<div style="font-size:9px;color:var(--err);">Failed: ${err.message || err}</div>`;
+          picker.innerHTML = `<div style="font-size:9px;color:var(--err);">Failed: ${_esc(err.message || err)}</div>`;
         }
       });
 
@@ -1613,7 +1605,7 @@
             <span style="flex:1;min-width:0;font-size:10px;color:var(--text);
                          overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
                   title="${_esc(lbl)}">${_esc(lbl)}</span>
-            <button class="btn btn-sm multi-rm-btn" data-mch="${ch}"
+            <button class="btn btn-sm multi-rm-btn" data-mch="${_esc(ch)}"
                     style="flex-shrink:0;padding:1px 6px;color:var(--err);border-color:var(--err);">✕</button>
           </div>`;
         }).join('');
@@ -1832,7 +1824,7 @@
           <div style="flex:1; min-width:0;">
             <div style="font-size:11px; color:var(--text); white-space:nowrap;
                         overflow:hidden; text-overflow:ellipsis;
-                        ${visible ? '' : 'opacity:0.4;'}">${typeLabel}</div>
+                        ${visible ? '' : 'opacity:0.4;'}">${_esc(typeLabel)}</div>
             <div style="font-size:9px; color:var(--text3)">${_esc(subLabel)}</div>
           </div>
           <button class="vis-toggle" data-vis-idx="${idx}"
@@ -1904,7 +1896,7 @@
     if (!sel) return;
     const cur = _layout?.active_preset || '';
     sel.innerHTML = `<option value="">— No Preset —</option>` +
-      _presets.map(p => `<option value="${p}" ${p===cur?'selected':''}>${p}</option>`).join('');
+      _presets.map(p => `<option value="${_esc(p)}" ${p===cur?'selected':''}>${_esc(p)}</option>`).join('');
   }
 
   async function saveAsPreset() {

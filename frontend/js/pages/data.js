@@ -732,7 +732,7 @@ ${renderSecondaryCard(s)}
       const msg = pane.querySelector('#dr-assign-vid-msg');
       btn.disabled = true;
       const videoPath = await API.openFileDialog(
-        ['Video Files (*.mp4;*.mov;*.avi;*.mkv;*.MP4;*.MOV)'],
+        ['Video Files (*.mp4;*.mov;*.m4v;*.avi;*.mkv;*.mts;*.m2ts;*.webm)'],
         _config?.video_path || ''
       ).catch(() => null);
       if (!videoPath) { btn.disabled = false; return; }
@@ -923,7 +923,13 @@ ${renderSecondaryCard(s)}
 
     if (!video) return;
 
-    let fps = 30; // default; will be updated from metadata
+    // Real frame rate from the file (ffprobe) so ±1f steps land on frames;
+    // 30 only until it arrives, or if it cannot be read.
+    let fps = 30;
+    const vidPath = (s.video_paths || [])[0];
+    if (vidPath) {
+      API.getVideoFps(vidPath).then(f => { if (f > 0) fps = f; }).catch(() => {});
+    }
 
     // outlapDur: elapsed_start of the first timed lap (already cached from loadLaps).
     // sync_offset = (video time at lap-1 mark) - outlapDur, matching video_renderer.py
@@ -976,8 +982,17 @@ ${renderSecondaryCard(s)}
 
     video.addEventListener('loadedmetadata', () => {
       scrub.max = Math.round(video.duration * 1000);
-      fps = 30;
       if (!_sought) seekToLap1();
+    });
+
+    // The embedded browser cannot play every format FFmpeg can (MPEG-TS
+    // .mts/.m2ts, some codecs); say so instead of showing an empty player.
+    video.addEventListener('error', () => {
+      if (markEl) {
+        markEl.textContent = "This video can't be previewed here — export still works. "
+          + 'Enter the offset by hand, or sync with a copy in MP4.';
+        markEl.className = 'sync-mark-val status-err';
+      }
     });
 
     // Fallback: canplay fires later than loadedmetadata and is more reliable in some WebView builds

@@ -52,6 +52,7 @@ const API = (() => {
       get_about_info:    () => ({ version: '0.0.0-mock', python: '3.x.x', config: '~/.openlap/config.json' }),
       get_session_meta:  () => ({ track: '', laps: '', best: '', best_secs: null }),
       get_video_server_port:    () => 0,
+      get_video_fps:            () => 30,
       save_sessions_cache:      () => null,
       convert_xrk_session:       () => ({ ok: false, error: 'mock' }),
       assign_video:              () => null,
@@ -108,6 +109,7 @@ const API = (() => {
     listPresets:       ()              => call('list_presets'),
 
     startExport:       (params)        => call('start_export', params),
+    getVideoFps:       (path)          => call('get_video_fps', path),
     cancelExport:      ()              => call('cancel_export'),
 
     getWeather:        (lat, lon, dt)  => call('get_weather', lat, lon, dt),

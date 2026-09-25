@@ -263,3 +263,13 @@ def test_solve_camera_offset_partial_match_picks_best_alignment():
     offset, count = solve_camera_offset(matching_groups + extra_groups, true_starts)
     assert count == 4
     assert offset == pytest.approx(applied_offset, abs=0.01)
+
+
+def test_video_extensions_match_regardless_of_case_and_skip_camera_proxies(tmp_path):
+    """Camera files come as .MP4, .mp4 and .Mp4; MPEG-TS (.MTS) cameras were
+    ignored entirely; GoPro/DJI low-res proxies (.LRV/.LRF) duplicate clips."""
+    from session_scanner import is_video_file
+    for name in ('a.MP4', 'b.mp4', 'c.Mp4', 'd.MTS', 'e.m2ts', 'f.webm', 'g.MOV'):
+        assert is_video_file(name), name
+    for name in ('a.LRV', 'b.LRF', 'c.THM', 'd.csv', 'e.jpg'):
+        assert not is_video_file(name), name

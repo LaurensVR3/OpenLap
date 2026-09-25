@@ -600,3 +600,22 @@ class TestAmbiguousMatchIsRejected:
         from auto_sync import MIN_PEAK_MARGIN
         offset, _conf = self._run(monkeypatch, margin=MIN_PEAK_MARGIN + 0.5)
         assert offset == pytest.approx(42.0)
+
+
+class TestCorrelateChannelsRejectsAmbiguity:
+    """Speed and RPM repeat every lap. With laps shorter than the search
+    window, the offset one lap away fits almost as well as the true one; the
+    video sync rejects such matches (MIN_PEAK_MARGIN) and so must this."""
+
+    def test_perfectly_periodic_signal_is_rejected(self, monkeypatch):
+        import auto_sync
+        fps, lap_s = 5.0, 20.0
+        t = np.arange(int(200 * fps)) / fps
+        lap = 100 + 40 * np.sin(2 * np.pi * t / lap_s) + 15 * np.sin(6 * np.pi * t / lap_s)
+        sessions = {
+            'p': TestCorrelateChannels._fake_session(1 / fps, len(t), speed=lap),
+            's': TestCorrelateChannels._fake_session(1 / fps, len(t), speed=np.roll(lap, 13)),
+        }
+        monkeypatch.setattr(auto_sync, '_load_session', lambda path, source: sessions[path])
+        offset, conf, channel = auto_sync.correlate_channels('p', 's', 'RaceBox', 'RaceBox')
+        assert (conf, channel) == (0.0, '')

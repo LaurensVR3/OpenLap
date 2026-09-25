@@ -186,7 +186,10 @@ def correlate_channels(
     what yields offset in the secondary-relative-to-primary sense used here.
 
     Returns (0.0, 0.0, '') if no candidate channel has usable data on both
-    sides.
+    sides, or if every candidate is ambiguous: the same peak-margin test as
+    run_auto_sync (MIN_PEAK_MARGIN) applies here, and matters more — speed
+    and RPM repeat every lap, so on laps shorter than the search window the
+    offset one lap away can fit almost as well as the true one.
     """
     primary_pts   = _load_session(primary_csv,   primary_source).all_points
     secondary_pts = _load_session(secondary_csv, secondary_source).all_points
@@ -197,7 +200,11 @@ def correlate_channels(
         secondary_sig = extractor(secondary_pts, fps)
         if primary_sig is None or secondary_sig is None:
             continue
-        offset, conf = _correlate(secondary_sig, primary_sig, fps, search_window_s)
+        offset, conf, margin = _correlate_full(secondary_sig, primary_sig, fps, search_window_s)
+        if margin < MIN_PEAK_MARGIN:
+            logger.info('channel sync: %s is ambiguous (confidence %.2f, peak margin %.2f < %.2f)',
+                        name, conf, margin, MIN_PEAK_MARGIN)
+            continue
         if conf > best_conf:
             best_offset, best_conf, best_channel = offset, conf, name
     return best_offset, best_conf, best_channel

@@ -17,11 +17,12 @@ Findings from the full code/feature review (2026-09-25). Roughly in suggested fi
 - [x] **Lap durations short by one sample interval** — all loaders use `pts[-1] - pts[0]` (`racebox_data.py`, `aim_data.py`, `vbox_data.py`, `unipro_data.py`, `motec_data.py`); 60.000s laps at 25 Hz show as 59.960s. Use next lap's start (or device-reported lap times).
 - [x] **Export filenames collide / overwrite silently** — `selected_lap` labels by index incl. outlap (`Lap{lap_idx+1}`), `all_laps` by timed-lap ordinal; "Lap03" means different laps. Use `lap_num` consistently and never overwrite without a suffix.
 - [x] **Joined-video cache can serve the wrong video** — keyed by CSV basename + mtime only (`export_runner.py`, `joined_{basename}.mp4`). Key by hash of the clip list; add cleanup of `~/.openlap/video_cache`.
-- [ ] **Channel (telemetry-vs-telemetry) sync lacks peak-margin check** — `auto_sync.correlate_channels` uses confidence only; lap-periodic Speed traces will produce confidently wrong offsets. Apply `MIN_PEAK_MARGIN` like video sync.
-- [ ] **Video auto-sync search window fixed at ±120s around 0** — centre it on the clock-derived prior (video creation_time − csv_start) so cameras started >2 min before the logger still sync.
-- [ ] **Frame stepping assumes 30 fps** — `frontend/js/pages/data.js` (`let fps = 30`). Get real fps from ffprobe (store in scan cache) or `requestVideoFrameCallback`.
-- [ ] **XSS via telemetry channel names** — `editor.js` Multi-Line picker (`<option value="${o.value}">${o.label}</option>`) and `_channelLabel` output are unescaped; channel names come from telemetry files and page script can call `pywebview.api`. Also escape preset names in `rebuildPresetSelector`.
-- [ ] **Video extension allowlists incomplete** — `session_scanner.VIDEO_EXTENSIONS` and `webview_api._ALLOWED_VIDEO_EXTENSIONS` miss `.mts`, `.m2ts`, `.webm`, mixed case (`.Mp4`). Compare case-insensitively; keep one shared list.
+- [x] **Channel (telemetry-vs-telemetry) sync lacks peak-margin check** — `auto_sync.correlate_channels` uses confidence only; lap-periodic Speed traces will produce confidently wrong offsets. Apply `MIN_PEAK_MARGIN` like video sync.
+- [x] ~~**Video auto-sync search window fixed at ±120s around 0**~~ — investigated, not changed: across the 16 user-confirmed sessions the camera clocks were 10 s to 9 min off from the telemetry (one 7.5 years, a reset clock), so a clock-centred window would miss most of them, while every confirmed offset lies within −12.5…+18.7 s — well inside the existing window.
+- [x] **Frame stepping assumes 30 fps** — `frontend/js/pages/data.js` (`let fps = 30`). Get real fps from ffprobe (store in scan cache) or `requestVideoFrameCallback`.
+- [x] **XSS via telemetry channel names** — `editor.js` Multi-Line picker (`<option value="${o.value}">${o.label}</option>`) and `_channelLabel` output are unescaped; channel names come from telemetry files and page script can call `pywebview.api`. Also escape preset names in `rebuildPresetSelector`.
+- [x] **Image/Logo gauge never showed in the editor preview** (found while fixing the next item) — the preview loads it through the local file server, which refused every non-video extension (403).
+- [x] **Video extension allowlists incomplete** — `session_scanner.VIDEO_EXTENSIONS` and `webview_api._ALLOWED_VIDEO_EXTENSIONS` miss `.mts`, `.m2ts`, `.webm`, mixed case (`.Mp4`). Compare case-insensitively; keep one shared list.
 
 ## Preview ≠ export parity
 

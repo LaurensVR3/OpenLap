@@ -26,7 +26,7 @@ if 'webview' not in sys.modules:
     sys.modules['webview'] = MagicMock()
 
 from webview_api import (
-    _VideoFileHandler, _ALLOWED_VIDEO_EXTENSIONS, _ThreadingHTTPServer,
+    _VideoFileHandler, _ALLOWED_MEDIA_EXTENSIONS, _ThreadingHTTPServer,
     _register_known_video_path,
 )
 
@@ -73,15 +73,30 @@ def _furl(path):
 # ── Extension whitelist ────────────────────────────────────────────────────────
 
 class TestAllowedExtensions:
-    def test_constant_contains_common_video_types(self):
-        for ext in ('.mp4', '.mov', '.avi', '.mkv', '.m4v'):
-            assert ext in _ALLOWED_VIDEO_EXTENSIONS
-        for ext in ('.MP4', '.MOV', '.AVI', '.MKV'):
-            assert ext in _ALLOWED_VIDEO_EXTENSIONS
+    def test_constant_contains_common_video_and_image_types(self):
+        for ext in ('.mp4', '.mov', '.avi', '.mkv', '.m4v', '.mts', '.m2ts', '.webm',
+                    '.png', '.jpg', '.jpeg'):
+            assert ext in _ALLOWED_MEDIA_EXTENSIONS
 
-    def test_non_video_extensions_absent(self):
-        for ext in ('.py', '.json', '.env', '.exe', '.csv', '.txt', '.ini'):
-            assert ext not in _ALLOWED_VIDEO_EXTENSIONS
+    def test_non_media_extensions_absent(self):
+        for ext in ('.py', '.json', '.env', '.exe', '.csv', '.txt', '.ini', '.lrv', '.thm'):
+            assert ext not in _ALLOWED_MEDIA_EXTENSIONS
+
+    def test_extension_check_ignores_case(self, server_port, tmp_path):
+        p = tmp_path / 'clip.Mp4'
+        p.write_bytes(b'data')
+        _register_known_video_path(str(p))
+        status, _, _ = _req(server_port, _furl(str(p)))
+        assert status == 200
+
+    def test_known_logo_image_is_served(self, server_port, tmp_path):
+        """The Image/Logo gauge previews through this server; images used to
+        be refused, so a logo never appeared in the editor."""
+        p = tmp_path / 'logo.PNG'
+        p.write_bytes(b'PNG-DATA')
+        _register_known_video_path(str(p))
+        status, _, _ = _req(server_port, _furl(str(p)))
+        assert status == 200
 
     def test_disallowed_extension_returns_403(self, server_port, tmp_path):
         p = tmp_path / 'config.json'

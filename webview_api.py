@@ -26,10 +26,11 @@ from app_config import AppConfig, overlay_from_dict, load_scan_cache
 
 logger = logging.getLogger(__name__)
 
-_ALLOWED_VIDEO_EXTENSIONS = frozenset({
-    '.mp4', '.mov', '.avi', '.mkv', '.m4v',
-    '.MP4', '.MOV', '.AVI', '.MKV', '.M4V',
-})
+from session_scanner import VIDEO_EXTENSIONS as _VIDEO_EXTS, IMAGE_EXTENSIONS as _IMAGE_EXTS
+# The local file server serves videos (Data/Overlay preview) and images
+# (Image/Logo gauge preview) — nothing else, and only paths the app itself
+# resolved or the user picked (see _register_known_video_path).
+_ALLOWED_MEDIA_EXTENSIONS = frozenset(_VIDEO_EXTS | _IMAGE_EXTS)
 
 
 def _dialog_start_dir(path: str) -> str:
@@ -135,8 +136,8 @@ class _VideoFileHandler(http.server.BaseHTTPRequestHandler):
                 raw = raw[1:]
 
         # Security: only serve recognised video extensions to prevent path traversal
-        ext = os.path.splitext(raw)[1]
-        if ext not in _ALLOWED_VIDEO_EXTENSIONS:
+        ext = os.path.splitext(raw)[1].lower()
+        if ext not in _ALLOWED_MEDIA_EXTENSIONS:
             logger.warning('VideoServer 403: disallowed extension %s for %s', ext, raw)
             self.send_error(403, 'Forbidden')
             return
@@ -290,6 +291,21 @@ class WebviewAPI:
                 self._video_port = 0
             return self._video_port
 
+    def get_video_fps(self, path: str) -> float:
+        """Frame rate of a video file (ffprobe), for frame-accurate stepping
+        in the Data tab — an HTML video element has no frame rate, and a
+        30 fps guess stepped two frames at a time on 60 fps footage and never
+        landed on a frame at 25/50 fps. 0.0 if it cannot be read."""
+        cache = self.__dict__.setdefault('_fps_cache', {})
+        if path not in cache:
+            try:
+                from video_renderer import probe_video
+                cache[path] = float(probe_video(path).fps)
+            except Exception:
+                logger.debug('get_video_fps failed for %s', path, exc_info=True)
+                return 0.0
+        return cache[path]
+
     # ── Config ────────────────────────────────────────────────────────────────
     def get_config(self) -> dict:
         cfg = asdict(self._config)
@@ -304,6 +320,12 @@ class WebviewAPI:
         for preset in cfg.get('presets', {}).values():
             if 'gauges' in preset:
                 preset['gauges'] = migrate_gauges(preset['gauges'])
+        # Image/Logo gauges preview through the local file server, which only
+        # serves known paths: register every image a layout refers to.
+        for layout in [cfg.get('overlay') or {}] + list(cfg.get('presets', {}).values()):
+            for g in layout.get('gauges', []) or []:
+                if g.get('image_path'):
+                    _register_known_video_path(g['image_path'])
         return cfg
 
     def save_config(self, data: dict) -> None:
@@ -343,7 +365,11 @@ class WebviewAPI:
 
     # ── Overlay ───────────────────────────────────────────────────────────────
     def get_overlay(self) -> dict:
-        return asdict(self._config.overlay)
+        overlay = asdict(self._config.overlay)
+        for g in overlay.get('gauges', []):
+            if g.get('image_path'):
+                _register_known_video_path(g['image_path'])
+        return overlay
 
     def save_overlay(self, data: dict) -> None:
         with self._config_lock:
@@ -823,7 +849,11 @@ class WebviewAPI:
             directory=_dialog_start_dir(start_dir),
         )
         if result:
-            return str(Path(result[0]).resolve())
+            picked = str(Path(result[0]).resolve())
+            # The user chose it: fine to preview (the server still checks the
+            # extension, so this only ever admits a video or an image).
+            _register_known_video_path(picked)
+            return picked
         return None
 
     # ── Weather ───────────────────────────────────────────────────────────────
