@@ -500,6 +500,17 @@ class WebviewAPI:
                         xrk_path        = xrk_path,
                     ))
 
+        # GoPro recordings carry their own GPS (gopro_data): one no logger
+        # session was matched to becomes a session of its own, already in
+        # sync with its video (offset 0, on the camera's own clock).
+        claimed = {m.video_group.paths[0] for m in matches if m.matched and m.video_group}
+        for g in groups:
+            if g.files and g.files[0].gpmf and g.paths[0] not in claimed:
+                matches.append(MatchedSession(
+                    csv_path=g.paths[0], video_group=g, time_delta=0.0,
+                    csv_start=g.start_time, video_start=g.start_time, matched=True,
+                    source='GoPro'))
+
         # Load cached offsets
         offsets        = self._config.offsets
         offset_sources = self._config.offset_sources
@@ -521,8 +532,8 @@ class WebviewAPI:
                 'video_paths':     [override] if override
                                    else (m.video_group.paths if m.video_group else []),
                 'video_override':  bool(override),
-                'sync_offset':     offsets.get(csv),
-                'sync_source':     offset_sources.get(csv),
+                'sync_offset':     offsets.get(csv, 0.0 if m.source == 'GoPro' else None),
+                'sync_source':     offset_sources.get(csv, 'camera' if m.source == 'GoPro' else None),
                 'auto_sync_failed': csv in auto_failed,
                 'track':           '',
                 'laps':            '',
@@ -692,8 +703,8 @@ class WebviewAPI:
                 'xrk_path':        s.get('xrk_path'),
                 'video_paths':     vpaths,
                 'video_override':  bool(override),
-                'sync_offset':     offsets.get(csv),
-                'sync_source':     offset_sources.get(csv),
+                'sync_offset':     offsets.get(csv, 0.0 if s.get('source') == 'GoPro' else None),
+                'sync_source':     offset_sources.get(csv, 'camera' if s.get('source') == 'GoPro' else None),
                 'sync_review':     csv in self._config.offset_review,
                 'auto_sync_failed': csv in auto_failed,
                 'track':           s.get('track', ''),
@@ -715,7 +726,8 @@ class WebviewAPI:
             # GPX / MoTeC / VBOX: need a full load but they're usually small.
             # Cache the derived result by (size, mtime) so repeat scans of an
             # unchanged file don't re-parse it every time.
-            if suffix in ('.gpx', '.ld', '.vbo', '.uni', '.tsv'):
+            from session_scanner import VIDEO_EXTENSIONS
+            if suffix in ('.gpx', '.ld', '.vbo', '.uni', '.tsv') or suffix in VIDEO_EXTENSIONS:
                 stat = None
                 try:
                     st = os.stat(csv_path)

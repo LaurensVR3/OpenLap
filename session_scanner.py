@@ -67,6 +67,7 @@ class VideoFile:
     creation_time: Optional[datetime]   # UTC, from metadata or mtime
     duration:      float                # seconds
     camera:        str = ''             # see camera_key(); '' = unknown
+    gpmf:          bool = False         # GoPro telemetry track (see gopro_data)
     time_from_mtime: bool = False       # no creation_time tag: estimated from the file date
 
     @property
@@ -91,12 +92,12 @@ def _ffprobe_video_meta(path: str) -> dict:
         r = _run([ffprobe_path(), '-v', 'quiet', '-print_format', 'json',
                   '-show_entries',
                   'format_tags=creation_time,com.apple.quicktime.creationdate:format=duration:'
-                  'stream=codec_type,codec_name,width,height,r_frame_rate',
+                  'stream=codec_type,codec_name,codec_tag_string,width,height,r_frame_rate',
                   path], text=True, timeout=10)
         data = json.loads(r.stdout)
     except Exception:
         logger.debug('ffprobe failed for %s', path, exc_info=True)
-        return {'creation_time': None, 'duration': 0.0, 'camera': ''}
+        return {'creation_time': None, 'duration': 0.0, 'camera': '', 'gpmf': False}
     tags = data.get('format', {}).get('tags', {}) or {}
     ct = tags.get('creation_time') or tags.get('com.apple.quicktime.creationdate')
     dt = None
@@ -114,7 +115,8 @@ def _ffprobe_video_meta(path: str) -> dict:
     v = next((st for st in data.get('streams', []) if st.get('codec_type') == 'video'), {})
     cam = camera_key(path, v.get('width', 0), v.get('height', 0),
                      v.get('r_frame_rate', ''), v.get('codec_name', '')) if v else ''
-    return {'creation_time': dt, 'duration': dur, 'camera': cam}
+    gpmf = any(st.get('codec_tag_string') == 'gpmd' for st in data.get('streams', []))
+    return {'creation_time': dt, 'duration': dur, 'camera': cam, 'gpmf': gpmf}
 
 
 def _ffprobe_creation_time(path: str) -> Tuple[Optional[datetime], float]:
@@ -157,12 +159,13 @@ def scan_videos(folder: str, progress_cb: Optional[Callable[[str], None]] = None
         stat  = _stat_size_mtime(path)
         entry = cache.get(path)
         if (stat and entry and entry.get('size') == stat[0] and entry.get('mtime') == stat[1]
-                and 'camera' in entry):   # entries written before cameras were told apart: re-probe once
+                and 'gpmf' in entry):   # entries from before cameras were told apart: re-probe once
             ct_raw = entry.get('creation_time')
             ct = datetime.fromisoformat(ct_raw) if ct_raw else None
             results[i] = VideoFile(path=path, creation_time=ct, duration=entry.get('duration', 0.0),
                                    camera=entry.get('camera', ''),
-                                   time_from_mtime=bool(entry.get('time_from_mtime')))
+                                   time_from_mtime=bool(entry.get('time_from_mtime')),
+                                   gpmf=bool(entry.get('gpmf')))
         else:
             to_probe.append((i, path))
 
@@ -181,13 +184,14 @@ def scan_videos(folder: str, progress_cb: Optional[Callable[[str], None]] = None
             if dur > 0:
                 ct = ct - timedelta(seconds=dur)
         results[i] = VideoFile(path=path, creation_time=ct, duration=dur, camera=cam,
-                               time_from_mtime=from_mtime)
+                               time_from_mtime=from_mtime, gpmf=meta.get('gpmf', False))
         stat = _stat_size_mtime(path)
         if stat:
             cache[path] = {
                 'size': stat[0], 'mtime': stat[1],
                 'creation_time': ct.isoformat() if ct else None,
                 'duration': dur, 'camera': cam, 'time_from_mtime': from_mtime,
+                'gpmf': meta.get('gpmf', False),
             }
         if progress_cb:
             with progress_lock:

@@ -56,7 +56,8 @@ Findings from the full code/feature review (2026-09-25). Roughly in suggested fi
 
 ## Feature gaps
 
-- [ ] Embedded camera telemetry: GoPro GPMF, DJI, Insta360.
+- [x] **Embedded camera telemetry — GoPro done**: GPMF GPS read from the video itself (checked against GoPro's HERO5/HERO6/MAX sample clips); a GoPro recording no logger session matched becomes a session in sync by construction (offset 0).
+- [ ] **DJI / Insta360 embedded telemetry — not done, on purpose**: the user's DJI Osmo files carry no telemetry (their DJI.Meta stream is one packet of thumbnails; GPS needs DJI's GPS remote, stored in an undocumented protobuf stream). Insta360's format is proprietary. Both need real sample files to build and verify against; without them a parser would be guesswork.
 - [x] GPS lap detection with user-defined start/finish line and sectors (GPX is one lap; `.uni` is heuristic; sectors are fixed thirds).
 - [ ] Multi-camera / picture-in-picture.
 - [ ] Side-by-side / ghost comparison of two laps' videos.

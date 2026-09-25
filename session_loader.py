@@ -43,6 +43,10 @@ def load_file(path: str):
         return unipro_data.load_uni(path)
     if aim_data.is_aim_csv(path):
         return aim_data.load_csv(path)
+    from session_scanner import is_video_file
+    if is_video_file(path):
+        import gopro_data
+        return gopro_data.load_gopro(path)
     return racebox_data.load_csv(path)
 
 

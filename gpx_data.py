@@ -116,6 +116,45 @@ def _angular_diff(a: float, b: float) -> float:
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
+def track_dynamics(elapsed, lats, lons, speed_kmh, sigma_samples: float):
+    """(speed km/h, longitudinal G, lateral G) from a GPS track: speed as
+    given (smoothed), longitudinal G from its rate of change, lateral G from
+    speed times the rate of change of heading. Vehicle-frame values, however
+    the recording device was mounted. Shared by GPX and GoPro loading."""
+    n = len(elapsed)
+    speed_kmh = np.asarray(speed_kmh, dtype=float)
+    speed_ms  = speed_kmh / 3.6
+
+    # ── Bearings and heading rate ──────────────────────────────────────────────
+    bearings = np.zeros(n)
+    for i in range(1, n):
+        bearings[i] = _bearing_rad(lats[i-1], lons[i-1], lats[i], lons[i])
+    bearings[0] = bearings[1] if n > 1 else 0.0
+
+    heading_rate = np.zeros(n)   # rad/s
+    for i in range(1, n):
+        dt_i = elapsed[i] - elapsed[i-1]
+        if dt_i > 1e-6:
+            heading_rate[i] = _angular_diff(bearings[i-1], bearings[i]) / dt_i
+    heading_rate[0] = heading_rate[1] if n > 1 else 0.0
+    heading_rate = _gaussian_smooth(heading_rate, sigma_samples)
+
+    # ── Longitudinal G (from speed derivative) ─────────────────────────────────
+    lon_g = np.zeros(n)
+    for i in range(1, n):
+        dt_i = elapsed[i] - elapsed[i-1]
+        if dt_i > 1e-6:
+            lon_g[i] = (speed_ms[i] - speed_ms[i-1]) / dt_i / _G
+    lon_g[0] = lon_g[1] if n > 1 else 0.0
+    lon_g = np.clip(_gaussian_smooth(lon_g, sigma_samples), -5.0, 5.0)
+
+    # ── Lateral G (centripetal: v * ω / g) ────────────────────────────────────
+    lat_g = np.clip(speed_ms * heading_rate / _G, -5.0, 5.0)
+    lat_g = _gaussian_smooth(lat_g, sigma_samples)
+
+    return speed_kmh, lon_g, lat_g
+
+
 def is_gpx(path: str) -> bool:
     """Return True if the file appears to be a GPX file."""
     if not path.lower().endswith('.gpx'):
@@ -251,34 +290,7 @@ def load_gpx(path: str) -> Session:
         logger.debug('GPX: derived speed from GPS for %d points', n)
 
     speed_kmh = np.clip(speed_kmh, 0.0, 1000.0)
-    speed_ms  = speed_kmh / 3.6
-
-    # ── Bearings and heading rate ──────────────────────────────────────────────
-    bearings = np.zeros(n)
-    for i in range(1, n):
-        bearings[i] = _bearing_rad(lats[i-1], lons[i-1], lats[i], lons[i])
-    bearings[0] = bearings[1] if n > 1 else 0.0
-
-    heading_rate = np.zeros(n)   # rad/s
-    for i in range(1, n):
-        dt_i = elapsed[i] - elapsed[i-1]
-        if dt_i > 1e-6:
-            heading_rate[i] = _angular_diff(bearings[i-1], bearings[i]) / dt_i
-    heading_rate[0] = heading_rate[1] if n > 1 else 0.0
-    heading_rate = _gaussian_smooth(heading_rate, _SMOOTH_SIGMA)
-
-    # ── Longitudinal G (from speed derivative) ─────────────────────────────────
-    lon_g = np.zeros(n)
-    for i in range(1, n):
-        dt_i = elapsed[i] - elapsed[i-1]
-        if dt_i > 1e-6:
-            lon_g[i] = (speed_ms[i] - speed_ms[i-1]) / dt_i / _G
-    lon_g[0] = lon_g[1] if n > 1 else 0.0
-    lon_g = np.clip(_gaussian_smooth(lon_g, _SMOOTH_SIGMA), -5.0, 5.0)
-
-    # ── Lateral G (centripetal: v * ω / g) ────────────────────────────────────
-    lat_g = np.clip(speed_ms * heading_rate / _G, -5.0, 5.0)
-    lat_g = _gaussian_smooth(lat_g, _SMOOTH_SIGMA)
+    speed_kmh, lon_g, lat_g = track_dynamics(elapsed, lats, lons, speed_kmh, _SMOOTH_SIGMA)
 
     # ── Build DataPoints ───────────────────────────────────────────────────────
     all_pts: List[DataPoint] = []

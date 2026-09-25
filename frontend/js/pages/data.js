@@ -244,6 +244,7 @@
                     : (!s.matched)                  ? 'no vid'
                     : s.sync_offset != null && s.sync_review ? '⚠ check'
                     : s.sync_offset != null && s.sync_source === 'auto' ? '~ auto'
+                    : s.sync_source === 'camera'   ? '✓ camera'
                     : s.sync_offset != null         ? '✓ user'
                     : '≈ unset';
     const iconCls   = s.needs_conversion           ? 'di-pending'
