@@ -49,3 +49,17 @@ def test_every_export_channel_has_the_same_preview_definition(channel):
     assert js['label'] == py['label']
     if channel != 'speed':   # speed's bounds are unit-converted expressions in JS
         assert float(js['min']) == py['min'] and float(js['max']) == py['max']
+
+
+def test_every_style_plugin_is_offered_in_the_editor_with_a_preview_renderer():
+    """map_progress.py once existed only on the export side: no editor entry,
+    no JS renderer, and the worker did not route it — an orphan."""
+    from style_registry import available_styles
+    from gauge_channels import GAUGE_TYPES
+    js_types = set(re.findall(r"\{ value: '([^']+)',\s+label:", EDITOR_JS))
+    renderers = EDITOR_JS[EDITOR_JS.index('const GAUGE_RENDERERS'):]
+    renderers = renderers[:renderers.index('};')]
+    for name in available_styles('gauge') + available_styles('map'):
+        assert name in GAUGE_TYPES, f'{name}: missing from gauge_channels.GAUGE_TYPES'
+        assert name in js_types, f'{name}: missing from the editor type list'
+        assert f"'{name}':" in renderers, f'{name}: no preview renderer in editor.js GAUGE_RENDERERS'

@@ -115,3 +115,18 @@ def test_real_pyproject_is_satisfied_in_dev_env():
     # The dev/test environment installs from pyproject.toml, so this also
     # catches the script mis-parsing the real file.
     assert check_build_deps.missing_dependencies(ROOT / 'pyproject.toml') == []
+
+
+def test_write_json_atomic_never_leaves_a_half_written_file(tmp_path, monkeypatch):
+    import json
+    from utils import write_json_atomic
+    target = tmp_path / 'cache.json'
+    write_json_atomic(target, {'a': 1})
+
+    class Boom:
+        pass
+    import pytest as _pytest
+    with _pytest.raises(TypeError):
+        write_json_atomic(target, {'a': Boom()})       # fails mid-serialisation
+    assert json.loads(target.read_text()) == {'a': 1}  # old contents intact
+    assert [p.name for p in tmp_path.iterdir()] == ['cache.json']

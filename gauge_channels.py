@@ -42,9 +42,6 @@ GAUGE_COLOURS = [
 #   'none'   — fixed shape, no user-chosen channel (own sub-config instead:
 #              info fields, image path, map settings; G-Meter's channel is
 #              hardcoded to 'g_meter' by the type itself, not user-selectable)
-# 'Progress' (styles/map_progress.py) is intentionally omitted — no JS
-# live-preview renderer exists for it yet, so it stays unexposed in the
-# editor exactly as before this table replaced CHANNEL_STYLES.
 GAUGE_TYPES: dict[str, dict] = {
     'Dial':        {'label': 'Dial',         'bucket': 'single'},
     'Bar':         {'label': 'Bar',          'bucket': 'single'},
@@ -61,6 +58,7 @@ GAUGE_TYPES: dict[str, dict] = {
     'Image':       {'label': 'Image / Logo', 'bucket': 'none'},
     'Circuit':     {'label': 'Circuit Map',  'bucket': 'none'},
     'Zoomed':      {'label': 'Zoomed Map',   'bucket': 'none'},
+    'Progress':    {'label': 'Lap Progress', 'bucket': 'none'},
     'G-Meter':     {'label': 'G-Meter',      'bucket': 'none'},
 }
 

@@ -221,34 +221,6 @@ class AppConfig:
 
 # ── Scan cache ────────────────────────────────────────────────────────────────
 
-def save_scan_cache(tel_path: str, vid_path: str,
-                    sessions: list, session_meta: dict) -> None:
-    """Persist lightweight scan results so the tree can be populated immediately on next launch."""
-    entries = []
-    for m in sessions:
-        meta = session_meta.get(m.csv_path, {})
-        entries.append({
-            'csv_path':        m.csv_path,
-            'source':          m.source,
-            'csv_start':       m.csv_start.isoformat() if m.csv_start else None,
-            'matched':         m.matched,
-            'video_paths':     m.video_group.paths if m.video_group else [],
-            'video_total_dur': m.video_group.total_dur if m.video_group else 0.0,
-            'needs_conversion': m.needs_conversion,
-            'xrk_path':        m.xrk_path,
-            'track':           meta.get('track', ''),
-            'laps':            meta.get('laps', ''),
-            'best':            meta.get('best', ''),
-        })
-    data = {'tel_path': tel_path, 'tel_paths': tel_path, 'vid_path': vid_path, 'sessions': entries}
-    try:
-        SCAN_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(SCAN_CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2)
-    except Exception:
-        logger.debug('Failed to write scan cache', exc_info=True)
-
-
 def load_scan_cache() -> dict:
     """Return cached scan data, or {} on miss/error."""
     try:
@@ -284,9 +256,8 @@ def save_file_meta_cache(cache: dict) -> None:
     """Persist the per-file metadata cache."""
     with _file_meta_cache_lock:
         try:
-            FILE_META_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(FILE_META_CACHE_FILE, 'w', encoding='utf-8') as f:
-                json.dump(cache, f)
+            from utils import write_json_atomic
+            write_json_atomic(FILE_META_CACHE_FILE, cache)
         except Exception:
             logger.debug('Failed to write file meta cache', exc_info=True)
 

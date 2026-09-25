@@ -56,7 +56,7 @@ def default_layout() -> dict:
     }
 
 
-_MAP_TYPES = ('Circuit', 'Zoomed')
+_MAP_TYPES = ('Circuit', 'Zoomed', 'Progress')
 
 
 def gauge_rect(g: dict, vw: int, vh: int) -> Tuple[int, int, int, int]:

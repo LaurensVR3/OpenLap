@@ -153,8 +153,7 @@ def _load_cache() -> dict:
 
 def _save_cache(cache: dict) -> None:
     try:
-        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        CACHE_FILE.write_text(
-            json.dumps(cache, ensure_ascii=False), encoding='utf-8')
+        from utils import write_json_atomic
+        write_json_atomic(CACHE_FILE, cache, ensure_ascii=False)
     except Exception as exc:
         logger.debug('Weather cache save failed: %s', exc)

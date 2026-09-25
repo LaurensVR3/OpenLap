@@ -27,6 +27,7 @@
     'Lean':       (ctx, d, w, h) => GaugeLean.render(ctx, d, w, h),
     'Circuit':    (ctx, d, w, h) => GaugeMap.render(ctx, d, w, h),
     'Zoomed':     (ctx, d, w, h) => GaugeMap.renderZoomed(ctx, d, w, h),
+    'Progress':   (ctx, d, w, h) => GaugeMap.renderProgress(ctx, d, w, h),
     'Image':      (ctx, d, w, h) => GaugeImage.render(ctx, d, w, h),
   };
 
@@ -51,6 +52,7 @@
     { value: 'Image',      label: 'Image / Logo', bucket: 'none'   },
     { value: 'Circuit',    label: 'Circuit Map',  bucket: 'none'   },
     { value: 'Zoomed',     label: 'Zoomed Map',   bucket: 'none'   },
+    { value: 'Progress',   label: 'Lap Progress', bucket: 'none'   },
     { value: 'G-Meter',    label: 'G-Meter',      bucket: 'none'   },
   ];
 
@@ -222,6 +224,7 @@
         opacity:    gauge?.opacity ?? 1.0,
         fit:        gauge?.fit     || 'contain',
       };
+      case 'Progress': return { ...base, lats: new Array(100).fill(0), lons: [], cur_idx: 62 };
       case 'Circuit':
       case 'Zoomed': return {
         ...base,
@@ -343,6 +346,9 @@
     const hIdx = _historyIdx(idx);
     const hist = hIdx.map(i => _livePoints[i]);
 
+    if (type === 'Progress') {
+      return { theme, lats: _liveLats || [], lons: _liveLons || [], cur_idx: idx };
+    }
     if (type === 'Circuit' || type === 'Zoomed') {
       const osmOn = gauge?.track_map_enabled !== false;
       const refLats = _liveRef?.ref_lats || [];

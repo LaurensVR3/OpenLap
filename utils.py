@@ -109,6 +109,28 @@ def _popen(cmd, **kwargs):
         raise _not_found(cmd, e) from e
 
 
+def write_json_atomic(path, data, **dump_kwargs) -> None:
+    """Write *data* as JSON so that *path* always holds either the old or the
+    new contents, never half of one: a crash or a full disk mid-write used to
+    leave a truncated cache that failed to parse on the next launch."""
+    import json
+    import tempfile
+    path = os.fspath(path)
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=os.path.basename(path) + '.', suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(data, f, **dump_kwargs)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def compute_lean_angle(speed_kmh: float, gyro_z_deg_s: float,
                        gforce_y: float) -> float:
     """Compute lean angle in degrees from available sensor data.

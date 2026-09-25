@@ -1,9 +1,8 @@
 """
 session_scanner.py — Session matcher and state manager
 =======================================================
-Scans folders for telemetry files (RaceBox CSV, AIM XRK, MoTeC LD, GPX)
-and video files, matches them by timestamp proximity, and persists
-processing state so runs can be resumed after interruption.
+Scans folders for telemetry files (RaceBox, AIM, MoTeC, GPX, VBOX, Unipro)
+and video files, and matches them by timestamp.
 
 Matching strategy:
   1. Parse session start time from CSV metadata (Date UTC field).
@@ -28,7 +27,7 @@ import threading
 logger = logging.getLogger(__name__)
 
 from utils import _run, ffprobe_path
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, List, Optional, Dict, Tuple  # noqa: F401 – Tuple used in scan_pending_xrk
@@ -59,12 +58,6 @@ CAMERA_OFFSET_WINDOW = 300.0
 # regular matching). Must be much tighter than MATCH_WINDOW: multi-session
 # track days are often on an hourly-ish timetable, so a wide window lets a
 # wrong offset alias onto a neighbouring session and look like a valid fit.
-
-# Sentinel stored on MatchedSession.csv_path entries to identify source type
-CSV_SOURCE_RACEBOX = 'racebox'
-CSV_SOURCE_AIM     = 'aim'
-CSV_SOURCE_MOTEC   = 'motec'
-
 
 # ── Video file info ────────────────────────────────────────────────────────────
 
@@ -757,7 +750,6 @@ def _read_csv_start_time(path: str) -> Optional[datetime]:
         return datetime.fromtimestamp(mtime, tz=timezone.utc)
 
     if Path(path).suffix.lower() == '.ld':
-        import struct as _s
         try:
             with open(path, 'rb') as f:
                 hdr = f.read(0x90)
@@ -859,79 +851,3 @@ def _read_csv_start_time(path: str) -> Optional[datetime]:
     # Fallback: file mtime
     mtime = os.path.getmtime(path)
     return datetime.fromtimestamp(mtime, tz=timezone.utc)
-
-
-# ── Batch state ────────────────────────────────────────────────────────────────
-
-@dataclass
-class SessionState:
-    csv_path:     str
-    video_paths:  List[str]
-    sync_offset:  Optional[float]   # None = not yet synced
-    status:       str               # 'pending' | 'synced' | 'rendering' | 'done' | 'error'
-    output_files: List[str]         = field(default_factory=list)
-    error_msg:    str               = ''
-    lap_mode:     str               = 'fastest'  # 'all' | 'fastest' | 'selection'
-    selected_laps: List[int]        = field(default_factory=list)
-
-
-@dataclass
-class BatchState:
-    output_dir:  str
-    sessions:    List[SessionState] = field(default_factory=list)
-    created_at:  str = ''
-    version:     int = 2
-
-    def save(self, path: str) -> None:
-        with open(path, 'w', encoding='utf-8') as f:
-            json.dump(asdict(self), f, indent=2, default=str)
-
-    @staticmethod
-    def load(path: str) -> 'BatchState':
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        sessions = [SessionState(**s) for s in data.get('sessions', [])]
-        return BatchState(
-            output_dir  = data.get('output_dir', ''),
-            sessions    = sessions,
-            created_at  = data.get('created_at', ''),
-            version     = data.get('version', 1),
-        )
-
-    def get_session(self, csv_path: str) -> Optional[SessionState]:
-        return next((s for s in self.sessions if s.csv_path == csv_path), None)
-
-    def upsert_session(self, sess: SessionState) -> None:
-        for i, s in enumerate(self.sessions):
-            if s.csv_path == sess.csv_path:
-                self.sessions[i] = sess
-                return
-        self.sessions.append(sess)
-
-    @property
-    def pending(self) -> List[SessionState]:
-        return [s for s in self.sessions if s.status in ('pending', 'synced')]
-
-    @property
-    def done(self) -> List[SessionState]:
-        return [s for s in self.sessions if s.status == 'done']
-
-
-def build_batch_state(matches: List[MatchedSession],
-                      output_dir: str) -> BatchState:
-    """Create a fresh BatchState from matched sessions."""
-    state = BatchState(
-        output_dir  = output_dir,
-        created_at  = datetime.now(tz=timezone.utc).isoformat(),
-    )
-    for m in matches:
-        if not m.matched:
-            continue
-        ss = SessionState(
-            csv_path    = m.csv_path,
-            video_paths = m.video_group.paths if m.video_group else [],
-            sync_offset = None,
-            status      = 'pending',
-        )
-        state.sessions.append(ss)
-    return state

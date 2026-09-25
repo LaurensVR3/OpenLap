@@ -16,15 +16,18 @@ FFmpeg must be on your PATH. On Windows: `winget install Gyan.FFmpeg`.
 ## Running tests
 
 ```bash
-# Python (209 tests)
+# Python
 python -m pytest tests/ -q
 
-# JavaScript (39 tests, requires Node)
+# JavaScript (requires Node)
 npm install
 npm run test:run
+
+# Every module, style plugin and dependency imports (also run by CI on the packaged build)
+python scripts/smoke_test_build.py -- python main.py
 ```
 
-All tests must pass before opening a PR. If you're adding a feature, add a test.
+CI (`.github/workflows/test.yml`) runs all of these on Windows and Linux for every push and PR. All tests must pass before opening a PR. If you're adding a feature, add a test.
 
 ## Project layout
 
@@ -44,10 +47,12 @@ The two rendering stacks (`styles/*.py` and `frontend/js/gauges/*.js`) must stay
 
 ## Adding a gauge style
 
-1. Copy `styles/gauge_numeric.py` → `styles/gauge_myname.py`. Set `STYLE_NAME` and implement `render(data, w, h) -> np.ndarray`.
-2. Copy `frontend/js/gauges/numeric.js` → `frontend/js/gauges/myname.js`. Implement `GaugeMyname.render(ctx, data, w, h)`.
-3. Register the JS renderer in `frontend/js/gauges/registry.js` (or wherever the import map lives).
-4. The Python plugin is auto-discovered by `style_registry.py` — no registration needed.
+1. Copy `styles/gauge_numeric.py` → `styles/gauge_myname.py`. Set `STYLE_NAME` and implement `render(data, w, h) -> np.ndarray` (RGBA). It is discovered by `style_registry.py` and drawn in exports.
+2. Add it to `GAUGE_TYPES` in `gauge_channels.py` with its bucket (`single`, `multi` or `none` — see the comment there).
+3. Copy `frontend/js/gauges/numeric.js` → `frontend/js/gauges/myname.js`, implement `GaugeMyname.render(ctx, data, w, h)`, and load it from `frontend/index.html`.
+4. In `frontend/js/pages/editor.js`, add it to `GAUGE_RENDERERS` and `GAUGE_TYPES` (same name and bucket).
+5. Run the tests: `tests/test_preview_export_parity.py` fails if a style is missing from any of these places.
+6. Add `styles.gauge_myname` to `hidden_imports` in `OpenLap.spec`; the build's smoke test checks it was bundled.
 
 ## Adding a telemetry channel
 
@@ -58,7 +63,6 @@ Channels are defined in `data_model.py` (`DataPoint` dataclass). All four loader
 - **Add a test** for an untested module (`webview_api.py`, `style_registry.py`, any gauge style)
 - **Improve an error message** — search for `console.warn` or `logger.exception` and see if the user-facing message could be clearer
 - **Add a gauge style** — see above
-- **Improve GPX lap detection** — currently the whole GPX track is treated as one lap; real lap detection using start/finish line crossing would make GPX useful for track days
 
 ## Pull requests
 

@@ -387,4 +387,43 @@ const GaugeMap = {
     ctx.fillRect(0, 0, w, h);
     ctx.restore();
   },
+
+  /**
+   * Progress: how far through the lap or stage the driver is, as a bar —
+   * for hill-climbs, drag runs and point-to-point stages, where a circuit
+   * map says little. Mirrors styles/map_progress.py: same padding, radius,
+   * colours and percentage (nearest track point / track points).
+   */
+  renderProgress(ctx, data, w, h) {
+    const theme = GaugeBase.getTheme(data.theme || 'Dark');
+    const n     = Math.max((data.lats || []).length, 1);
+    const pct   = Math.min(1, Math.max(0, (data.cur_idx || 0) / n));
+
+    ctx.fillStyle = 'rgba(26,29,46,' + (180 / 255).toFixed(3) + ')';
+    ctx.fillRect(0, 0, w, h);
+
+    const padX = Math.max(6, Math.floor(w / 12));
+    const padY = Math.max(6, Math.floor(h / 4));
+    const x1 = padX, x2 = w - padX, y1 = padY, y2 = h - padY;
+    const barW = x2 - x1, barH = y2 - y1;
+    const r = Math.max(2, Math.floor(barH / 3));
+
+    const rounded = (xa, xb, colour) => {
+      ctx.fillStyle = colour;
+      ctx.beginPath();
+      if (ctx.roundRect) ctx.roundRect(xa, y1, Math.max(0, xb - xa), barH, r);
+      else ctx.rect(xa, y1, Math.max(0, xb - xa), barH);
+      ctx.fill();
+    };
+    rounded(x1, x2, theme.map_track_outer || '#21253a');
+    rounded(x1, Math.min(x2, x1 + Math.max(2 * r, Math.floor(barW * pct))), theme.map_dot || '#4f8ef7');
+
+    ctx.fillStyle = theme.text || '#e8eaf6';
+    ctx.globalAlpha = 230 / 255;
+    ctx.font = `${Math.max(10, Math.floor(h / 3))}px Arial, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`${Math.floor(pct * 100)}%`, w / 2, (y1 + y2) / 2);
+    ctx.globalAlpha = 1;
+  },
 };

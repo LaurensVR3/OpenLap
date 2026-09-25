@@ -13,6 +13,8 @@ import math
 import time
 import urllib.request
 import urllib.parse
+
+from utils import write_json_atomic
 from pathlib import Path
 from typing import List, Optional
 
@@ -173,8 +175,7 @@ def fetch_candidates(lat: float, lon: float) -> List[dict]:
                     try:
                         area_elements = _query_overpass_areas(lat, lon)
                         areas = _parse_area_elements(area_elements)
-                        with open(areas_cp, 'w', encoding='utf-8') as f:
-                            json.dump(areas, f)
+                        write_json_atomic(areas_cp, areas)
                     except Exception as exc:
                         logger.warning('Overpass areas (deferred) failed: %s', exc)
                 return cached
@@ -204,8 +205,7 @@ def fetch_candidates(lat: float, lon: float) -> List[dict]:
         way_cp = _cache_path(f'way_{osm_id}')
         if not way_cp.exists():
             try:
-                with open(way_cp, 'w', encoding='utf-8') as f:
-                    json.dump(geometry, f)
+                write_json_atomic(way_cp, geometry)
             except Exception:
                 pass
 
@@ -219,8 +219,7 @@ def fetch_candidates(lat: float, lon: float) -> List[dict]:
         })
 
     try:
-        with open(cp, 'w', encoding='utf-8') as f:
-            json.dump(candidates, f)
+        write_json_atomic(cp, candidates)
     except Exception:
         pass
 
@@ -229,8 +228,7 @@ def fetch_candidates(lat: float, lon: float) -> List[dict]:
         area_elements = _query_overpass_areas(lat, lon)
         areas = _parse_area_elements(area_elements)
         areas_cp = _cache_path(f'areas_{grid_lat:.1f}_{grid_lon:.1f}')
-        with open(areas_cp, 'w', encoding='utf-8') as f:
-            json.dump(areas, f)
+        write_json_atomic(areas_cp, areas)
     except Exception as exc:
         logger.warning('Overpass areas query failed: %s', exc)
 

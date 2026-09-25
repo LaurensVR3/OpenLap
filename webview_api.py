@@ -655,14 +655,10 @@ class WebviewAPI:
         Called by JS after collecting results from all telemetry paths so the
         cache always reflects the complete set, not just the last path scanned.
         """
-        import json
-        from pathlib import Path as _Path
         from app_config import SCAN_CACHE_FILE
+        from utils import write_json_atomic
         try:
-            SCAN_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-            data = {'sessions': sessions}
-            with open(SCAN_CACHE_FILE, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
+            write_json_atomic(SCAN_CACHE_FILE, {'sessions': sessions}, indent=2)
             logger.info('Saved %d sessions to scan cache', len(sessions))
         except Exception:
             logger.exception('Failed to save sessions cache')
@@ -1549,7 +1545,8 @@ class WebviewAPI:
                 import subprocess, os
                 self._push('racebox_setup_log', message='Downloading Chromium (~130 MB, one-time)…')
                 env = os.environ.copy()
-                proc = subprocess.Popen(
+                from utils import _popen
+                proc = _popen(      # no console window flashing up on Windows
                     [str(node_exe), str(cli_js), 'install', 'chromium'],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, env=env,

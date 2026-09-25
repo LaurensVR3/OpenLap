@@ -48,11 +48,11 @@ Findings from the full code/feature review (2026-09-25). Roughly in suggested fi
 ## Code health
 
 - [x] Unify loader dispatch — three divergent copies (`webview_api._load_one_session`, `export_runner.load_any_session`, `auto_sync._load_session`).
-- [ ] Remove dead code: `BatchState` / `SessionState` / `build_batch_state` and `CSV_SOURCE_*` (`session_scanner.py`), `save_scan_cache` (`app_config.py`).
-- [ ] `styles/map_progress.py` is orphaned (no JS twin, not in editor, not routed as a map in `overlay_worker`) — wire it up or delete.
-- [ ] README claims dropping a `.py` into `styles/` makes it appear in the UI — false (editor type list is hard-coded; styles are bundled in `_internal`). Fix the claim or the mechanism.
+- [x] Remove dead code: `BatchState` / `SessionState` / `build_batch_state` and `CSV_SOURCE_*` (`session_scanner.py`), `save_scan_cache` (`app_config.py`).
+- [x] `styles/map_progress.py` is orphaned (no JS twin, not in editor, not routed as a map in `overlay_worker`) — wire it up or delete.
+- [x] README claims dropping a `.py` into `styles/` makes it appear in the UI — false (editor type list is hard-coded; styles are bundled in `_internal`). Fix the claim or the mechanism.
 - [ ] Update stale test counts in `CLAUDE.md` (now 638 py / 110 JS).
-- [ ] Minor: `install_playwright_chromium` uses raw `subprocess.Popen` (console flash on Windows); cache files (`scan_cache.json`, `file_meta_cache.json`) aren't written atomically; in/out-lap heuristics differ between loaders.
+- [x] Minor: `install_playwright_chromium` uses raw `subprocess.Popen` (console flash on Windows); cache files (`scan_cache.json`, `file_meta_cache.json`) aren't written atomically; in/out-lap heuristics differ between loaders.
 
 ## Feature gaps
 

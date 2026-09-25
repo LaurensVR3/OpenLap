@@ -168,8 +168,8 @@ Click **+ Export** on the lap or session you want, then go to the **Export tab**
 - Progress bar and log output per render job
 
 ### Extensibility
-- Plugin-based style system — drop a `.py` file into `styles/` and it appears in the UI automatically
-- All styles receive theme colour tokens; custom styles support all four themes with no extra work
+- Gauge styles are small plugins: a Python renderer for the export plus a JavaScript twin for the live preview (see [CONTRIBUTING.md](CONTRIBUTING.md#adding-a-gauge-style)); a test fails if either side, or its editor entry, is missing
+- All styles receive theme colour tokens, so a new style supports every theme with no extra work
 
 ---
 
