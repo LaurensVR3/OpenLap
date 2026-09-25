@@ -161,4 +161,8 @@ if __name__ == '__main__':
     # Required for multiprocessing on Windows (used by video export workers)
     from multiprocessing import freeze_support
     freeze_support()
+    if len(sys.argv) > 1 and sys.argv[1] == '--self-test':
+        # Build verification, not a user feature — see self_test.py.
+        import self_test
+        sys.exit(self_test.run(sys.argv[2:]))
     main()

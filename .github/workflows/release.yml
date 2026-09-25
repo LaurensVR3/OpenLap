@@ -6,7 +6,12 @@ on:
       - 'v*'
 
 jobs:
+  # Never publish a release the test suite fails on.
+  tests:
+    uses: ./.github/workflows/test.yml
+
   build-windows:
+    needs: tests
     runs-on: windows-latest
     permissions:
       contents: write
@@ -20,13 +25,19 @@ jobs:
         with:
           python-version: '3.12'
 
+      # Install from pyproject.toml, never from a list kept here: this
+      # workflow used to keep its own, which drifted and shipped every
+      # release through 0.3.3 without scipy (auto-sync) or requests
+      # (RaceBox cloud download). The racebox-download extra also pins the
+      # Playwright version whose Chromium revision the exe bundles.
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install pywebview opencv-python pillow numpy pandas matplotlib
-          # Keep in sync with pyproject.toml's [racebox-download] pin — the
-          # exe bundles the Chromium revision this exact version expects.
-          pip install playwright==1.58.0 pyinstaller
+          pip install -e ".[racebox-download]" pyinstaller
+        shell: pwsh
+
+      - name: Check runtime dependencies are installed
+        run: python scripts/check_build_deps.py --extra racebox-download
         shell: pwsh
 
       - name: Install Playwright Chromium
@@ -45,6 +56,14 @@ jobs:
 
       - name: Build exe
         run: pyinstaller OpenLap.spec --clean -y
+        shell: pwsh
+
+      # Runs the packaged exe's --self-test: imports every OpenLap module,
+      # style plugin and runtime dependency inside the frozen build, and
+      # checks FFmpeg shipped with it. The build step above succeeds even
+      # when a package is missing, so this is what actually catches it.
+      - name: Smoke test packaged build
+        run: python scripts/smoke_test_build.py --extra racebox-download -- dist\OpenLap\OpenLap.exe
         shell: pwsh
 
       - name: Zip release

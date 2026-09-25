@@ -606,3 +606,44 @@ class TestAutoSyncProgressPayload:
         events = self._events(api, monkeypatch, result=(None, 2.0))
         failed = [kw for evt, kw in events if kw.get('status') == 'failed']
         assert failed and failed[0]['current'] == 1 and failed[0]['total'] == 1
+
+    def test_done_event_has_no_error_on_success(self, api, monkeypatch):
+        events = self._events(api, monkeypatch)
+        assert events[-1] == ('auto_sync_done', {'error': ''})
+
+
+class TestSyncRunnersAlwaysFinish:
+    """A sync runner that dies without pushing its done event leaves the Data
+    page on "auto-syncing…" forever. Release builds up to 0.3.3 shipped
+    without scipy, so importing auto_sync itself failed inside the thread."""
+
+    @staticmethod
+    def _break_auto_sync_import(monkeypatch):
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == 'auto_sync':
+                raise ImportError("No module named 'scipy'")
+            return real_import(name, *args, **kwargs)
+        monkeypatch.setattr(builtins, '__import__', fake_import)
+
+    def test_auto_sync_reports_import_failure(self, api, monkeypatch):
+        events = []
+        monkeypatch.setattr(api, '_push', lambda evt, **kw: events.append((evt, kw)))
+        self._break_auto_sync_import(monkeypatch)
+
+        api._run_auto_sync_bg([{'csv_path': 'a.csv', 'video_paths': ['a.mp4']}])
+
+        assert events[-1][0] == 'auto_sync_done'
+        assert 'scipy' in events[-1][1]['error']
+
+    def test_channel_sync_reports_import_failure(self, api, monkeypatch):
+        events = []
+        monkeypatch.setattr(api, '_push', lambda evt, **kw: events.append((evt, kw)))
+        self._break_auto_sync_import(monkeypatch)
+
+        api._run_channel_sync_bg([{'csv_path': 'a.csv'}])
+
+        assert events[-1][0] == 'channel_sync_done'
+        assert 'scipy' in events[-1][1]['error']

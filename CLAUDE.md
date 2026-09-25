@@ -8,12 +8,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Run the app
 python main.py
 
-# Python tests (209 passing)
+# Python tests (653 passing)
 python -m pytest tests/ -q
 python -m pytest tests/test_racebox_data.py -q          # single file
 python -m pytest tests/ -k "test_delta" -q              # single test by name
 
-# JS tests (frontend/tests/, run with Vitest + jsdom; 39 passing)
+# JS tests (frontend/tests/, run with Vitest + jsdom; 110 passing)
 npm run test:run           # one-shot
 npm test                   # watch mode
 
@@ -21,7 +21,14 @@ npm test                   # watch mode
 pip install pyinstaller
 pyinstaller OpenLap.spec --clean -y
 # ffmpeg.exe / ffprobe.exe must be on PATH or placed next to OpenLap.spec
+
+# Verify a build can import every module, style plugin and dependency
+# (PyInstaller silently omits anything not installed; CI runs this after building)
+python scripts/smoke_test_build.py --extra racebox-download -- dist/OpenLap/OpenLap.exe
+python scripts/smoke_test_build.py -- python main.py      # same check from source
 ```
+
+CI: `.github/workflows/test.yml` runs pytest (Windows + Linux) and Vitest on every push to main and every PR. `release.yml` calls it first, so a failing suite blocks a release. Release dependencies are installed from `pyproject.toml` — add new runtime packages there, never to the workflow.
 
 ## Architecture
 

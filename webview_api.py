@@ -1105,6 +1105,18 @@ class WebviewAPI:
         self._auto_sync_cancel.set()
 
     def _run_auto_sync_bg(self, sessions: list) -> None:
+        # Always tell the UI the run is over. If this thread dies without
+        # sending auto_sync_done (e.g. scipy missing from a release build made
+        # the import below fail) the Data page shows "auto-syncing…" forever.
+        error = ''
+        try:
+            self._auto_sync_sessions(sessions)
+        except Exception as e:
+            logger.exception('Auto-sync failed')
+            error = f'Auto-sync failed: {e}'
+        self._push('auto_sync_done', error=error)
+
+    def _auto_sync_sessions(self, sessions: list) -> None:
         from auto_sync import (run_auto_sync, CONFIDENCE_THRESHOLD,
                                MIN_CONFIDENCE)
 
@@ -1180,8 +1192,6 @@ class WebviewAPI:
         with concurrent.futures.ThreadPoolExecutor(max_workers=AUTO_SYNC_WORKERS) as ex:
             list(ex.map(_process, sessions))
 
-        self._push('auto_sync_done')
-
     # ── Secondary telemetry sync (multi-channel cross-correlation) ──────────────
     def start_channel_sync(self, sessions: list) -> dict:
         """Start background cross-correlation sync for sessions that have a
@@ -1225,6 +1235,16 @@ class WebviewAPI:
         self._channel_sync_cancel.set()
 
     def _run_channel_sync_bg(self, sessions: list) -> None:
+        # Same guarantee as _run_auto_sync_bg: the UI must always get a done event.
+        error = ''
+        try:
+            self._channel_sync_sessions(sessions)
+        except Exception as e:
+            logger.exception('Channel sync failed')
+            error = f'Sync failed: {e}'
+        self._push('channel_sync_done', error=error)
+
+    def _channel_sync_sessions(self, sessions: list) -> None:
         from auto_sync import correlate_channels, MIN_CONFIDENCE
         from session_scanner import _csv_source
 
@@ -1286,8 +1306,6 @@ class WebviewAPI:
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=AUTO_SYNC_WORKERS) as ex:
             list(ex.map(_process, sessions))
-
-        self._push('channel_sync_done')
 
     def _run_export_bg(self, params: dict) -> None:
         from export_runner import run_export

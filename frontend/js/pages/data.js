@@ -1387,8 +1387,9 @@ ${renderSecondaryCard(s)}
         if (_selCsv === s.csv_path) renderRight();
       }
     }));
-    _unlistenFns.push(API.on('auto_sync_done', () => {
+    _unlistenFns.push(API.on('auto_sync_done', (detail) => {
       _autoSyncing = false;
+      if (detail?.error) { setStatus(detail.error); return; }
       const summary = _asDone > 0 || _asFailed > 0
         ? ` — ${_asDone} matched, ${_asFailed} skipped`
         : '';
@@ -1423,8 +1424,9 @@ ${renderSecondaryCard(s)}
         if (_selCsv === s.csv_path) renderRight();
       }
     }));
-    _unlistenFns.push(API.on('channel_sync_done', () => {
+    _unlistenFns.push(API.on('channel_sync_done', (detail) => {
       _channelSyncing = false;
+      if (detail?.error) { setStatus(detail.error); return; }
       const summary = _csDone > 0 || _csFailed > 0
         ? ` — ${_csDone} matched, ${_csFailed} skipped`
         : '';
